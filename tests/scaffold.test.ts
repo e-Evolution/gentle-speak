@@ -18,7 +18,7 @@ test('npm and Pi discover the inert extension entrypoint', async () => {
   });
   assert.ok(!manifest.dependencies?.['@earendil-works/pi-coding-agent']);
   assert.ok(!manifest.dependencies?.['@earendil-works/pi-tui']);
-  assert.deepEqual(manifest.files, ['extensions/', 'README.md', 'LICENSE']);
+  assert.deepEqual(manifest.files, ['extensions/', 'lib/', 'README.md', 'LICENSE']);
   assert.equal(manifest.scripts.test, 'node --experimental-strip-types --test tests/*.test.ts');
   assert.match(await readFile(new URL('extensions/gentle-speak.ts', root), 'utf8'), /export default function/);
 });

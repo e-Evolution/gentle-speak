@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA, VOICE_CATALOG, parseSpeakSettingsFile, readSpeakSettings, writeSpeakSettings } from '../lib/speak-settings.ts';
+
+const withHome = (run: (home: string) => void) => {
+  const home = mkdtempSync(join(tmpdir(), 'gentle-speak-settings-'));
+  try { run(home); } finally { rmSync(home, { recursive: true, force: true }); }
+};
+
+test('missing and malformed settings remain off with default mode and Mexican Spanish voice', () => withHome(home => {
+  assert.deepEqual(readSpeakSettings(home), DEFAULT_SPEAK_SETTINGS);
+  for (const raw of ['{', '{}', JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, enabled: true }), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, speed: 0 })]) {
+    writeFileSync(join(home, 'speak-settings.json'), raw);
+    assert.deepEqual(readSpeakSettings(home), DEFAULT_SPEAK_SETTINGS);
+    assert.equal(parseSpeakSettingsFile(raw), undefined);
+  }
+  assert.equal(DEFAULT_SPEAK_SETTINGS.enabled, false);
+  assert.equal(DEFAULT_SPEAK_SETTINGS.mode, 'questions-and-results');
+  assert.equal(DEFAULT_SPEAK_SETTINGS.voice, 'es_MX');
+}));
+
+test('catalog contains Spanish locales and permits additional languages without changing settings schema', () => {
+  assert.equal(VOICE_CATALOG.es_MX.language, 'es');
+  assert.equal(VOICE_CATALOG.es_ES.language, 'es');
+  assert.equal(VOICE_CATALOG.es_ES.locale, 'es_ES');
+});
+
+test('validated settings persist atomically and reject invalid input without changing existing data', () => withHome(home => {
+  const settings = { ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'summary' as const, voice: 'es_ES', speed: 1.25, shortcuts: { speakLast: 'ctrl+alt+s', stop: 'ctrl+alt+x', toggle: 'ctrl+alt+t' } };
+  const path = writeSpeakSettings(settings, home);
+  assert.equal(path, join(home, 'speak-settings.json'));
+  assert.deepEqual(readSpeakSettings(home), settings);
+  assert.deepEqual(parseSpeakSettingsFile(readFileSync(path, 'utf8')), settings);
+  assert.deepEqual(readdirSync(home), ['speak-settings.json']);
+  const before = readFileSync(path, 'utf8');
+  for (const invalid of [{ ...settings, voice: 'unknown' }, { ...settings, speed: Infinity }, { ...settings, shortcuts: { ...settings.shortcuts, stop: settings.shortcuts.speakLast } }, { ...settings, shortcuts: { ...settings.shortcuts, toggle: 'ctrl+k' } }]) {
+    assert.throws(() => writeSpeakSettings(invalid, home), /Invalid speak settings/);
+    assert.equal(readFileSync(path, 'utf8'), before);
+    assert.deepEqual(readdirSync(home), ['speak-settings.json']);
+  }
+}));

@@ -1,0 +1,21 @@
+{
+  "name": "gentle-speak",
+  "version": "0.1.0",
+  "description": "Local speech playback for Pi (implementation in progress)",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["pi-package", "gentle-shell-extension", "text-to-speech"],
+  "pi": {
+    "extensions": ["./extensions/gentle-speak.ts"],
+    "image": "./assets/preview.png"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "files": ["extensions/", "README.md", "LICENSE"],
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
+  },
+  "engines": { "node": ">=24" }
+}

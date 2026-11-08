@@ -8,6 +8,8 @@ Not yet implemented: automatic reading of questions and usable results, `/speak`
 
 The standalone settings module (`lib/speak-settings.ts`) validates a versioned JSON file, defaults to off when missing or malformed, and supports Spanish `es_MX` / `es_ES` voices, mode, playback speed (0.5–2), and rebindable shortcuts. It does not start audio or download anything. The `/speak` command is not implemented yet.
 
+The pure `lib/speak-filter.ts` API accepts settled-run messages and returns final assistant prose (or `undefined`). It defaults to questions and usable results; `all` includes other final prose, while `summary` returns no text until the T6 model-generated summary is integrated. Fenced and inline code, diff lines, and tool output are excluded. This heuristic is conservative and does not yet play audio.
+
 The gallery preview declared in package metadata is pending and will be added before publication. The changelog and public repository topics are also pending.
 
 ## Development

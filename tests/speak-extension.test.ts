@@ -293,7 +293,7 @@ test('the /speak menu lists every catalog voice with label, id and install state
     assert.equal(voices[4], 'Voice: Coqueta (qwen-coqueta) — not installed');
     assert.equal(voices[3], 'Voice: Brisa (qwen-brisa) — installed');
     assert.equal(voices.some(option => option === 'Voice: es_MX' || option === 'Voice: es_ES'), false);
-    assert.deepEqual(offered.filter(option => !option.startsWith('Voice: ')), ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Install voice and runtime', 'Stop playback', 'Cancel']);
+    assert.deepEqual(offered.filter(option => !option.startsWith('Voice: ')), ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
   } finally { h.close(); }
 });
 
@@ -413,5 +413,177 @@ test('selecting an uninstalled Piper voice still switches so it can be installed
     await h.commands.get('speak').handler('', h.ctx);
     assert.equal(JSON.parse(readSettingsRaw(settingsFile(h), 'utf8')).voice, 'es_ES');
     assert.match(h.notifications.join('\n'), /Install voice and runtime/);
+  } finally { h.close(); }
+});
+
+// S8: speak copied selection wiring.
+function copyHarness(over: { tui?: unknown; terminal?: string | undefined; mode?: string; header?: unknown; on?: boolean } = {}) {
+  const watchers: Array<{ opts: any; starts: number; stops: number }> = [];
+  const widgets: Array<[string, unknown]> = [];
+  const resolved: number[] = [];
+  const h = harness(over.mode ?? 'tui', { header: over.header, dependencies: {
+    ...qwenReady(['qwen-brisa']),
+    runtimeStatus: async () => ({ state: 'installed', path: '/r' }),
+    resolveTerminal: async () => { resolved.push(1); return 'terminal' in over ? over.terminal : 'com.term'; },
+    createWatcher: (opts: any) => { const w = { opts, starts: 0, stops: 0 }; watchers.push(w); return { start: () => { w.starts++; }, stop: () => { w.stops++; } }; },
+  } });
+  const tui = 'tui' in over ? over.tui : { getCopyOnSelect: () => true, hasActiveSelection: () => true, getScreenLines: () => ['x'] };
+  (h.ctx.ui as any).setWidget = (key: string, factory: any) => { widgets.push([key, factory]); if (typeof factory === 'function') factory(tui, {}); };
+  if (over.on !== false) save(h, { copySpeech: true });
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  return Object.assign(h, { watchers, widgets, resolved, settle });
+}
+
+test('the watcher starts only when copySpeech is on in the interactive parent', async () => {
+  const h = copyHarness();
+  try {
+    await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
+    await h.settle();
+    assert.equal(h.watchers.length, 1);
+    assert.equal(h.watchers[0].starts, 1);
+    assert.equal(h.watchers[0].opts.terminalBundleId, 'com.term');
+    assert.equal(typeof h.watchers[0].opts.isOwnCopy, 'function');
+    assert.deepEqual(h.notifications, []);
+  } finally { h.close(); }
+  const off = copyHarness({ on: false });
+  try {
+    await off.events.get('session_start')!({ reason: 'startup' }, off.ctx);
+    await off.settle();
+    assert.equal(off.watchers.length, 0);
+    assert.deepEqual(off.widgets, []);
+  } finally { off.close(); }
+  for (const other of [copyHarness({ mode: 'rpc' }), copyHarness({ mode: 'print' }), copyHarness({ mode: 'json' }), copyHarness({ header: { type: 'session', parentSession: '/p.jsonl' } })]) {
+    try {
+      await other.events.get('session_start')!({ reason: 'startup' }, other.ctx);
+      await other.settle();
+      assert.equal(other.watchers.length, 0);
+      assert.equal(other.resolved.length, 0);
+    } finally { other.close(); }
+  }
+});
+
+test('the widget renders no visible content and the gate reads the captured tui', async () => {
+  let selecting = true;
+  const tui = { getCopyOnSelect: () => true, hasActiveSelection: () => selecting, getScreenLines: () => ['copiado aqui'] };
+  const h = copyHarness({ tui });
+  let component: any;
+  try {
+    const original = (h.ctx.ui as any).setWidget;
+    (h.ctx.ui as any).setWidget = (key: string, factory: any, options: any) => { original(key, (t: any, th: any) => (component = factory(t, th)), options); };
+    await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
+    await h.settle();
+    assert.deepEqual(component.render(80), []);
+    const gate = h.watchers[0].opts.isOwnCopy;
+    assert.equal(gate('copiado aqui'), true);
+    selecting = false;
+    assert.equal(gate('copiado aqui'), false);
+  } finally { h.close(); }
+});
+
+test('turning the option off from /speak stops the watcher and persists; on restarts it with a privacy note', async () => {
+  const h = copyHarness({ on: false });
+  try {
+    h.selections.push('Toggle speak copied selection');
+    await h.commands.get('speak').handler('', h.ctx);
+    await h.settle();
+    assert.equal(saved(h).copySpeech, true);
+    assert.equal(h.watchers.length, 1);
+    assert.equal(h.watchers[0].starts, 1);
+    assert.match(h.notifications.join('\n'), /on.*only copies made in this Gentle Shell.*(concealed|password)/i);
+    h.selections.push('Toggle speak copied selection');
+    await h.commands.get('speak').handler('', h.ctx);
+    assert.equal(saved(h).copySpeech, false);
+    assert.equal(h.watchers[0].stops, 1);
+    assert.match(h.notifications.at(-1)!, /off/i);
+    h.selections.push('Toggle speak copied selection');
+    await h.commands.get('speak').handler('', h.ctx);
+    await h.settle();
+    assert.equal(h.watchers.length, 2);
+    assert.equal(h.watchers[1].starts, 1);
+  } finally { h.close(); }
+});
+
+test('shutdown stops the watcher', async () => {
+  const h = copyHarness();
+  try {
+    await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
+    await h.settle();
+    h.events.get('session_shutdown')!({ reason: 'reload' }, h.ctx);
+    assert.equal(h.watchers[0].stops, 1);
+  } finally { h.close(); }
+});
+
+test('an unresolvable terminal or a non-fullscreen TUI notifies once and does not start', async () => {
+  const noTerm = copyHarness({ terminal: undefined });
+  try {
+    await noTerm.events.get('session_start')!({ reason: 'startup' }, noTerm.ctx);
+    await noTerm.settle();
+    assert.equal(noTerm.watchers.reduce((n, w) => n + w.starts, 0), 0);
+    assert.equal(noTerm.notifications.length, 1);
+    assert.match(noTerm.notifications[0], /terminal/i);
+  } finally { noTerm.close(); }
+  const plain = copyHarness({ tui: { render: () => [] } });
+  try {
+    await plain.events.get('session_start')!({ reason: 'startup' }, plain.ctx);
+    await plain.settle();
+    assert.equal(plain.watchers.reduce((n, w) => n + w.starts, 0), 0);
+    assert.equal(plain.notifications.length, 1);
+    assert.match(plain.notifications[0], /unavailable in this terminal mode/);
+    await plain.events.get('session_start')!({ reason: 'startup' }, plain.ctx);
+    await plain.settle();
+    assert.equal(plain.notifications.filter(n => /unavailable in this terminal mode/.test(n)).length, 1, 'reported once');
+  } finally { plain.close(); }
+});
+
+test('copy speech uses the current voice path and cancels playback like a manual speak', async () => {
+  const writes: string[] = [];
+  const children: any[] = [];
+  const h = copyHarness();
+  try {
+    // Rebuild with a spawn recorder: the copy harness deps are fixed, so use a dedicated one.
+  } finally { h.close(); }
+  const watchers: any[] = [];
+  const g = harness('tui', { dependencies: {
+    modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }),
+    spawn: () => { const c = Object.assign(new EventEmitter(), { stdin: { write: (l: string) => { writes.push(l); return true; } }, stdout: new EventEmitter(), stderr: new EventEmitter(), killed: 0, kill() { this.killed++; return true; } }); children.push(c); return c; },
+    resolveTerminal: async () => 'com.term',
+    createWatcher: (opts: any) => { watchers.push(opts); return { start() {}, stop() {} }; },
+  } });
+  try {
+    (g.ctx.ui as any).setWidget = (_k: string, f: any) => { f({ getCopyOnSelect: () => true, hasActiveSelection: () => true, getScreenLines: () => [] }, {}); };
+    save(g, { copySpeech: true, voice: 'es_ES' });
+    await g.events.get('session_start')!({ reason: 'startup' }, g.ctx);
+    await new Promise(resolve => setImmediate(resolve));
+    watchers[0].speak('primera');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(JSON.parse(writes[0]).text, 'primera');
+    assert.equal(JSON.parse(writes[0]).model.name, 'es_ES-davefx-medium.onnx');
+    watchers[0].speak('segunda');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(children[0].killed >= 1, true, 'previous playback cancelled');
+    assert.equal(JSON.parse(writes[1]).text, 'segunda');
+  } finally { g.close(); }
+});
+
+test('the SPEAK row shows the copy marker only while the option is on', async () => {
+  const h = copyHarness();
+  try {
+    await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
+    assert.match(last(h)![1]!, / · copia$/);
+  } finally { h.close(); }
+  const off = copyHarness({ on: false });
+  try {
+    await off.events.get('session_start')!({ reason: 'startup' }, off.ctx);
+    assert.doesNotMatch(last(off)![1]!, /copia/);
+  } finally { off.close(); }
+});
+
+test('the /speak menu keeps its previous entries and the new one is added', async () => {
+  const h = copyHarness({ on: false });
+  let options: string[] = [];
+  try {
+    (h.ctx.ui as any).select = async (_title: string, items: string[]) => { options = items; return undefined; };
+    await h.commands.get('speak').handler('', h.ctx);
+    for (const entry of ['Toggle auto-speak', 'Mode: all', 'Summary model', 'Speed', 'Key: cycleVoice', 'Install voice and runtime', 'Stop playback', 'Cancel', 'Toggle speak copied selection']) assert.ok(options.includes(entry), entry);
   } finally { h.close(); }
 });

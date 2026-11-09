@@ -5,6 +5,7 @@ import {
   MAX_COPIED_CHARS,
   SKIPPED_PASTEBOARD_TYPES,
   createCopiedSelectionWatcher,
+  createOwnCopyGate,
   parseClipboardLine,
   resolveTerminalBundleId,
 } from '../lib/speak-clipboard.ts';
@@ -204,4 +205,42 @@ test('parseClipboardLine is strict', () => {
   assert.deepEqual(parseClipboardLine(`GSCLIP\t5\t\t${TERM}`), { count: 5, types: [], frontmost: TERM });
   assert.equal(parseClipboardLine('GSCLIP\t-1\ta\tx'), undefined);
   assert.equal(parseClipboardLine('GSCLIP\t1.5\ta\tx'), undefined);
+});
+
+// Own-copy gate (L33).
+const fakeTui = (over: Record<string, unknown> = {}) => ({ getCopyOnSelect: () => true, hasActiveSelection: () => true, getScreenLines: () => ['hola mundo'], ...over });
+
+test('own-copy gate passes only when fullscreen, copyOnSelect, active selection and text on screen all hold', () => {
+  assert.equal(createOwnCopyGate(() => fakeTui())('hola mundo'), true);
+  assert.equal(createOwnCopyGate(() => undefined)('hola mundo'), false);
+  assert.equal(createOwnCopyGate(() => ({ getScreenLines: () => ['hola mundo'] }))('hola mundo'), false, 'not fullscreen');
+  assert.equal(createOwnCopyGate(() => fakeTui({ hasActiveSelection: 'yes' }))('hola mundo'), false, 'member must be a function');
+  assert.equal(createOwnCopyGate(() => fakeTui({ getCopyOnSelect: () => false }))('hola mundo'), false);
+  assert.equal(createOwnCopyGate(() => fakeTui({ hasActiveSelection: () => false }))('hola mundo'), false);
+  assert.equal(createOwnCopyGate(() => fakeTui())('otro texto'), false);
+  assert.equal(createOwnCopyGate(() => fakeTui({ getScreenLines: () => { throw new Error('boom'); } }))('hola mundo'), false);
+});
+
+test('own-copy gate strips ANSI and normalizes whitespace on both sides', () => {
+  const tui = fakeTui({ getScreenLines: () => ['\u001b[1m\u001b[38;5;2mhola\u001b[0m   ', '  \u001b]8;;http://x\u0007mundo\u001b]8;;\u0007  fin'] });
+  assert.equal(createOwnCopyGate(() => tui)('hola\n\n mundo\t'), true);
+  assert.equal(createOwnCopyGate(() => tui)('mundo fin'), true);
+  assert.equal(createOwnCopyGate(() => tui)('hola fin'), false);
+  assert.equal(createOwnCopyGate(() => tui)('  \n '), false);
+});
+
+test('the watcher speaks only when isOwnCopy is true, after the frontmost and type checks', async () => {
+  for (const own of [true, false]) {
+    const child = new FakeChild();
+    const spoken: string[] = [];
+    const asked: string[] = [];
+    const w = createCopiedSelectionWatcher({ terminalBundleId: TERM, spawn: () => child as never, readText: async () => ' abc ', speak: (t: string) => { spoken.push(t); }, isOwnCopy: (t: string) => { asked.push(t); return own; }, onError: () => {} });
+    w.start();
+    child.line(1, ['public.utf8-plain-text'], 'com.apple.Safari');
+    child.line(2, ['org.nspasteboard.ConcealedType'], TERM);
+    child.line(3, ['public.utf8-plain-text'], TERM);
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(asked, ['abc']);
+    assert.deepEqual(spoken, own ? ['abc'] : []);
+  }
 });

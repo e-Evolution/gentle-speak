@@ -72,3 +72,37 @@ test('an explicit duplicate cycleVoice is still rejected', () => {
   const shortcuts = { speakLast: 'ctrl+alt+n', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m', cycleVoice: 'ctrl+alt+n' };
   assert.equal(parseSpeakSettingsFile(JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, enabled: true, mode: 'all', voice: 'es_MX', speed: 1, summaryModel: null, shortcuts })), undefined);
 });
+
+// S8 copySpeech setting.
+const realFile = (extra: Record<string, unknown> = {}, cycle = true) => ({ schema: SPEAK_SETTINGS_SCHEMA, enabled: true, mode: 'all', voice: 'es_MX', speed: 1, summaryModel: null,
+  shortcuts: { speakLast: 'ctrl+alt+v', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m', ...(cycle ? { cycleVoice: 'ctrl+alt+n' } : {}) }, ...extra });
+
+test('copySpeech defaults to false and the user real file shape loads unchanged plus copySpeech:false', () => {
+  assert.equal(DEFAULT_SPEAK_SETTINGS.copySpeech, false);
+  for (const cycle of [true, false]) {
+    const parsed = parseSpeakSettingsFile(JSON.stringify(realFile({}, cycle)));
+    assert.ok(parsed);
+    assert.equal(parsed.copySpeech, false);
+    assert.equal(parsed.enabled, true);
+    assert.equal(parsed.mode, 'all');
+    assert.equal(parsed.voice, 'es_MX');
+    assert.equal(parsed.shortcuts.speakLast, 'ctrl+alt+v');
+    assert.equal(parsed.shortcuts.stop, 'ctrl+alt+.');
+    assert.equal(parsed.shortcuts.toggle, 'ctrl+alt+m');
+  }
+});
+
+test('copySpeech true loads, round-trips through write, and keeps the schema string', () => withHome(home => {
+  assert.equal(parseSpeakSettingsFile(JSON.stringify(realFile({ copySpeech: true })))?.copySpeech, true);
+  const path = writeSpeakSettings({ ...DEFAULT_SPEAK_SETTINGS, copySpeech: true }, home);
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).schema, 'gentle-speak.settings/v1');
+  assert.equal(JSON.parse(readFileSync(path, 'utf8')).copySpeech, true);
+  assert.equal(readSpeakSettings(home).copySpeech, true);
+}));
+
+test('unknown keys and non-boolean copySpeech are rejected', () => {
+  for (const extra of [{ extra: 1 }, { copySpeech: 'yes' }, { copySpeech: 1 }, { copySpeech: null }, { copy_speech: true }]) {
+    assert.equal(parseSpeakSettingsFile(JSON.stringify(realFile(extra))), undefined, JSON.stringify(extra));
+  }
+  assert.throws(() => withHome(home => writeSpeakSettings({ ...DEFAULT_SPEAK_SETTINGS, copySpeech: 'x' } as any, home)), /Invalid speak settings/);
+});

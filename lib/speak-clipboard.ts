@@ -127,6 +127,8 @@ export interface CopiedSelectionWatcherOptions {
   spawn?: WatcherSpawn;
   readText?: () => Promise<string>;
   speak: (text: string) => unknown;
+  /** Consulted after the frontmost/type checks and before `speak`; absent means every checked copy passes. */
+  isOwnCopy?: (text: string) => boolean;
   onError: (error: Error) => void;
 }
 
@@ -155,6 +157,7 @@ export function createCopiedSelectionWatcher(opts: CopiedSelectionWatcherOptions
     if (line.types.some((t) => SKIPPED_PASTEBOARD_TYPES.includes(t))) return;
     const text = (await readText()).trim().slice(0, MAX_COPIED_CHARS);
     if (!text) return;
+    if (opts.isOwnCopy && !opts.isOwnCopy(text)) return;
     await opts.speak(text);
   };
 
@@ -193,5 +196,41 @@ export function createCopiedSelectionWatcher(opts: CopiedSelectionWatcherOptions
       stopped = true;
       try { child?.kill(); } catch { /* already gone */ }
     },
+  };
+}
+
+/** The members of pi-tui's fullscreen `TuiAltScreen` that the own-copy gate reads. */
+export interface SelectionTui {
+  getCopyOnSelect(): boolean;
+  hasActiveSelection(): boolean;
+  getScreenLines(): string[];
+}
+
+/** True only for the fullscreen TUI, which publicly exposes all three members as functions. */
+export function isSelectionTui(tui: unknown): tui is SelectionTui {
+  const t = tui as Record<string, unknown> | null | undefined;
+  return !!t && ['getCopyOnSelect', 'hasActiveSelection', 'getScreenLines'].every((name) => typeof t[name] === 'function');
+}
+
+// CSI sequences and OSC sequences (BEL or ST terminated).
+const ANSI = /\u001b\[[0-?]*[ -\/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
+const normalize = (value: string) => value.replace(/\s+/g, ' ').trim();
+
+/**
+ * Gentle-Shell-own-copy gate (L33): the copy is ours only while the fullscreen TUI has copy-on-select on,
+ * an active selection, and the copied text is visible on screen. Fails closed on any error or missing member.
+ */
+export function createOwnCopyGate(getTui: () => unknown): (text: string) => boolean {
+  return (text) => {
+    try {
+      const tui = getTui();
+      if (!isSelectionTui(tui) || tui.getCopyOnSelect() !== true || tui.hasActiveSelection() !== true) return false;
+      const wanted = normalize(text);
+      if (!wanted) return false;
+      const screen = normalize(tui.getScreenLines().map((line) => String(line).replace(ANSI, '')).join(' '));
+      return screen.includes(wanted);
+    } catch {
+      return false;
+    }
   };
 }

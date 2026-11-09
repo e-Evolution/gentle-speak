@@ -14,6 +14,8 @@ export interface SpeakSettings {
   voice: string;
   speed: number;
   summaryModel: { provider: string; id: string } | null;
+  /** Opt-in (S8): speak text copied from this Gentle Shell. Optional in files; absent means false. */
+  copySpeech: boolean;
   shortcuts: { speakLast: string; stop: string; toggle: string; cycleVoice: string };
 }
 export const DEFAULT_SPEAK_SETTINGS: SpeakSettings = {
@@ -22,6 +24,7 @@ export const DEFAULT_SPEAK_SETTINGS: SpeakSettings = {
   voice: 'es_MX',
   speed: 1,
   summaryModel: null,
+  copySpeech: false,
   shortcuts: { speakLast: 'ctrl+alt+v', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m', cycleVoice: 'ctrl+alt+n' },
 };
 
@@ -37,7 +40,8 @@ const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
 function validate(value: unknown): SpeakSettings | undefined {
-  if (!record(value) || ![6, 7].includes(Object.keys(value).length) || !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts'].every(key => Object.hasOwn(value, key)) || Object.keys(value).some(key => !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts', 'summaryModel'].includes(key)) || value.schema !== SPEAK_SETTINGS_SCHEMA) return undefined;
+  if (!record(value) || !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts'].every(key => Object.hasOwn(value, key)) || Object.keys(value).some(key => !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts', 'summaryModel', 'copySpeech'].includes(key)) || value.schema !== SPEAK_SETTINGS_SCHEMA) return undefined;
+  if (Object.hasOwn(value, 'copySpeech') && typeof value.copySpeech !== 'boolean') return undefined;
   const model = value.summaryModel ?? null;
   if (model !== null && (!record(model) || !hasKeys(model, ['provider', 'id']) || ![model.provider, model.id].every(part => typeof part === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(part as string)))) return undefined;
   if (typeof value.enabled !== 'boolean' || !['all', 'questions-and-results', 'summary'].includes(value.mode as string)) return undefined;
@@ -49,7 +53,7 @@ function validate(value: unknown): SpeakSettings | undefined {
   const cycleDefault = CYCLE_VOICE_DEFAULTS.find(key => !bound.includes(key));
   const shortcuts = keys.map(key => value.shortcuts[key] ?? (key === 'cycleVoice' && !Object.hasOwn(value.shortcuts, key) ? cycleDefault : undefined));
   if (shortcuts.some(key => typeof key !== 'string' || !/^(?:(?:ctrl|alt|shift)\+)+(?:[a-z0-9]|[.,;\/])$/.test(key) || reserved.has(key)) || new Set(shortcuts).size !== shortcuts.length) return undefined;
-  return { enabled: value.enabled, mode: value.mode as SpeakMode, voice: value.voice, speed: value.speed, summaryModel: model as SpeakSettings['summaryModel'],
+  return { enabled: value.enabled, mode: value.mode as SpeakMode, voice: value.voice, speed: value.speed, summaryModel: model as SpeakSettings['summaryModel'], copySpeech: value.copySpeech === true,
     shortcuts: { speakLast: shortcuts[0] as string, stop: shortcuts[1] as string, toggle: shortcuts[2] as string, cycleVoice: shortcuts[3] as string } };
 }
 

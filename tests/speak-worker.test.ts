@@ -154,3 +154,85 @@ test('malformed request rejects with closed error and never loads', async () => 
   const h = harness(); h.send({ schema, type: 'speak', text: 'hola', runtime: '../../unsafe' }); await h.done;
   assert.deepEqual(h.lines, [{ schema, type: 'error', code: 'invalid-request' }]); assert.deepEqual(h.exits, [1]);
 });
+
+// ---- play message (T11): PCM16 mono WAV through the same cpal output path ----
+function wavBytes(samples: number[], rate = 16000, over: { channels?: number; bits?: number; format?: number } = {}) {
+  const data = Buffer.alloc(samples.length * 2); samples.forEach((s, i) => data.writeInt16LE(s, i * 2));
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0); header.writeUInt32LE(36 + data.length, 4); header.write('WAVE', 8); header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16); header.writeUInt16LE(over.format ?? 1, 20); header.writeUInt16LE(over.channels ?? 1, 22);
+  header.writeUInt32LE(rate, 24); header.writeUInt32LE(rate * 2, 28); header.writeUInt16LE(2, 32); header.writeUInt16LE(over.bits ?? 16, 34);
+  header.write('data', 36); header.writeUInt32LE(data.length, 40);
+  return Buffer.concat([header, data]);
+}
+const cpalMock = (events: string[], received: Float32Array[]) => ({ SampleFormat: { F32: 'f32' }, defaultHost() { return { close() { events.push('host'); }, defaultOutputDevice() { return {
+  supportedOutputConfigs() { return [{ sampleFormat: () => 'f32', containsRate: () => true, tryWithSampleRate: () => ({ config: () => ({ channels: 1, sampleRate: 16000 }) }) }]; },
+  buildOutputStream(_c: any, _f: any, callback: any) { return { play() { const data = new Float32Array(4); callback(data); received.push(data); callback(new Float32Array(4)); }, close() { events.push('stream'); } }; }, close() { events.push('device'); },
+}; } }; } });
+async function playFixture(run: (runtime: string, dir: string) => Promise<void>) {
+  const root = await mkdtemp(join(tmpdir(), 'speak-play-'));
+  try {
+    const runtime = join(root, 'runtime'); const dest = join(runtime, 'node_modules/node-cpal/index.js');
+    await mkdir(join(dest, '..'), { recursive: true }); await writeFile(dest, 'mock');
+    await run(runtime, root);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}
+const play = (wav: string, runtime: string, id = 1, speed = 1) => ({ schema, type: 'play', id, wav, speed, runtime });
+
+test('play accepts a valid PCM16 mono WAV, resamples through the shared output and reports done', async () => playFixture(async (runtime, dir) => {
+  const wav = join(dir, 'a.wav'); await writeFile(wav, wavBytes([16384, -16384]));
+  const events: string[] = []; const received: Float32Array[] = [];
+  const h = harness(() => cpalMock(events, received));
+  h.send(play(wav, runtime)); await tick(); await tick();
+  assert.deepEqual(h.lines, [{ schema, type: 'done', id: 1 }]);
+  assert.deepEqual([...received[0].subarray(0, 2)], [0.5, -0.5]);
+  assert.deepEqual(events, ['stream', 'device', 'host']);
+  h.send({ schema, type: 'shutdown' }); await h.done;
+}));
+test('play rejects a non-absolute or unnormalized path before touching the file system', async () => playFixture(async (runtime) => {
+  for (const wav of ['relative.wav', '/tmp/../etc/a.wav']) {
+    const h = harness(() => { throw Error('unexpected load'); });
+    h.send(play(wav, runtime)); await tick();
+    assert.deepEqual(h.lines, [{ schema, type: 'error', code: 'invalid-request' }]);
+    assert.deepEqual(h.exits, [1]); await h.done;
+  }
+}));
+test('play rejects extra keys, bad speed and bad id like speak does', async () => playFixture(async (runtime, dir) => {
+  for (const bad of [{ ...play(join(dir, 'a.wav'), runtime), extra: 1 }, play(join(dir, 'a.wav'), runtime, 1, 9), play(join(dir, 'a.wav'), runtime, -1)]) {
+    const h = harness(() => { throw Error('unexpected load'); });
+    h.send(bad); await tick();
+    assert.deepEqual(h.lines, [{ schema, type: 'error', code: 'invalid-request' }]); await h.done;
+  }
+}));
+test('play reports a playback error for non-WAV bytes, unsupported format, bad rate and oversize duration, without crashing', async () => playFixture(async (runtime, dir) => {
+  const cases: Record<string, Buffer> = {
+    'text.wav': Buffer.from('this is definitely not a wav file at all, just text'),
+    'stereo.wav': wavBytes([1, 2, 3, 4], 16000, { channels: 2 }),
+    'eight.wav': wavBytes([1, 2], 16000, { bits: 8 }),
+    'float.wav': wavBytes([1, 2], 16000, { format: 3 }),
+    'lowrate.wav': wavBytes([1, 2], 7999),
+    'highrate.wav': wavBytes([1, 2], 384001),
+    'long.wav': wavBytes(new Array(8000 * 120 + 1).fill(0), 8000),
+    'empty.wav': wavBytes([]),
+  };
+  const h = harness(() => cpalMock([], []));
+  let id = 0;
+  for (const [name, bytes] of Object.entries(cases)) {
+    await writeFile(join(dir, name), bytes); id++;
+    h.send(play(join(dir, name), runtime, id)); await tick(); await tick();
+    assert.deepEqual(h.lines.at(-1), { schema, type: 'error', code: 'playback', id }, name);
+  }
+  h.send(play(join(dir, 'missing.wav'), runtime, 99)); await tick(); await tick();
+  assert.deepEqual(h.lines.at(-1), { schema, type: 'error', code: 'playback', id: 99 });
+  h.send({ schema, type: 'shutdown' }); await h.done; assert.deepEqual(h.exits, [0]);
+}));
+test('stop during play drops queued plays', async () => playFixture(async (runtime, dir) => {
+  const wav = join(dir, 'a.wav'); await writeFile(wav, wavBytes([1, 2, 3]));
+  const h = harness(() => ({ SampleFormat: { F32: 'f32' }, defaultHost() { return { close() {}, defaultOutputDevice() { return {
+    supportedOutputConfigs() { return [{ sampleFormat: () => 'f32', containsRate: () => true, tryWithSampleRate: () => ({ config: () => ({ channels: 1, sampleRate: 16000 }) }) }]; },
+    buildOutputStream() { return { play() {}, close() {} }; }, close() {} }; } }; } }));
+  h.send(play(wav, runtime, 1)); h.send(play(wav, runtime, 2)); h.send(play(wav, runtime, 3)); await tick();
+  h.send({ schema, type: 'stop' }); await tick(); await tick();
+  assert.deepEqual(h.lines, [{ schema, type: 'stopped' }]);
+  h.send({ schema, type: 'shutdown' }); await h.done;
+}));

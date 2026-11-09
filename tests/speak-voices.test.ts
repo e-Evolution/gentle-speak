@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA, VOICE_CATALOG, parseSpeakSettingsFile, readSpeakSettings, writeSpeakSettings } from '../lib/speak-settings.ts';
-import { QWEN_MODEL_ID, QWEN_VOICES } from '../lib/speak-voices.ts';
+import { QWEN_MODEL_ID, QWEN_PYTHON_FLAGS, QWEN_VOICES } from '../lib/speak-voices.ts';
 import { installQwenVoices, qwenVoicesStatus } from '../lib/speak-voices-install.ts';
 
 const TEXT_A = '¿Ya estás despierto? Mira, te tengo una noticia buena y una mala, y voy a empezar por la buena, porque me cae bien tu cara. Terminé todo. Sí, todo, y sin quejarme ni una sola vez... bueno, casi ninguna. Ahora la mala: vas a tener que revisar lo que hice, y sé que eso te da pereza. Ven, siéntate. Escúchame un segundo y me dices si te convence, ¿va?';
@@ -88,7 +88,11 @@ test('installer copies, verifies and writes a manifest in a temp home', () => tm
   assert.deepEqual((await qwenVoicesStatus(home, catalog)).voices, { 'qwen-a': 'missing', 'qwen-b': 'missing' });
   const { calls, run } = okRun();
   await installQwenVoices({ sourceDir: source, home, python: '/py/python3', catalog, run });
-  assert.deepEqual(calls, [['/py/python3', '-c', 'import mlx_audio']]);
+  // Same interpreter flags the synth worker runs with, and the import that
+  // actually loads the model: a bare `import mlx_audio` passed even when
+  // load_model failed for lack of user-site dependencies.
+  assert.deepEqual(QWEN_PYTHON_FLAGS, ['-E', '-P']);
+  assert.deepEqual(calls, [['/py/python3', '-E', '-P', '-c', 'from mlx_audio.tts.utils import load_model']]);
   const target = join(home, 'voices', 'qwen3');
   assert.deepEqual(readdirSync(target).sort(), ['a.wav', 'b.wav', 'manifest.json']);
   assert.equal(readFileSync(join(target, 'a.wav'), 'utf8'), 'alpha-audio');

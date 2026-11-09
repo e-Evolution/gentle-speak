@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { QWEN_MODEL_ID, QWEN_VOICES, type QwenVoice } from './speak-voices.ts';
+import { QWEN_MODEL_ID, QWEN_PYTHON_FLAGS, QWEN_VOICES, type QwenVoice } from './speak-voices.ts';
 
 export const QWEN_VOICES_SCHEMA = 'gentle-speak.qwen-voices/v1';
 export type QwenCatalog = Readonly<Record<string, QwenVoice>>;
@@ -48,7 +48,7 @@ export async function qwenVoicesStatus(home: string, catalog: QwenCatalog = QWEN
 
 /** Copy, verify and atomically publish the catalog WAVs plus a manifest. Validates everything before writing anything. */
 export async function installQwenVoices({ sourceDir, home, python, catalog = QWEN_VOICES, run = defaultRun }: InstallQwenVoicesOptions): Promise<{ path: string; installed: string[] }> {
-  if ((await run(python, ['-c', 'import mlx_audio'])).code !== 0) throw new Error(`Python check failed: ${python} cannot import mlx_audio`);
+  if ((await run(python, [...QWEN_PYTHON_FLAGS, '-c', 'from mlx_audio.tts.utils import load_model'])).code !== 0) throw new Error(`Python check failed: ${python} cannot load mlx_audio.tts.utils`);
   const dir = voicesDir(home);
   const pending: Array<{ id: string; voice: QwenVoice; data: Buffer }> = [];
   for (const [id, voice] of Object.entries(catalog)) {

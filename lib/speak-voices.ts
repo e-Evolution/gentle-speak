@@ -1,5 +1,13 @@
 /** Voice catalog data: Piper (sherpa-onnx) locales and Qwen3-TTS reference-audio voices (S6). */
 export const QWEN_MODEL_ID = 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16';
+/**
+ * Interpreter flags for every Qwen python call: the installer's check and the
+ * synth worker must agree, or a check can pass while the worker fails.
+ * `-E` ignores PYTHON* env vars and `-P` keeps the script dir off sys.path.
+ * Not `-I`: it implies `-s`, which drops the user site-packages where
+ * mlx-audio's dependencies (e.g. `packaging`) are commonly installed.
+ */
+export const QWEN_PYTHON_FLAGS: readonly string[] = Object.freeze(['-E', '-P']);
 
 export interface PiperVoice { engine: 'piper'; locale: string; language: string; label: string }
 /** A Qwen3-TTS voice clones `file` (reference audio) using its exact `transcript`. */

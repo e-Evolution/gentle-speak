@@ -13,6 +13,37 @@ function parse(m) {
   if (!exact(m, ['schema', 'type', 'id', 'text', 'speed', 'runtime', 'model']) || m.schema !== SCHEMA || m.type !== 'speak' || !Number.isSafeInteger(m.id) || m.id < 0 || typeof m.text !== 'string' || !m.text.trim() || m.text.length > 4000 || /[\x00-\x1f]/.test(m.text) || typeof m.speed !== 'number' || !Number.isFinite(m.speed) || m.speed < 0.5 || m.speed > 2 || !absolute(m.runtime) || !exact(m.model, ['root', 'name']) || !absolute(m.model.root) || !safeFile(m.model.name) || !m.model.name.endsWith('.onnx')) throw Error('invalid-request');
   return m;
 }
+const MAX_WAV_BYTES = 64 * 1024 * 1024;
+// `play` carries a synthesized PCM16 mono WAV (Qwen chunks); `runtime` locates node-cpal exactly like `speak` does.
+function parsePlay(m) {
+  if (!exact(m, ['schema', 'type', 'id', 'wav', 'speed', 'runtime']) || m.schema !== SCHEMA || m.type !== 'play' || !Number.isSafeInteger(m.id) || m.id < 0 || !absolute(m.wav) || typeof m.speed !== 'number' || !Number.isFinite(m.speed) || m.speed < 0.5 || m.speed > 2 || !absolute(m.runtime)) throw Error('invalid-request');
+  return m;
+}
+function readWav(file) {
+  if (!fs.statSync(file).isFile() || fs.statSync(file).size > MAX_WAV_BYTES) throw Error('wav');
+  const b = fs.readFileSync(file);
+  if (b.length < 44 || b.toString('latin1', 0, 4) !== 'RIFF' || b.toString('latin1', 8, 12) !== 'WAVE') throw Error('wav');
+  let at = 12, rate = 0, fmt = false, data;
+  while (at + 8 <= b.length) {
+    const id = b.toString('latin1', at, at + 4), size = b.readUInt32LE(at + 4), body = at + 8;
+    if (id === 'fmt ') {
+      if (size < 16 || body + size > b.length) throw Error('wav');
+      if (b.readUInt16LE(body) !== 1 || b.readUInt16LE(body + 2) !== 1 || b.readUInt16LE(body + 14) !== 16) throw Error('wav');
+      rate = b.readUInt32LE(body + 4); fmt = true;
+    } else if (id === 'data') {
+      if (!fmt) throw Error('wav');
+      // Streaming writers may leave the size unfilled; clamp to the bytes present.
+      data = b.subarray(body, Math.min(body + size, b.length)); break;
+    }
+    at = body + size + (size & 1);
+  }
+  if (!data || !fmt || rate < 8000 || rate > 384000) throw Error('wav');
+  const count = data.length >> 1;
+  if (count === 0 || count > rate * 120) throw Error('wav');
+  const samples = new Float32Array(count);
+  for (let i = 0; i < count; i++) samples[i] = data.readInt16LE(i * 2) / 32768;
+  return { samples, sampleRate: rate };
+}
 function runSpeakWorker(io) {
   return new Promise(resolve => {
     let buffer = '', queue = [], active = false, closed = false, epoch = 0, stream, device, host, cancelPlayback, cancelSynthesis;
@@ -33,22 +64,30 @@ function runSpeakWorker(io) {
       const m = queue.shift(); const token = epoch;
       try {
         // Only load from the explicitly selected installed roots; never on child startup.
-        const ttsPath = path.join(m.runtime, SHERPA), cpalPath = path.join(m.runtime, CPAL);
+        const cpalPath = path.join(m.runtime, CPAL);
+        let cpal, audio;
+        if (m.type === 'play') {
+          if (!fs.statSync(cpalPath).isFile()) throw Error('invalid');
+          audio = readWav(m.wav);
+          cpal = io.loadModule(cpalPath);
+        } else {
+        const ttsPath = path.join(m.runtime, SHERPA);
         const modelPath = path.join(m.model.root, m.model.name);
         const tokens = path.join(m.model.root, 'tokens.txt');
         const dataDir = path.join(m.model.root, 'espeak-ng-data');
         for (const p of [ttsPath, cpalPath, modelPath, tokens]) if (!fs.statSync(p).isFile()) throw Error('invalid');
         if (!fs.statSync(dataDir).isDirectory()) throw Error('invalid');
         const { OfflineTts } = io.loadModule(ttsPath);
-        const cpal = io.loadModule(cpalPath);
+        cpal = io.loadModule(cpalPath);
         const tts = new OfflineTts({ model: { vits: { model: modelPath, tokens, dataDir, lengthScale: 1 / m.speed } }, numThreads: 2, provider: 'cpu' });
         // Native synthesis may never settle; cancellation releases the queue and ignores late results.
-        const audio = await Promise.race([
+        audio = await Promise.race([
           Promise.resolve().then(() => tts.generateAsync({ text: m.text, sid: 0, speed: m.speed })),
           new Promise(resolve => { cancelSynthesis = () => resolve(undefined); }),
         ]);
         cancelSynthesis = undefined;
         if (token !== epoch || closed) return;
+        }
         if (!(audio?.samples instanceof Float32Array) || !Number.isSafeInteger(audio.sampleRate) || audio.sampleRate < 8000 || audio.sampleRate > 384000 || audio.samples.length === 0 || audio.samples.length > audio.sampleRate * 120) throw Error('audio');
         host = cpal.defaultHost();
         try {
@@ -97,8 +136,8 @@ function runSpeakWorker(io) {
       if (exact(m, ['schema', 'type']) && m.schema === SCHEMA && m.type === 'shutdown') return finish(0);
       if (exact(m, ['schema', 'type']) && m.schema === SCHEMA && m.type === 'stop') return stop();
       let request;
-      try { request = parse(m); } catch { return fail('invalid-request'); }
-      if (queue.length >= 3) return send('error', { code: 'queue-full', id: request.id });
+      try { request = m && m.type === 'play' ? parsePlay(m) : parse(m); } catch { return fail('invalid-request'); }
+      if (queue.length >= (request.type === 'play' ? 64 : 3)) return send('error', { code: 'queue-full', id: request.id });
       queue.push(request); void run();
     };
     const onData = chunk => {

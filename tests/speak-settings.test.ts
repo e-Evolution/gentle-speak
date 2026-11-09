@@ -55,3 +55,20 @@ test('validated settings persist atomically and reject invalid input without cha
     assert.deepEqual(readdirSync(home), ['speak-settings.json']);
   }
 }));
+
+test('v1 files that bind ctrl+alt+n to another action stay valid', () => {
+  for (const key of ['speakLast', 'stop', 'toggle']) {
+    const shortcuts: Record<string, string> = { speakLast: 'ctrl+alt+v', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m', [key]: 'ctrl+alt+n' };
+    const parsed = parseSpeakSettingsFile(JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, enabled: true, mode: 'all', voice: 'es_MX', speed: 1, summaryModel: null, shortcuts }));
+    assert.ok(parsed, `${key}=ctrl+alt+n must still load`);
+    assert.equal(parsed.enabled, true);
+    assert.equal(parsed.shortcuts[key as 'stop'], 'ctrl+alt+n');
+    assert.notEqual(parsed.shortcuts.cycleVoice, 'ctrl+alt+n');
+    assert.equal(new Set(Object.values(parsed.shortcuts)).size, 4);
+  }
+});
+
+test('an explicit duplicate cycleVoice is still rejected', () => {
+  const shortcuts = { speakLast: 'ctrl+alt+n', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m', cycleVoice: 'ctrl+alt+n' };
+  assert.equal(parseSpeakSettingsFile(JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, enabled: true, mode: 'all', voice: 'es_MX', speed: 1, summaryModel: null, shortcuts })), undefined);
+});

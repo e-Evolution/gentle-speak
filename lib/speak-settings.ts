@@ -27,6 +27,10 @@ export const DEFAULT_SPEAK_SETTINGS: SpeakSettings = {
 
 const reserved = new Set(['ctrl+k', 'ctrl+p', 'alt+k', 'alt+a']);
 const keys = ['speakLast', 'stop', 'toggle', 'cycleVoice'];
+// Default for v1 files that predate cycleVoice: the first candidate the user
+// has not already bound. A fixed ctrl+alt+n made any v1 file that used it for
+// another action fail the duplicate check and silently revert to defaults.
+const CYCLE_VOICE_DEFAULTS = ['ctrl+alt+n', 'ctrl+alt+b', 'ctrl+alt+j', 'ctrl+alt+u'];
 const hasKeys = (value: Record<string, unknown>, expected: string[]) =>
   Object.keys(value).length === expected.length && expected.every(key => Object.hasOwn(value, key));
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -41,7 +45,9 @@ function validate(value: unknown): SpeakSettings | undefined {
   if (typeof value.speed !== 'number' || !Number.isFinite(value.speed) || value.speed < 0.5 || value.speed > 2) return undefined;
   // v1 files predate cycleVoice: accept them without it and fill in the default.
   if (!record(value.shortcuts) || !(hasKeys(value.shortcuts, keys) || hasKeys(value.shortcuts, keys.slice(0, 3)))) return undefined;
-  const shortcuts = keys.map(key => value.shortcuts[key] ?? (key === 'cycleVoice' && !Object.hasOwn(value.shortcuts, key) ? DEFAULT_SPEAK_SETTINGS.shortcuts.cycleVoice : undefined));
+  const bound = keys.slice(0, 3).map(key => value.shortcuts[key]);
+  const cycleDefault = CYCLE_VOICE_DEFAULTS.find(key => !bound.includes(key));
+  const shortcuts = keys.map(key => value.shortcuts[key] ?? (key === 'cycleVoice' && !Object.hasOwn(value.shortcuts, key) ? cycleDefault : undefined));
   if (shortcuts.some(key => typeof key !== 'string' || !/^(?:(?:ctrl|alt|shift)\+)+(?:[a-z0-9]|[.,;\/])$/.test(key) || reserved.has(key)) || new Set(shortcuts).size !== shortcuts.length) return undefined;
   return { enabled: value.enabled, mode: value.mode as SpeakMode, voice: value.voice, speed: value.speed, summaryModel: model as SpeakSettings['summaryModel'],
     shortcuts: { speakLast: shortcuts[0] as string, stop: shortcuts[1] as string, toggle: shortcuts[2] as string, cycleVoice: shortcuts[3] as string } };

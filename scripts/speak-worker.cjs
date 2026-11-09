@@ -101,20 +101,22 @@ function runSpeakWorker(io) {
           if (!device) throw Error('device');
           // Open the device's own default config so CoreAudio is never asked to change its sample rate
           // (Bluetooth devices time out on that); the audio is resampled to it below.
-          let chosen;
-          try {
-            const current = device.defaultOutputConfig?.();
-            if (current && current.sampleFormat() === cpal.SampleFormat.F32) chosen = current;
-          } catch {}
-          if (!chosen) {
+          const searchConfig = () => {
             const supported = [...device.supportedOutputConfigs()].filter(c => c.sampleFormat() === cpal.SampleFormat.F32);
             // Prefer the model rate; otherwise choose a common F32 device rate.
             const atRate = rate => supported.map(c => c.containsRate(rate) ? c.tryWithSampleRate(rate) : null).find(Boolean);
-            chosen = atRate(audio.sampleRate) || atRate(48000) || atRate(44100) ||
+            return atRate(audio.sampleRate) || atRate(48000) || atRate(44100) ||
               supported.map(c => c.tryWithStandardSampleRate?.()).find(Boolean) ||
               supported.map(c => c.withMaxSampleRate?.()).find(Boolean);
-          }
-          const config = chosen?.config();
+          };
+          let chosen, usedDefault = false, started = false;
+          try {
+            const current = device.defaultOutputConfig?.();
+            if (current && current.sampleFormat() === cpal.SampleFormat.F32) { chosen = current; usedDefault = true; }
+          } catch {}
+          if (!chosen) chosen = searchConfig();
+          const playWith = async candidate => {
+          const config = candidate?.config();
           if (!config || !Number.isSafeInteger(config.channels) || config.channels < 1 || config.channels > 8 ||
               !Number.isSafeInteger(config.sampleRate) || config.sampleRate < 8000 || config.sampleRate > 96000) throw Error('format');
           const frames = Math.round(audio.samples.length * config.sampleRate / audio.sampleRate);
@@ -127,6 +129,7 @@ function runSpeakWorker(io) {
             cancelPlayback = () => settle();
             try {
             stream = device.buildOutputStream(config, cpal.SampleFormat.F32, data => {
+              started = true;
               data.fill(0);
               if (token !== epoch || closed) return settle();
               for (let i = 0; i < data.length; i += config.channels) {
@@ -144,6 +147,14 @@ function runSpeakWorker(io) {
             stream.play();
             } catch (error) { cause = causeOf(error); throw error; }
           });
+          };
+          try { await playWith(chosen); }
+          catch (error) {
+            // The device default config may be refused (e.g. a sample-rate change): try the supported-config search once.
+            if (!usedDefault || started || token !== epoch || closed) throw error;
+            const old = stream; stream = undefined; try { old?.close(); } catch {}
+            await playWith(searchConfig());
+          }
         } finally { closeStream(); }
         if (token === epoch && !closed) send('done', { id: m.id });
       } catch { if (token === epoch && !closed) send('error', { code: 'playback', id: m.id, ...(cause ? { cause } : {}) }); }

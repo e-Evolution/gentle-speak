@@ -96,7 +96,7 @@ test('a lock whose owner pid is dead is reclaimed; a live owner is respected', a
     const checked: number[] = [];
     const lock = createVoiceLock({ dir, pollMs: 5, isPidAlive: pid => { checked.push(pid); return false; } });
     await lock.acquire();
-    assert.deepEqual(checked, [999999]);
+    assert.ok(checked.length >= 1 && checked.every(pid => pid === 999999)); // checked again after the rename
     assert.equal(JSON.parse(fs.readFileSync(path.join(lockDir(dir), 'owner.json'), 'utf8')).pid, process.pid);
     await lock.release();
 
@@ -152,5 +152,44 @@ test('half-written or unreadable owner file: respected within the grace period, 
     await lock.acquire();
     await lock.release();
     assert.equal(fs.existsSync(lockDir(dir)), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+const writeOwner = (dir: string, owner: object) => { fs.mkdirSync(lockDir(dir), { recursive: true }); fs.writeFileSync(path.join(lockDir(dir), 'owner.json'), JSON.stringify(owner)); };
+const ownerOf = (dir: string) => JSON.parse(fs.readFileSync(path.join(lockDir(dir), 'owner.json'), 'utf8'));
+
+test('release does not delete a lock another owner took between the check and the removal', async () => {
+  const dir = tmp();
+  try {
+    const lock = createVoiceLock({ dir, pollMs: 5, hooks: { beforeAct: kind => {
+      if (kind !== 'release') return;
+      fs.rmSync(lockDir(dir), { recursive: true });
+      writeOwner(dir, { pid: 4242, at: Date.now(), token: 'live-other' });
+    } } });
+    await lock.acquire();
+    await lock.release();
+    assert.equal(ownerOf(dir).token, 'live-other');
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['voice.lock']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('stale reclaim does not delete a live lock that replaced the stale one before the rename', async () => {
+  const dir = tmp();
+  try {
+    writeOwner(dir, { pid: 999999, at: 1, token: 'dead' });
+    let swapped = false;
+    const lock = createVoiceLock({ dir, pollMs: 5, isPidAlive: pid => pid === 4242, hooks: { beforeAct: kind => {
+      if (kind !== 'reclaim' || swapped) return;
+      swapped = true;
+      fs.rmSync(lockDir(dir), { recursive: true });
+      writeOwner(dir, { pid: 4242, at: Date.now(), token: 'live-other' });
+    } } });
+    const ac = new AbortController();
+    const p = lock.acquire({ signal: ac.signal });
+    await sleep(40);
+    ac.abort();
+    await assert.rejects(p, { name: 'AbortError' });
+    assert.equal(ownerOf(dir).token, 'live-other');
+    assert.deepEqual(fs.readdirSync(dir).sort(), ['voice.lock']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

@@ -6,7 +6,8 @@ import path from 'node:path';
  * S9 single voice: a cross-process lock built on atomic `mkdir`. `<dir>/voice.lock/owner.json` holds
  * `{ pid, at, token }`. A lock is stale when its owner pid is dead, or when the owner file is missing or
  * unreadable (a crash between mkdir and write) and the lock directory is older than `graceMs`.
- * Not wired into the extension yet.
+ * Release and stale reclaim both rename the lock aside FIRST and re-verify what they moved (token, or staleness),
+ * so a lock retaken between check and act is put back instead of deleted.
  */
 export interface VoiceLockOptions {
   dir: string;
@@ -15,6 +16,8 @@ export interface VoiceLockOptions {
   now?: () => number;
   pid?: number;
   isPidAlive?: (pid: number) => boolean;
+  /** Test seam: called right before the destructive step, i.e. between the check and the act. */
+  hooks?: { beforeAct?: (kind: 'release' | 'reclaim') => void };
 }
 
 export interface AcquireOptions { signal?: AbortSignal }
@@ -42,22 +45,30 @@ export function createVoiceLock(opts: VoiceLockOptions): VoiceLock {
   let held = false;
   let queue: Promise<unknown> = Promise.resolve();
 
-  const readOwner = (): { pid: number; token?: string } | undefined => {
+  const readOwnerAt = (dir: string): { pid: number; token?: string } | undefined => {
     try {
-      const o = JSON.parse(fs.readFileSync(ownerPath, 'utf8'));
+      const o = JSON.parse(fs.readFileSync(path.join(dir, 'owner.json'), 'utf8'));
       return o && Number.isInteger(o.pid) ? o : undefined;
     } catch { return undefined; }
   };
-  const isStale = (): boolean => {
-    const owner = readOwner();
+  const isStaleAt = (dir: string): boolean => {
+    const owner = readOwnerAt(dir);
     if (owner) return !isAlive(owner.pid);
-    try { return now() - fs.statSync(lockPath).mtimeMs > graceMs; } catch { return false; }
+    try { return now() - fs.statSync(dir).mtimeMs > graceMs; } catch { return false; }
   };
-  const reclaim = () => {
-    // Rename first so only one reclaimer wins and nobody deletes a lock freshly taken by another.
+  /** Move the lock aside atomically. Undefined when it is gone (somebody else won the race). */
+  const moveAside = (): string | undefined => {
     const trash = `${lockPath}.stale-${process.pid}-${randomUUID()}`;
-    try { fs.renameSync(lockPath, trash); } catch { return; }
-    fs.rmSync(trash, { recursive: true, force: true });
+    try { fs.renameSync(lockPath, trash); return trash; } catch { return undefined; }
+  };
+  /** What was moved was not ours to remove: put it back; never delete it. */
+  const putBack = (trash: string) => { try { fs.renameSync(trash, lockPath); } catch { /* retaken meanwhile: leave it, do not delete a live owner's data */ } };
+  const reclaim = () => {
+    opts.hooks?.beforeAct?.('reclaim');
+    const trash = moveAside();
+    if (!trash) return;
+    if (isStaleAt(trash)) fs.rmSync(trash, { recursive: true, force: true });
+    else putBack(trash);
   };
   const tryTake = (): boolean => {
     try {
@@ -86,7 +97,7 @@ export function createVoiceLock(opts: VoiceLockOptions): VoiceLock {
     for (;;) {
       if (signal?.aborted) throw abortError();
       if (tryTake()) { held = true; return; }
-      if (isStale()) { reclaim(); continue; }
+      if (isStaleAt(lockPath)) { reclaim(); continue; }
       await wait(pollMs, signal);
     }
   };
@@ -109,8 +120,11 @@ export function createVoiceLock(opts: VoiceLockOptions): VoiceLock {
     async release() {
       if (!held) return;
       held = false;
-      const owner = readOwner();
-      if (owner && owner.token === token) fs.rmSync(lockPath, { recursive: true, force: true });
+      opts.hooks?.beforeAct?.('release');
+      const trash = moveAside();
+      if (!trash) return;
+      if (readOwnerAt(trash)?.token === token) fs.rmSync(trash, { recursive: true, force: true });
+      else putBack(trash);
     },
   };
 }

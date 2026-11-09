@@ -307,3 +307,23 @@ test('a stream failure replies with its code and a bounded, path-free cause', as
   assert.deepEqual(failing.lines, [{ schema, type: 'error', code: 'playback', id: 9, cause: 'device lost' }]);
   failing.send({ schema, type: 'shutdown' }); await failing.done;
 }));
+
+test('a throwing default config falls back to the supported-config search once, keeping the bounded cause on a second failure', async () => playFixture(async (runtime, dir) => {
+  const wav = join(dir, 'a.wav'); await writeFile(wav, wavBytes([16384, -16384], 16000));
+  const opened: any[] = [], received: Float32Array[] = [];
+  const first = harness(() => deviceCpal({ dflt: defaultConfig(1, 24000), supported: [supportedAt(16000)], opened, received, frame: 2,
+    build: (config, cb) => { if (config.sampleRate === 24000) throw Object.assign(Error('Sample rate update timed out'), { name: 'CpalError' }); return { play() { const d = new Float32Array(2); cb(d); received.push(d); cb(new Float32Array(2)); }, close() {} }; } }));
+  first.send(play(wav, runtime)); await tick(); await tick();
+  assert.deepEqual(first.lines, [{ schema, type: 'done', id: 1 }]);
+  assert.deepEqual(opened, [{ channels: 1, sampleRate: 24000 }, { channels: 1, sampleRate: 16000 }]);
+  assert.deepEqual([...received[0]], [0.5, -0.5]);
+  first.send({ schema, type: 'shutdown' }); await first.done;
+
+  const bothOpened: any[] = [];
+  const both = harness(() => deviceCpal({ dflt: defaultConfig(1, 24000), supported: [supportedAt(16000)], opened: bothOpened, received: [],
+    build: () => { throw Object.assign(Error('Sample rate update timed out'), { name: 'CpalError' }); } }));
+  both.send(play(wav, runtime, 2)); await tick(); await tick();
+  assert.deepEqual(both.lines, [{ schema, type: 'error', code: 'playback', id: 2, cause: 'Sample rate update timed out' }]);
+  assert.equal(bothOpened.length, 2); // exactly one fallback attempt, no loop
+  both.send({ schema, type: 'shutdown' }); await both.done;
+}));

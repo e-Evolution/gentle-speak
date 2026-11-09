@@ -1,7 +1,7 @@
 {
   "name": "gentle-speak",
   "version": "0.1.0",
-  "description": "Local speech playback for Pi (implementation in progress)",
+  "description": "Opt-in local text-to-speech for Pi and Gentle Shell",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -23,7 +23,9 @@
     "extensions/",
     "lib/",
     "scripts/",
+    "assets/preview.png",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {

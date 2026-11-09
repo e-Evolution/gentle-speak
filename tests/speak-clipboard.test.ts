@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
 import {
+  JXA_EMIT,
   MAX_COPIED_CHARS,
+  WATCH_SCRIPT,
   SKIPPED_PASTEBOARD_TYPES,
   createCopiedSelectionWatcher,
   createOwnCopyGate,
@@ -243,4 +246,19 @@ test('the watcher speaks only when isOwnCopy is true, after the frontmost and ty
     assert.deepEqual(asked, ['abc']);
     assert.deepEqual(spoken, own ? ['abc'] : []);
   }
+});
+
+// L51: JXA console.log writes to stderr, while the watcher reads only stdout, so no line ever arrived.
+test('the watcher script emits its lines on stdout, never through console.log', () => {
+  assert.equal(typeof JXA_EMIT, 'string');
+  assert.ok(WATCH_SCRIPT.startsWith(JXA_EMIT));
+  assert.equal(WATCH_SCRIPT.includes('console.log'), false);
+});
+
+test('real osascript: the JXA emitter writes one parseable line to stdout and nothing to stderr', { skip: process.platform !== 'darwin' }, () => {
+  const run = spawnSync('osascript', ['-l', 'JavaScript', '-e', `${JXA_EMIT}emit('GSCLIP\\t7\\tpublic.utf8-plain-text\\tcom.github.wez.wezterm');`], { encoding: 'utf8', timeout: 10_000 });
+  assert.equal(run.status, 0);
+  assert.equal(run.stderr, '');
+  assert.equal(run.stdout, 'GSCLIP\t7\tpublic.utf8-plain-text\tcom.github.wez.wezterm\n');
+  assert.deepEqual(parseClipboardLine(run.stdout.trimEnd()), { count: 7, types: ['public.utf8-plain-text'], frontmost: 'com.github.wez.wezterm' });
 });

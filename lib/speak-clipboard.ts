@@ -102,15 +102,21 @@ export function parseClipboardLine(line: string): ClipboardLine | undefined {
   return { count: Number(parts[1]), types: parts[2] ? parts[2].split(',') : [], frontmost: parts[3] };
 }
 
+/**
+ * JXA `emit(line)`: writes one line to stdout through NSFileHandle (unbuffered).
+ * JXA `console.log` writes to stderr, which the watcher does not read (L51).
+ */
+export const JXA_EMIT = `function emit(s){$.NSFileHandle.fileHandleWithStandardOutput.writeData($(s+'\\n').dataUsingEncoding($.NSUTF8StringEncoding));}`;
+
 /** JXA loop: silent baseline, then one line per changeCount change. */
-export const WATCH_SCRIPT = `ObjC.import('AppKit');ObjC.import('Foundation');
+export const WATCH_SCRIPT = `${JXA_EMIT}ObjC.import('AppKit');ObjC.import('Foundation');
 var pb=$.NSPasteboard.generalPasteboard;var last=pb.changeCount;
 while(true){$.NSThread.sleepForTimeInterval(${POLL_INTERVAL_MS / 1000});
 var c=pb.changeCount;if(c===last)continue;last=c;
 var types=ObjC.deepUnwrap(pb.types)||[];
 var app=$.NSWorkspace.sharedWorkspace.frontmostApplication;
 var front=app?ObjC.unwrap(app.bundleIdentifier):'';
-console.log('${LINE_PREFIX}\\t'+c+'\\t'+types.join(',')+'\\t'+front);}`;
+emit('${LINE_PREFIX}\\t'+c+'\\t'+types.join(',')+'\\t'+front);}`;
 
 export interface WatcherChild {
   stdout: { on(event: 'data', cb: (chunk: Buffer | string) => void): unknown } | null;

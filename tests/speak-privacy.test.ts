@@ -86,7 +86,11 @@ test('WATCH_SCRIPT is read-only and prints only count/types/bundle id', () => {
   const s: string = clip.WATCH_SCRIPT;
   console.log(s);
   for (const bad of ['setString', 'setData', 'setPropertyList', 'clearContents', 'declareTypes', 'writeObjects', 'stringForType', 'dataForType', 'propertyListForType', 'readObjects', 'pasteboardItems', 'writeFile', 'doShellScript', 'NSTask', 'NSData', 'system(']) assert.equal(s.includes(bad), false, bad);
-  assert.equal((s.match(/console\.log/g) ?? []).length, 1);
+  // One output point only: the stdout emitter (L51), called once, with no console.log.
+  assert.equal((s.match(/console\.log/g) ?? []).length, 0);
+  assert.equal((s.match(/writeData/g) ?? []).length, 1);
+  assert.equal((s.match(/fileHandleWithStandardOutput/g) ?? []).length, 1);
+  assert.equal((s.match(/emit\('/g) ?? []).length, 1);
 });
 
 // ---- extension level

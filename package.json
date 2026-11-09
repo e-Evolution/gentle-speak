@@ -4,18 +4,35 @@
   "description": "Local speech playback for Pi (implementation in progress)",
   "type": "module",
   "license": "MIT",
-  "keywords": ["pi-package", "gentle-shell-extension", "text-to-speech"],
+  "keywords": [
+    "pi-package",
+    "gentle-shell-extension",
+    "text-to-speech"
+  ],
   "pi": {
-    "extensions": ["./extensions/gentle-speak.ts"],
+    "extensions": [
+      "./extensions/gentle-speak.ts"
+    ],
     "image": "./assets/preview.png"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
   },
-  "files": ["extensions/", "lib/", "README.md", "LICENSE"],
+  "files": [
+    "extensions/",
+    "lib/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
-  "engines": { "node": ">=24" }
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "seek-bzip": "2.0.0"
+  }
 }

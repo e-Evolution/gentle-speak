@@ -5,12 +5,27 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { installSpeakModel, readSpeakModelStatus, installSpeakRuntime, readSpeakRuntimeStatus, speakRuntimeManifest, SPEAK_TARGETS, type SpeakModelManifest, type SpeakRuntimeManifest } from '../lib/speak-install.ts';
+import { installSpeakModel, readSpeakModelStatus, SPEAK_MODELS, installSpeakRuntime, readSpeakRuntimeStatus, speakRuntimeManifest, SPEAK_TARGETS, type SpeakModelManifest, type SpeakRuntimeManifest } from '../lib/speak-install.ts';
 
-const bytes = Buffer.from('mock model');
-const manifest: SpeakModelManifest = { id: 'fixture', revision: 'pinned', baseUrl: 'https://huggingface.co/test/resolve/pinned', files: [{ name: 'model.onnx', size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }], redirects: [] };
+const manifest: SpeakModelManifest = SPEAK_MODELS.es_MX;
+const bytes = await readFile(join(process.cwd(), '.local-models', manifest.files[0]!.name));
+assert.equal(createHash('sha256').update(bytes).digest('hex'), manifest.files[0]!.sha256);
 const home = async (run: (path: string) => Promise<void>) => { const path = await mkdtemp(join(tmpdir(), 'speak-install-')); try { await run(path); } finally { await rm(path, { recursive: true, force: true }); } };
 const response = (body = bytes) => new Response(body, { headers: { 'content-length': String(body.length) } });
+
+test('official converted bundle pins and public install produce sherpa model layout', () => home(async path => {
+  for (const [voice, expected] of [['es_MX', 'ec33fb689c248fe64810aab564cba97babf0f506672cfd404928d46e751a4721'], ['es_ES', 'a3f6beb54a9cb893279f72978a22f807a4d9fc9c7848157b524d5cc7b7f58b22']] as const) {
+    const pin = SPEAK_MODELS[voice];
+    const archive = await readFile(join(process.cwd(), '.local-models', pin.files[0]!.name));
+    assert.equal(createHash('sha256').update(archive).digest('hex'), expected);
+    assert.equal(pin.files[0]!.sha256, expected);
+    const installed = await installSpeakModel({ home: path, voice, confirmed: true, fetch: async () => response(archive) });
+    for (const name of [`${voice === 'es_MX' ? 'es_MX-claude-high' : 'es_ES-davefx-medium'}.onnx`, 'tokens.txt', 'espeak-ng-data', 'MODEL_CARD']) {
+      assert.ok((await readdir(installed.path)).includes(name));
+    }
+    assert.equal((await readSpeakModelStatus({ home: path, voice })).state, 'installed');
+  }
+}));
 
 test('explicit confirmation gates model acquisition; valid bytes publish once', () => home(async path => {
   let calls = 0;
@@ -20,13 +35,13 @@ test('explicit confirmation gates model acquisition; valid bytes publish once', 
   assert.equal((await readSpeakModelStatus({ home: path, manifest })).state, 'missing');
   const result = await installSpeakModel({ home: path, manifest, confirmed: true, fetch });
   assert.equal(result.alreadyInstalled, false);
-  assert.deepEqual(await readFile(join(result.path, 'model.onnx')), bytes);
+  assert.ok((await readdir(result.path)).includes('tokens.txt'));
   assert.equal((await readSpeakModelStatus({ home: path, manifest })).state, 'installed');
-  await writeFile(join(result.path, 'model.onnx'), Buffer.alloc(bytes.length));
-  assert.equal((await readSpeakModelStatus({ home: path, manifest })).state, 'invalid');
-  await writeFile(join(result.path, 'model.onnx'), bytes);
   assert.equal((await installSpeakModel({ home: path, manifest, confirmed: true, fetch })).alreadyInstalled, true);
-  assert.equal(calls, 1);
+  await writeFile(join(result.path, 'tokens.txt'), 'corrupted');
+  assert.equal((await readSpeakModelStatus({ home: path, manifest })).state, 'invalid');
+  await assert.rejects(installSpeakModel({ home: path, manifest, confirmed: true, fetch }), /invalid/i);
+  assert.equal(calls, 2);
 }));
 
 test('bad digest and cancellation cannot publish or leave staging', () => home(async path => {

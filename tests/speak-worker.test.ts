@@ -327,3 +327,33 @@ test('a throwing default config falls back to the supported-config search once, 
   assert.equal(bothOpened.length, 2); // exactly one fallback attempt, no loop
   both.send({ schema, type: 'shutdown' }); await both.done;
 }));
+
+// T27: non-fatal stream errors (xrun, device change, realtime denied) never abort playback.
+const glitchCpal = (fire: (onError: any) => void) => () => deviceCpal({ dflt: defaultConfig(1, 24000), opened: [], received: [], build: (_c, cb, onError) => ({ play() { cb(new Float32Array(8)); fire(onError); cb(new Float32Array(8)); cb(new Float32Array(8)); }, close() {} }) });
+const nonFatalCases: Array<[string, any]> = [
+  ['XRUN', Object.assign(Error('A buffer underrun or overrun occurred.'), { code: 'XRUN' })],
+  ['DEVICE_CHANGED', Object.assign(Error('The audio route changed.'), { code: 'DEVICE_CHANGED' })],
+  ['REALTIME_DENIED', Object.assign(Error('whatever'), { code: 'REALTIME_DENIED' })],
+  ['message-only xrun', Error('A buffer underrun or overrun occurred.')],
+  ['message-only device change', Error('The audio route changed. The stream was automatically rerouted to a different device.')],
+];
+for (const [name, err] of nonFatalCases) {
+  test(`a ${name} stream error mid-playback is non-fatal and ends in done`, async () => playFixture(async (runtime, dir) => {
+    const wav = join(dir, 'a.wav'); await writeFile(wav, wavBytes([16384, -16384], 16000));
+    const h = harness(glitchCpal(onError => onError(err)));
+    h.send(play(wav, runtime, 4)); await tick(); await tick();
+    assert.deepEqual(h.lines, [{ schema, type: 'done', id: 4 }]);
+    h.send({ schema, type: 'shutdown' }); await h.done;
+  }));
+}
+test('other stream errors stay fatal, and a flood of xruns is capped into a playback error', async () => playFixture(async (runtime, dir) => {
+  const wav = join(dir, 'a.wav'); await writeFile(wav, wavBytes([16384, -16384], 16000));
+  const fatal = harness(glitchCpal(onError => onError(Object.assign(Error('The requested audio device is not available.'), { code: 'DEVICE_NOT_AVAILABLE' }))));
+  fatal.send(play(wav, runtime, 5)); await tick(); await tick();
+  assert.deepEqual(fatal.lines, [{ schema, type: 'error', code: 'playback', id: 5, cause: 'The requested audio device is not available.' }]);
+  fatal.send({ schema, type: 'shutdown' }); await fatal.done;
+  const flood = harness(() => deviceCpal({ dflt: defaultConfig(1, 24000), opened: [], received: [], build: (_c, _cb, onError) => ({ play() { for (let i = 0; i < 60; i++) onError(Object.assign(Error('A buffer underrun or overrun occurred.'), { code: 'XRUN' })); }, close() {} }) }));
+  flood.send(play(wav, runtime, 6)); await tick(); await tick();
+  assert.deepEqual(flood.lines, [{ schema, type: 'error', code: 'playback', id: 6, cause: 'A buffer underrun or overrun occurred.' }]);
+  flood.send({ schema, type: 'shutdown' }); await flood.done;
+}));

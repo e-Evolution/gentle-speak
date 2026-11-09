@@ -44,6 +44,15 @@ function readWav(file) {
   for (let i = 0; i < count; i++) samples[i] = data.readInt16LE(i * 2) / 32768;
   return { samples, sampleRate: rate };
 }
+// Stream errors that leave playback running (node-cpal ErrorKind texts); more than MAX_GLITCHES per play is fatal.
+const MAX_GLITCHES = 50;
+const NON_FATAL = { XRUN: 'A buffer underrun or overrun occurred.', DEVICE_CHANGED: 'The audio route changed. The stream was automatically rerouted to a different device.', REALTIME_DENIED: 'Real-time scheduling was refused for the audio thread. Audio may be subject to increased latency or glitches under load.' };
+function nonFatal(error) {
+  const code = error && error.code;
+  if (typeof code === 'string') return Object.prototype.hasOwnProperty.call(NON_FATAL, code);
+  const message = error && error.message;
+  return typeof message === 'string' && Object.values(NON_FATAL).includes(message);
+}
 // Short, bounded, path-free reason for a native playback failure (cpal error message).
 function causeOf(error) {
   const text = typeof error?.message === 'string' ? error.message : '';
@@ -123,7 +132,7 @@ function runSpeakWorker(io) {
           if (frames < 1 || frames > config.sampleRate * 120) throw Error('format');
           let at = 0, submitted = false;
           await new Promise((resolvePlayback, rejectPlayback) => {
-            let settled = false;
+            let settled = false, glitches = 0;
             const settle = error => { if (settled) return; settled = true; clearTimeout(timer); cancelPlayback = undefined; error ? rejectPlayback(error) : resolvePlayback(); };
             const timer = setTimeout(() => settle(Error('timeout')), Math.ceil(frames / config.sampleRate * 1000) + 3000);
             cancelPlayback = () => settle();
@@ -143,7 +152,11 @@ function runSpeakWorker(io) {
               // A subsequent callback indicates the final submitted buffer was consumed.
               if (submitted) settle();
               submitted = at >= frames;
-            }, error => { cause = causeOf(error); settle(error || Error('stream')); });
+            }, error => {
+              // Glitches and reroutes are not fatal: keep playing; the utterance timeout and a count cap bound the run.
+              if (nonFatal(error) && ++glitches <= MAX_GLITCHES) return;
+              cause = causeOf(error); settle(error || Error('stream'));
+            });
             stream.play();
             } catch (error) { cause = causeOf(error); throw error; }
           });

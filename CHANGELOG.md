@@ -10,6 +10,7 @@
 - Playback now opens the output device's own default config and resamples in-process, so it never asks the device to change its sample rate (fixes `Sample rate update timed out` on Bluetooth headsets whose rate differs from the voice). A playback failure now reports its cause: `Audio playback failed: <cause>.` (bounded to 120 characters, no paths).
 - Qwen replay: late `chunk`/`done`/`error` messages of a cancelled or superseded request are ignored, so replaying while a Qwen utterance is running speaks the new text instead of failing with `Invalid Qwen worker response.`; messages with never-issued ids are still rejected.
 - Several sessions: one cross-process voice lock under `~/.gentle-speak/` so sessions never overlap; automatic speech and the `speak` tool speak at once only when the pane is focused (terminal frontmost + Herdr), otherwise keep the latest result until focus, and when focus is unknown speak in turn prefixed with the project name. Hardening: `HERDR_BIN_PATH` must be an absolute `.../herdr`, lock release/reclaim re-verify the owner after the rename, and a refused device default config falls back to the supported-config search once.
+- Playback no longer aborts on non-fatal stream errors (buffer underrun/overrun, device rerouted, real-time scheduling refused): it plays to the end, bounded by the utterance timeout and a 50-glitch cap; other stream errors still fail with their cause.
 
 ## 0.1.0 - 2026-11-08 (local candidate)
 

@@ -4,31 +4,43 @@ Opt-in local text-to-speech for Pi / Gentle Shell. This README is the package in
 
 ## Install and use
 
-Requires Node.js 24+, Pi, and a supported interactive parent TUI session. **Automatic speech is off by default.** Installing the package does not install voice models or start native audio.
+Requires Node.js 24+, Gentle Shell (Pi), and an interactive parent TUI session. **Automatic speech is off by default.** Loading the extension does not install voice models or start native audio.
 
-### From this checkout (available now)
+### Try in your current Gentle Shell (available now)
+
+From this checkout, with its dependencies installed:
 
 ```bash
-cd /path/to/gentle-speak
+cd ~/Develop/AI/gentle-speak
 npm ci
-pi install ./
-pi
+gentle-shell -- -e ./extensions/gentle-speak.ts
 ```
 
-Pi loads local packages in place; `npm ci` supplies the package's `seek-bzip` dependency. If Pi is already running, use `/reload` after `pi install ./`. To remove this local installation later, run `pi remove ./` from the same directory. There is no published npm package or Gentle Hub listing yet.
+This loads gentle-speak **only for that Gentle Shell launch**, alongside Gentle Shell's own package; it does not change the configured package list. It uses your current isolated Gentle Shell home (`~/.gentle-shell/agent`). Voice/runtime installation still requires separate confirmations inside `/speak` and stores them under `~/.gentle-speak/`. This temporary route is appropriate for the pending live TUI test; it is not a publication or audit verdict.
+
+After verification, to keep the local checkout installed in the same Gentle Shell home:
+
+```bash
+cd ~/Develop/AI/gentle-speak
+npm ci
+gentle-shell install ./
+gentle-shell
+```
+
+Run `/reload` if Gentle Shell was already open. `gentle-shell remove ./` from this directory removes the package declaration later. Local packages load in place, so keep the checkout and its `seek-bzip` dependency available. **Persistent installation is not recommended until the installer audit and live TUI check pass.** There is no published npm package or Gentle Hub listing yet.
 
 ### From GitHub (only after this repository is public and verified)
 
 ```bash
-pi install git:github.com/e-Evolution/gentle-speak
-pi
+gentle-shell install git:github.com/e-Evolution/gentle-speak
+gentle-shell
 ```
 
 This Git command is **not available yet** and follows the repository's current default branch; pin a release tag (`@<tag>`) once one actually exists. Git-backed packages install their declared dependencies automatically. Do not use `npm install gentle-speak` until an npm release exists.
 
 ### First playback
 
-1. In Pi's interactive parent TUI, run `/speak` → **Install voice and runtime**. Confirm the converted voice bundle (about 67 MB) and native runtime download **separately**; declining either performs no download for that artifact.
+1. In Gentle Shell's interactive parent TUI, run `/speak` → **Install voice and runtime**. Confirm the converted voice bundle (about 67 MB) and native runtime download **separately**; declining either performs no download for that artifact.
 2. Choose `es_MX` (default) or `es_ES` under `/speak`. They are separate converted Piper TTS bundles, not the Parakeet dictation model. Invalid artifacts are never silently replaced.
 3. Use `/speak` → **Toggle auto-speak**. The default `questions-and-results` mode reads eligible final questions and usable results; `all` reads other final prose. Code blocks, diffs, and tool output are excluded. `/speak` also changes speed (0.5–2).
 

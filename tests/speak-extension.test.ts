@@ -587,3 +587,22 @@ test('the /speak menu keeps its previous entries and the new one is added', asyn
     for (const entry of ['Toggle auto-speak', 'Mode: all', 'Summary model', 'Speed', 'Key: cycleVoice', 'Install voice and runtime', 'Stop playback', 'Cancel', 'Toggle speak copied selection']) assert.ok(options.includes(entry), entry);
   } finally { h.close(); }
 });
+
+test('Piper path: the audio worker error cause is shown as `Audio playback failed: <cause>.`; without a cause the bare message stays', async () => {
+  for (const [extra, text] of [[{ cause: 'Sample rate update timed out' }, 'Audio playback failed: Sample rate update timed out.'], [{ cause: 'bad /Users/me/f now' }, 'Audio playback failed: bad now.'], [{ cause: 'y'.repeat(300) }, `Audio playback failed: ${'y'.repeat(120)}.`], [{}, 'Audio playback failed.'], [{ cause: 7 }, 'Audio playback failed.']] as const) {
+    const children: any[] = [];
+    const h = harness('tui', { branch: [{ type: 'message', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Resultado listo.' }] } }], dependencies: {
+      modelStatus: async () => ({ state: 'installed', path: '/verified/model' }),
+      runtimeStatus: async () => ({ state: 'installed', path: '/verified/runtime' }),
+      spawn: () => { const child = Object.assign(new EventEmitter(), { stdin: { write: () => true }, stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true }); children.push(child); return child; },
+    } });
+    try {
+      writeFileSync(join(h.home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'all' }));
+      const settled = h.events.get('agent_settled')!({ aborted: false }, h.ctx);
+      await new Promise(resolve => setImmediate(resolve));
+      children[0].stdout.emit('data', JSON.stringify({ schema: 'gentle.speak/v1', type: 'error', code: 'playback', id: 1, ...extra }) + '\n');
+      await settled;
+      assert.deepEqual(h.notifications, [text]);
+    } finally { h.close(); }
+  }
+});

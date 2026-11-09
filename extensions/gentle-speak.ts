@@ -8,7 +8,7 @@ import { QWEN_PYTHON_FLAGS, VOICE_CATALOG } from '../lib/speak-voices.ts';
 import { SPEAK_STATUS_KEY, formatSpeakStatus, nextAvailableVoice, voiceMenuEntries } from '../lib/speak-status.ts';
 import { qwenVoicesStatus } from '../lib/speak-voices-install.ts';
 import { createCopiedSelectionWatcher, createOwnCopyGate, isSelectionTui, resolveTerminalBundleId } from '../lib/speak-clipboard.ts';
-import { createQwenSpeech, readQwenPython, type QwenChild } from '../lib/speak-qwen.ts';
+import { createQwenSpeech, playbackFailure, readQwenPython, type QwenChild } from '../lib/speak-qwen.ts';
 import { SPEAK_MODELS, SPEAK_TARGETS, installSpeakModel, installSpeakRuntime, readSpeakModelStatus, readSpeakRuntimeStatus, type SpeakTarget } from '../lib/speak-install.ts';
 
 type Child = Pick<ChildProcessWithoutNullStreams, 'stdin' | 'stdout' | 'stderr' | 'on' | 'kill'>;
@@ -187,7 +187,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
           try { reply = JSON.parse(line); } catch { finish(result('Invalid audio worker response.', true)); return; }
           if (reply.schema !== schema) { finish(result('Invalid audio worker response.', true)); return; }
           if (reply.type === 'done' && reply.id === id) finish(result('Speech completed.'));
-          else if (reply.type === 'error') finish(result('Audio playback failed.', true));
+          else if (reply.type === 'error') finish(result(playbackFailure(reply.cause), true));
         }
       });
       const name = SPEAK_MODELS[voice].id.replace(/^vits-piper-/, '') + '.onnx';

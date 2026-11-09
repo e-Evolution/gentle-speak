@@ -236,3 +236,74 @@ test('stop during play drops queued plays', async () => playFixture(async (runti
   assert.deepEqual(h.lines, [{ schema, type: 'stopped' }]);
   h.send({ schema, type: 'shutdown' }); await h.done;
 }));
+
+// T21: playback opens the device's own default output config so CoreAudio is never asked to change the sample rate.
+const supportedAt = (rate: number, channels = 1) => ({ sampleFormat: () => 'f32', containsRate: () => true, tryWithSampleRate: () => ({ config: () => ({ channels, sampleRate: rate }) }) });
+function deviceCpal(opts: { dflt?: () => any; supported?: any[]; build?: (config: any, cb: any, onError: any) => any; opened: any[]; received: Float32Array[]; frame?: number }) {
+  return { SampleFormat: { F32: 'f32' }, defaultHost() { return { close() {}, defaultOutputDevice() { return {
+    ...(opts.dflt ? { defaultOutputConfig: opts.dflt } : {}),
+    supportedOutputConfigs() { return opts.supported ?? [supportedAt(22050)]; },
+    buildOutputStream(config: any, _f: any, callback: any, onError: any) {
+      opts.opened.push(config);
+      if (opts.build) return opts.build(config, callback, onError);
+      return { play() { const data = new Float32Array(opts.frame ?? 8); callback(data); opts.received.push(data); callback(new Float32Array(opts.frame ?? 8)); }, close() {} };
+    }, close() {},
+  }; } }; } };
+}
+const defaultConfig = (channels: number, sampleRate: number, format = 'f32') => () => ({ sampleFormat: () => format, config: () => ({ channels, sampleRate }) });
+
+test('play opens the device default config (no sample-rate change) and resamples to it', async () => playFixture(async (runtime, dir) => {
+  const wav = join(dir, 'a.wav'); await writeFile(wav, wavBytes([16384, -16384, 16384, -16384], 22050));
+  const opened: any[] = [], received: Float32Array[] = [];
+  const h = harness(() => deviceCpal({ dflt: defaultConfig(2, 24000), supported: [supportedAt(22050)], opened, received }));
+  h.send(play(wav, runtime)); await tick(); await tick();
+  assert.deepEqual(h.lines, [{ schema, type: 'done', id: 1 }]);
+  assert.deepEqual(opened, [{ channels: 2, sampleRate: 24000 }]);
+  const out = [...received[0]];
+  assert.equal(out[0], 0.5); assert.equal(out[1], 0.5);
+  // frame 1 sits at source position 22050/24000 = 0.91875 between 0.5 and -0.5 -> linear interpolation, duplicated per channel
+  const expected = 0.5 + (-0.5 - 0.5) * (22050 / 24000);
+  assert.ok(Math.abs(out[2] - expected) < 1e-6 && out[2] === out[3]);
+  h.send({ schema, type: 'shutdown' }); await h.done;
+}));
+test('play uses the default config unchanged when its rate already equals the WAV rate', async () => playFixture(async (runtime, dir) => {
+  const wav = join(dir, 'a.wav'); await writeFile(wav, wavBytes([16384, -16384], 16000));
+  const opened: any[] = [], received: Float32Array[] = [];
+  const h = harness(() => deviceCpal({ dflt: defaultConfig(1, 16000), supported: [supportedAt(48000)], opened, received, frame: 2 }));
+  h.send(play(wav, runtime)); await tick(); await tick();
+  assert.deepEqual(h.lines, [{ schema, type: 'done', id: 1 }]);
+  assert.deepEqual(opened, [{ channels: 1, sampleRate: 16000 }]);
+  assert.deepEqual([...received[0]], [0.5, -0.5]);
+  h.send({ schema, type: 'shutdown' }); await h.done;
+}));
+test('play falls back to the supported-config search when the default config is missing, throws or is not F32', async () => playFixture(async (runtime, dir) => {
+  const wav = join(dir, 'a.wav'); await writeFile(wav, wavBytes([16384, -16384], 16000));
+  for (const dflt of [undefined, () => { throw Error('no default'); }, defaultConfig(2, 24000, 'i16')]) {
+    const opened: any[] = [], received: Float32Array[] = [];
+    const h = harness(() => deviceCpal({ dflt, supported: [supportedAt(16000)], opened, received, frame: 2 }));
+    h.send(play(wav, runtime)); await tick(); await tick();
+    assert.deepEqual(h.lines, [{ schema, type: 'done', id: 1 }]);
+    assert.deepEqual(opened, [{ channels: 1, sampleRate: 16000 }]);
+    h.send({ schema, type: 'shutdown' }); await h.done;
+  }
+}));
+test('a stream failure replies with its code and a bounded, path-free cause', async () => playFixture(async (runtime, dir) => {
+  const wav = join(dir, 'a.wav'); await writeFile(wav, wavBytes([16384, -16384], 16000));
+  const throwing = (message: string) => () => deviceCpal({ dflt: defaultConfig(1, 24000), opened: [], received: [], build: () => { throw Object.assign(Error(message), { name: 'CpalError' }); } });
+  const cases: Array<[string, string]> = [
+    ['Sample rate update timed out', 'Sample rate update timed out'],
+    ['failed at /Users/someone/secret/dir/file.node now', 'failed at now'],
+    ['x'.repeat(500), 'x'.repeat(120)],
+  ];
+  let id = 0;
+  for (const [message, cause] of cases) {
+    const h = harness(throwing(message)); id++;
+    h.send(play(wav, runtime, id)); await tick(); await tick();
+    assert.deepEqual(h.lines, [{ schema, type: 'error', code: 'playback', id, cause }], message.slice(0, 30));
+    h.send({ schema, type: 'shutdown' }); await h.done;
+  }
+  const failing = harness(() => deviceCpal({ dflt: defaultConfig(1, 24000), opened: [], received: [], build: (_c, _cb, onError) => ({ play() { onError(Error('device lost')); }, close() {} }) }));
+  failing.send(play(wav, runtime, 9)); await tick(); await tick();
+  assert.deepEqual(failing.lines, [{ schema, type: 'error', code: 'playback', id: 9, cause: 'device lost' }]);
+  failing.send({ schema, type: 'shutdown' }); await failing.done;
+}));

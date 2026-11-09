@@ -37,6 +37,14 @@ export function readQwenPython(home: string): string | undefined {
   } catch { return undefined; }
 }
 
+/** `Audio playback failed: <cause>.` from the audio worker's optional cause; bounded to 120 chars, control characters and path-like tokens removed. */
+export function playbackFailure(cause: unknown): string {
+  const text = typeof cause === 'string'
+    ? cause.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\S*[\/\\]\S*/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120).trim().replace(/[.\s]+$/, '')
+    : '';
+  return text ? `Audio playback failed: ${text}.` : 'Audio playback failed.';
+}
+
 function lineReader(onLine: (line: string) => void, onOverflow: () => void) {
   let buffer = '';
   return (chunk: unknown) => {
@@ -141,7 +149,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
             rmSync(pending.get(reply.id)!, { force: true });
             pending.delete(reply.id);
             maybeDone();
-          } else if (reply.type === 'error') finish({ ok: false, message: 'Audio playback failed.' });
+          } else if (reply.type === 'error') finish({ ok: false, message: playbackFailure(reply.cause) });
         }, () => finish({ ok: false, message: 'Invalid audio worker response.' })));
         return child;
       };
@@ -159,6 +167,8 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
       };
       function handle(message: any) {
         if (settled) return;
+        // Late traffic of a cancelled/superseded request (the warm worker keeps synthesizing it): ids already issued but not current.
+        if ((message.type === 'chunk' || message.type === 'done' || message.type === 'error') && Number.isSafeInteger(message.id) && message.id >= 1 && message.id < id) return;
         switch (message.type) {
           case 'ready': sendSynth(); break;
           case 'warning': armIdle(); if (typeof message.message === 'string') request.onWarning?.(message.message.slice(0, 200)); break;

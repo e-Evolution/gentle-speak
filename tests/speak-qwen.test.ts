@@ -366,3 +366,64 @@ test('failure: the audio worker reports a playback error -> notified, both child
     h.events.get('session_shutdown')!({}, h.ctx);
   } finally { h.close(); }
 });
+
+test('replay: late messages of the superseded request id are ignored; the new request speaks normally', async () => {
+  const h = harness();
+  try {
+    const first = h.speak('Primero.');
+    const py = await ready(h);
+    const oldDir = outDirOf(py);
+    const second = h.speak('Segundo.');
+    await until(() => py.writes.filter(w => w.type === 'synth').length === 2); // the warm synth worker is reused
+    assert.equal((await first).content[0].text, 'Speech cancelled.');
+    assert.equal(py.child.killed, 0);
+    const synth = py.writes.filter(w => w.type === 'synth')[1];
+    assert.equal(synth.id, 2);
+    // The old synthesis is still finishing in the same worker: its late traffic must not fail request 2.
+    py.emit({ schema: QS, type: 'error', id: 1, message: 'output dir removed' });
+    py.emit({ schema: QS, type: 'chunk', id: 1, seq: 5, wav: join(oldDir, 'chunk-1-5.wav'), seconds: 1 });
+    py.emit({ schema: QS, type: 'done', id: 1 });
+    assert.equal(h.audios.length, 0, 'no playback was started for the superseded request');
+    const wav = join(synth.outDir, 'chunk-2-0.wav'); writeFileSync(wav, 'RIFF');
+    py.emit({ schema: QS, type: 'chunk', id: 2, seq: 0, wav, seconds: 1 });
+    py.emit({ schema: QS, type: 'done', id: 2 });
+    await until(() => h.audios.length === 1 && h.audios[0].writes.length === 1);
+    h.audios[0].emit({ schema: AS, type: 'done', id: h.audios[0].writes[0].id });
+    const result = await second;
+    assert.deepEqual([result.isError, result.content[0].text], [undefined, OK_TEXT]);
+    assert.equal(py.child.killed, 0);
+  } finally { h.close(); }
+});
+
+test('replay: a message with an id that was never issued still fails the request as invalid', async () => {
+  for (const bad of [{ type: 'error', id: 7 }, { type: 'done', id: 7 }, { type: 'chunk', id: 7, seq: 0, wav: '/x/y.wav', seconds: 1 }]) {
+    const h = harness();
+    try {
+      const first = h.speak('Primero.');
+      const py = await ready(h);
+      py.emit({ schema: QS, ...bad });
+      const result = await first;
+      assert.deepEqual([result.isError, result.content[0].text], [true, 'Invalid Qwen worker response.'], JSON.stringify(bad));
+    } finally { h.close(); }
+  }
+});
+
+test('the audio worker error cause reaches the user: `Audio playback failed: <cause>.`, bounded and without paths; no cause keeps the bare message', async () => {
+  const cases: Array<[unknown, string]> = [
+    ['Sample rate update timed out', 'Audio playback failed: Sample rate update timed out.'],
+    ['x'.repeat(500), `Audio playback failed: ${'x'.repeat(120)}.`],
+    ['bad /Users/me/file now', 'Audio playback failed: bad now.'],
+    ['', 'Audio playback failed.'],
+    [42, 'Audio playback failed.'],
+    [undefined, 'Audio playback failed.'],
+  ];
+  for (const [cause, text] of cases) {
+    const h = harness();
+    try {
+      const { run, audio } = await playing(h);
+      audio.emit({ schema: AS, type: 'error', id: 1, code: 'playback', ...(cause === undefined ? {} : { cause }) });
+      await run;
+      assert.deepEqual(errorNotes(h), [[text, 'error']], String(cause).slice(0, 20));
+    } finally { h.close(); }
+  }
+});

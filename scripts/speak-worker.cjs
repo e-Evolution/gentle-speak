@@ -44,9 +44,14 @@ function readWav(file) {
   for (let i = 0; i < count; i++) samples[i] = data.readInt16LE(i * 2) / 32768;
   return { samples, sampleRate: rate };
 }
+// Short, bounded, path-free reason for a native playback failure (cpal error message).
+function causeOf(error) {
+  const text = typeof error?.message === 'string' ? error.message : '';
+  return text.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\S*[\/\\]\S*/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+}
 function runSpeakWorker(io) {
   return new Promise(resolve => {
-    let buffer = '', queue = [], active = false, closed = false, epoch = 0, stream, device, host, cancelPlayback, cancelSynthesis;
+    let cause, buffer = '', queue = [], active = false, closed = false, epoch = 0, stream, device, host, cancelPlayback, cancelSynthesis;
     const send = (type, fields = {}) => io.write(JSON.stringify({ schema: SCHEMA, type, ...fields }) + '\n');
     const closeStream = () => {
       const old = stream; stream = undefined; try { old?.close(); } catch {}
@@ -62,6 +67,7 @@ function runSpeakWorker(io) {
       if (active || closed || !queue.length) return;
       active = true;
       const m = queue.shift(); const token = epoch;
+      cause = undefined;
       try {
         // Only load from the explicitly selected installed roots; never on child startup.
         const cpalPath = path.join(m.runtime, CPAL);
@@ -93,12 +99,21 @@ function runSpeakWorker(io) {
         try {
           device = host.defaultOutputDevice();
           if (!device) throw Error('device');
-          const supported = [...device.supportedOutputConfigs()].filter(c => c.sampleFormat() === cpal.SampleFormat.F32);
-          // Prefer the model rate; otherwise choose a common F32 device rate.
-          const atRate = rate => supported.map(c => c.containsRate(rate) ? c.tryWithSampleRate(rate) : null).find(Boolean);
-          const chosen = atRate(audio.sampleRate) || atRate(48000) || atRate(44100) ||
-            supported.map(c => c.tryWithStandardSampleRate?.()).find(Boolean) ||
-            supported.map(c => c.withMaxSampleRate?.()).find(Boolean);
+          // Open the device's own default config so CoreAudio is never asked to change its sample rate
+          // (Bluetooth devices time out on that); the audio is resampled to it below.
+          let chosen;
+          try {
+            const current = device.defaultOutputConfig?.();
+            if (current && current.sampleFormat() === cpal.SampleFormat.F32) chosen = current;
+          } catch {}
+          if (!chosen) {
+            const supported = [...device.supportedOutputConfigs()].filter(c => c.sampleFormat() === cpal.SampleFormat.F32);
+            // Prefer the model rate; otherwise choose a common F32 device rate.
+            const atRate = rate => supported.map(c => c.containsRate(rate) ? c.tryWithSampleRate(rate) : null).find(Boolean);
+            chosen = atRate(audio.sampleRate) || atRate(48000) || atRate(44100) ||
+              supported.map(c => c.tryWithStandardSampleRate?.()).find(Boolean) ||
+              supported.map(c => c.withMaxSampleRate?.()).find(Boolean);
+          }
           const config = chosen?.config();
           if (!config || !Number.isSafeInteger(config.channels) || config.channels < 1 || config.channels > 8 ||
               !Number.isSafeInteger(config.sampleRate) || config.sampleRate < 8000 || config.sampleRate > 96000) throw Error('format');
@@ -110,6 +125,7 @@ function runSpeakWorker(io) {
             const settle = error => { if (settled) return; settled = true; clearTimeout(timer); cancelPlayback = undefined; error ? rejectPlayback(error) : resolvePlayback(); };
             const timer = setTimeout(() => settle(Error('timeout')), Math.ceil(frames / config.sampleRate * 1000) + 3000);
             cancelPlayback = () => settle();
+            try {
             stream = device.buildOutputStream(config, cpal.SampleFormat.F32, data => {
               data.fill(0);
               if (token !== epoch || closed) return settle();
@@ -124,12 +140,13 @@ function runSpeakWorker(io) {
               // A subsequent callback indicates the final submitted buffer was consumed.
               if (submitted) settle();
               submitted = at >= frames;
-            }, settle);
+            }, error => { cause = causeOf(error); settle(error || Error('stream')); });
             stream.play();
+            } catch (error) { cause = causeOf(error); throw error; }
           });
         } finally { closeStream(); }
         if (token === epoch && !closed) send('done', { id: m.id });
-      } catch { if (token === epoch && !closed) send('error', { code: 'playback', id: m.id }); }
+      } catch { if (token === epoch && !closed) send('error', { code: 'playback', id: m.id, ...(cause ? { cause } : {}) }); }
       finally { active = false; if (!closed) void run(); }
     };
     const dispatch = m => {

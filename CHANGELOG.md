@@ -7,6 +7,8 @@
 - Added the SPEAK status row (state, active voice, configured toggle and cycle keys) in Gentle Shell's INTEGRATIONS section, the `cycleVoice` shortcut that advances to the next installed voice, and a `/speak` voice menu generated from the catalog (label, id, installed state) with a `Key: cycleVoice` rebind. The row is set only in the interactive parent TUI and cleared on shutdown or reload.
 - Qwen speech: the utterance timeout no longer counts playback; readiness (180 s) and a per-event synthesis idle timeout (120 s) replace it, a failed Qwen worker spawn is reported cleanly, and every Qwen failure path is now covered by tests.
 - Added an opt-in `copySpeech` setting (default off, existing settings files stay valid) and a `/speak` entry `Toggle speak copied selection`: text you select and copy in this Gentle Shell is spoken with the current voice. macOS and the fullscreen TUI are required; copies in other apps or panes, and concealed/password copies, are skipped. The SPEAK row shows `· copia` while it is on.
+- Playback now opens the output device's own default config and resamples in-process, so it never asks the device to change its sample rate (fixes `Sample rate update timed out` on Bluetooth headsets whose rate differs from the voice). A playback failure now reports its cause: `Audio playback failed: <cause>.` (bounded to 120 characters, no paths).
+- Qwen replay: late `chunk`/`done`/`error` messages of a cancelled or superseded request are ignored, so replaying while a Qwen utterance is running speaks the new text instead of failing with `Invalid Qwen worker response.`; messages with never-issued ids are still rejected.
 
 ## 0.1.0 - 2026-11-08 (local candidate)
 

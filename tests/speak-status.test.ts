@@ -49,3 +49,11 @@ test('voice menu entries follow catalog order with label, id and installed state
   assert.equal(entries[1].text, 'Voice: Español (España) (es_ES) — not installed');
   assert.ok(entries.every(entry => entry.text.includes(`(${entry.id})`)));
 });
+
+test('status row shows the active mode right after the on/off state', () => {
+  assert.equal(formatSpeakStatus({ enabled: true, voiceLabel: 'Brisa', mode: 'all', shortcuts: keys }), 'SPEAK ● on · modo todo · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz');
+  assert.equal(formatSpeakStatus({ enabled: true, voiceLabel: 'Brisa', mode: 'questions-and-results', shortcuts: keys }), 'SPEAK ● on · modo preguntas y resultados · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz');
+  assert.equal(formatSpeakStatus({ enabled: false, voiceLabel: 'Brisa', mode: 'summary', summaryReady: true, shortcuts: keys }), 'SPEAK ○ off · modo resumen · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz');
+  // Summary without a configured model never speaks, so the row says so.
+  assert.equal(formatSpeakStatus({ enabled: true, voiceLabel: 'Brisa', mode: 'summary', summaryReady: false, shortcuts: keys }), 'SPEAK ● on · modo resumen sin modelo · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz');
+});

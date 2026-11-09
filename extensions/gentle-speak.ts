@@ -55,7 +55,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     if (stopped || !parent(ctx)) return;
     try {
       const settings = readSpeakSettings(home);
-      ctx.ui.setStatus(SPEAK_STATUS_KEY, formatSpeakStatus({ enabled: settings.enabled, voiceLabel: VOICE_CATALOG[settings.voice]?.label ?? settings.voice, shortcuts: settings.shortcuts }) + (settings.copySpeech ? ' · copia' : ''));
+      ctx.ui.setStatus(SPEAK_STATUS_KEY, formatSpeakStatus({ enabled: settings.enabled, voiceLabel: VOICE_CATALOG[settings.voice]?.label ?? settings.voice, mode: settings.mode, summaryReady: settings.summaryModel !== null, shortcuts: settings.shortcuts }) + (settings.copySpeech ? ' · copia' : ''));
     } catch { /* Status is cosmetic. */ }
   };
   /** Copied-selection speech (S8): opt-in, interactive parent only, fail closed. Clipboard text is never logged. */

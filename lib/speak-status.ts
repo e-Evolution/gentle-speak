@@ -1,4 +1,5 @@
 import type { CatalogVoice } from './speak-voices.ts';
+import type { SpeakMode } from './speak-settings.ts';
 
 /** Key of the `ctx.ui.setStatus` row; Gentle Shell renders it inside its INTEGRATIONS section. */
 export const SPEAK_STATUS_KEY = 'gentle-speak';
@@ -8,17 +9,24 @@ const control = /[\u0000-\u001f\u007f-\u009f]/g;
 export interface SpeakStatusInput {
   enabled: boolean;
   voiceLabel: string;
+  /** Shown right after the state; omitted rows keep the pre-mode layout. */
+  mode?: SpeakMode;
+  /** Summary mode needs a configured model; without one it never speaks. */
+  summaryReady?: boolean;
   shortcuts: { toggle: string; cycleVoice: string };
 }
 
+const MODE_LABELS: Readonly<Record<SpeakMode, string>> = { all: 'todo', 'questions-and-results': 'preguntas y resultados', summary: 'resumen' };
+
 /**
- * One plain-text row, e.g. `SPEAK ● on · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz`.
+ * One plain-text row, e.g. `SPEAK ● on · modo todo · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz`.
  * Gentle Shell strips control characters and collapses spaces (sanitizeStatus) and wraps rows
  * at word boundaries in its 50-column rail, so the state stays in the first ~12 columns.
  */
-export function formatSpeakStatus({ enabled, voiceLabel, shortcuts }: SpeakStatusInput): string {
+export function formatSpeakStatus({ enabled, voiceLabel, mode, summaryReady, shortcuts }: SpeakStatusInput): string {
   const label = voiceLabel.replace(control, ' ').replace(/ +/g, ' ').trim();
-  return `SPEAK ${enabled ? '● on' : '○ off'} · ${label} · ${shortcuts.toggle} on/off · ${shortcuts.cycleVoice} voz`;
+  const modeLabel = mode ? ` · modo ${MODE_LABELS[mode]}${mode === 'summary' && !summaryReady ? ' sin modelo' : ''}` : '';
+  return `SPEAK ${enabled ? '● on' : '○ off'}${modeLabel} · ${label} · ${shortcuts.toggle} on/off · ${shortcuts.cycleVoice} voz`;
 }
 
 /** The next available voice after `current` in `order`, wrapping; undefined when no other voice is available. */

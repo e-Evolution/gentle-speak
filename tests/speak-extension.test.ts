@@ -219,10 +219,10 @@ test('session start sets the SPEAK row in both states with default keys', async 
   const h = harness();
   try {
     await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
-    assert.deepEqual(last(h), ['gentle-speak', 'SPEAK ○ off · Español (México) · ctrl+alt+m on/off · ctrl+alt+n voz']);
+    assert.deepEqual(last(h), ['gentle-speak', 'SPEAK ○ off · modo preguntas y resultados · Español (México) · ctrl+alt+m on/off · ctrl+alt+n voz']);
     save(h, { enabled: true, voice: 'qwen-brisa' });
     await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
-    assert.deepEqual(last(h), ['gentle-speak', 'SPEAK ● on · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz']);
+    assert.deepEqual(last(h), ['gentle-speak', 'SPEAK ● on · modo preguntas y resultados · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz']);
   } finally { h.close(); }
 });
 
@@ -304,7 +304,7 @@ test('selecting an installed voice persists it and refreshes the row', async () 
     await h.commands.get('speak').handler('', h.ctx);
     assert.equal(saved(h).voice, 'qwen-brisa');
     assert.deepEqual(h.notifications, ['Speech settings saved.']);
-    assert.match(last(h)![1]!, /^SPEAK ○ off · Brisa · /);
+    assert.match(last(h)![1]!, /^SPEAK ○ off · modo preguntas y resultados · Brisa · /);
   } finally { h.close(); }
 });
 

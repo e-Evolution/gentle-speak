@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Added a catalog of seven Qwen3-TTS reference voices (`qwen-*`, model `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16`), a sha256-verified installer into `~/.gentle-speak/voices/qwen3/`, and a rebindable `cycleVoice` key (default `ctrl+alt+n`). Existing settings files stay valid; Piper `es_MX`/`es_ES` and the default voice are unchanged. Engine routing and menus follow separately.
+- Qwen voices now speak: a persistent Python synth worker (`scripts/speak-qwen-worker.py`, schema `gentle.speak.qwen/v1`, mlx-audio, offline) streams sentence-group WAV chunks to a new `play` message of the Node audio worker. Piper behaviour and the existing `speak` message are unchanged; a Qwen voice that is not installed is refused with a clear error and nothing is spawned.
 
 ## 0.1.0 - 2026-11-08 (local candidate)
 

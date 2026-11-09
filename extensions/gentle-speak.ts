@@ -4,6 +4,9 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { readSpeakSettings, writeSpeakSettings } from '../lib/speak-settings.ts';
 import { filterSettledSpeech } from '../lib/speak-filter.ts';
+import { QWEN_PYTHON_FLAGS, VOICE_CATALOG } from '../lib/speak-voices.ts';
+import { qwenVoicesStatus } from '../lib/speak-voices-install.ts';
+import { createQwenSpeech, readQwenPython, type QwenChild } from '../lib/speak-qwen.ts';
 import { SPEAK_MODELS, SPEAK_TARGETS, installSpeakModel, installSpeakRuntime, readSpeakModelStatus, readSpeakRuntimeStatus, type SpeakTarget } from '../lib/speak-install.ts';
 
 type Child = Pick<ChildProcessWithoutNullStreams, 'stdin' | 'stdout' | 'stderr' | 'on' | 'kill'>;
@@ -13,15 +16,20 @@ type Dependencies = {
   installModel: typeof installSpeakModel;
   installRuntime: typeof installSpeakRuntime;
   spawn: (script: string) => Child;
+  qwenStatus: typeof qwenVoicesStatus;
+  spawnQwen: (python: string, script: string) => QwenChild;
 };
 const defaults: Dependencies = {
   modelStatus: readSpeakModelStatus, runtimeStatus: readSpeakRuntimeStatus,
   installModel: installSpeakModel, installRuntime: installSpeakRuntime,
   spawn: script => spawnChild(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] }),
+  qwenStatus: qwenVoicesStatus,
+  spawnQwen: (python, script) => spawnChild(python, [...QWEN_PYTHON_FLAGS, script], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, HF_HUB_OFFLINE: '1', PYTHONIOENCODING: 'utf-8' } }),
 };
 const schema = 'gentle.speak/v1';
 const target = `${process.platform}-${process.arch}` as SpeakTarget;
 const worker = resolve(import.meta.dirname, '../scripts/speak-worker.cjs');
+const qwenWorker = resolve(import.meta.dirname, '../scripts/speak-qwen-worker.py');
 
 /** Speech is strictly parent-interactive; no native code is loaded on extension registration. */
 export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.gentle-speak'), dependencies: Partial<Dependencies> = {}): void {
@@ -30,20 +38,48 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   let current: Child | undefined;
   let cancelCurrent: (() => void) | undefined;
   let sequence = 0;
+  const qwen = createQwenSpeech({ spawnPython: python => deps.spawnQwen(python, qwenWorker), spawnAudio: () => deps.spawn(worker) });
+  const reported = new WeakSet<object>();
   const installs = new Set<AbortController>();
   const summaries = new Set<AbortController>();
   const parent = (ctx: ExtensionContext) => ctx.mode === 'tui' && ctx.sessionManager.getHeader()?.type === 'session' && !ctx.sessionManager.getHeader()?.parentSession;
   const result = (text: string, isError = false) => ({ content: [{ type: 'text' as const, text }], details: {}, ...(isError ? { isError: true } : {}) });
-  const stop = () => {
+  const stopPiper = () => {
     cancelCurrent?.();
     cancelCurrent = undefined;
     if (current) { current.kill(); current = undefined; }
   };
+  const stop = () => { stopPiper(); qwen.stop(); };
+  /** Qwen3 voices: verified install first, then the lazy Python synth worker feeds the audio worker. */
+  async function speakQwen(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, settings: ReturnType<typeof readSpeakSettings>) {
+    const voice = VOICE_CATALOG[settings.voice] as Extract<(typeof VOICE_CATALOG)[string], { engine: 'qwen3' }>;
+    const status = await deps.qwenStatus(home);
+    const python = status.manifest === 'valid' && status.voices[settings.voice] === 'installed' ? readQwenPython(home) : undefined;
+    if (stopped || signal?.aborted || !parent(ctx)) return result('Speech cancelled.', true);
+    if (!python) {
+      const message = `Qwen voice "${voice.label}" is not installed or is invalid. Install the Qwen voices (requires macOS Apple Silicon with mlx-audio; see README, "Qwen voices"), or choose a Piper voice with /speak.`;
+      ctx.ui.notify(message, 'error');
+      const failure = result(message, true);
+      reported.add(failure);
+      return failure;
+    }
+    const runtime = await deps.runtimeStatus({ home, target });
+    if (stopped || signal?.aborted || !parent(ctx)) return result('Speech cancelled.', true);
+    if (runtime.state !== 'installed') return result('Install and verify the voice and runtime with /speak first.', true);
+    stopPiper();
+    const onAbort = () => qwen.stop();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      const outcome = await qwen.speak({ python, text, ref: join(home, 'voices', 'qwen3', voice.file), refText: voice.transcript, speed: settings.speed, runtime: runtime.path, onWarning: message => { if (!stopped && parent(ctx)) ctx.ui.notify(message, 'warning'); } });
+      return outcome.ok ? result('Speech completed.') : result(outcome.message, true);
+    } finally { signal?.removeEventListener('abort', onAbort); }
+  }
   async function speak(text: string, ctx: ExtensionContext, signal?: AbortSignal) {
     if (stopped || !parent(ctx)) return result('Speech requires an interactive parent TUI session.', true);
     if (!text.trim() || text.length > 4000 || /[\x00-\x1f]/.test(text)) return result('Invalid speech text.', true);
     if (!SPEAK_TARGETS.includes(target)) return result('Unsupported audio runtime platform.', true);
     const settings = readSpeakSettings(home);
+    if (VOICE_CATALOG[settings.voice]?.engine === 'qwen3') return speakQwen(text, ctx, signal, settings);
     const voice = settings.voice as keyof typeof SPEAK_MODELS;
     // Never transmit paths to the native child until BOTH installers validate the complete artifacts.
     const model = await deps.modelStatus({ home, voice });
@@ -93,7 +129,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   async function speakAutomatically(text: string, ctx: ExtensionContext, signal?: AbortSignal) {
     const outcome = await speak(text, ctx, signal);
     const message = outcome.content[0].text;
-    if (outcome.isError && message !== 'Speech cancelled.' && !stopped && !signal?.aborted && parent(ctx)) ctx.ui.notify(message, 'error');
+    if (outcome.isError && !reported.has(outcome) && message !== 'Speech cancelled.' && !stopped && !signal?.aborted && parent(ctx)) ctx.ui.notify(message, 'error');
   }
   pi.on('agent_settled', async (event, ctx) => {
     if (stopped || event.aborted || !parent(ctx)) return;
@@ -118,7 +154,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     } catch { /* Model failure is silent; never fall back to unsummarized speech. */ }
     finally { summaries.delete(controller); controller.abort(); }
   });
-  pi.on('session_shutdown', () => { stopped = true; for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); stop(); });
+  pi.on('session_shutdown', () => { stopped = true; for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); stop(); qwen.dispose(); });
   pi.registerTool({
     name: 'speak', label: 'Speak', description: 'Speak a short message in the parent interactive TUI after local voice installation.',
     parameters: { type: 'object', properties: { text: { type: 'string', maxLength: 4000 } }, required: ['text'], additionalProperties: false },

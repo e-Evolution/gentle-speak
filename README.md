@@ -50,7 +50,11 @@ For `summary` mode choose `/speak` → **Summary model** and select an available
 
 Default shortcuts: `ctrl+alt+v` speaks the last assistant message, `ctrl+alt+.` stops playback, and `ctrl+alt+m` toggles automatic speech. Rebind under `/speak` → **Key: speakLast**, **Key: stop**, or **Key: toggle**; run `/reload` to register new keys. Pi and Gentle Shell reserved keys and duplicate bindings are rejected. `/reload` and session shutdown stop playback and drop queued speech. Settings live at `~/.gentle-speak/speak-settings.json`; missing or malformed settings mean off. RPC, print, JSON, and delegated child sessions never speak.
 
-Qwen3-TTS voices (`qwen-suave`, `qwen-brisa`, `qwen-coqueta`, `qwen-maestra`, `qwen-intima`, `qwen-serena`, `qwen-viva`) clone a local reference WAV through mlx-audio. Their WAVs are not in this repository: a sha256-verified installer copies them to `~/.gentle-speak/voices/qwen3/` and refuses to overwrite a different file. Piper `es_MX` stays the default. Selecting them in `/speak` arrives with the synth worker.
+Qwen3-TTS voices (`qwen-suave`, `qwen-brisa`, `qwen-coqueta`, `qwen-maestra`, `qwen-intima`, `qwen-serena`, `qwen-viva`) clone a local reference WAV through mlx-audio. Their WAVs are not in this repository: a sha256-verified installer copies them to `~/.gentle-speak/voices/qwen3/` and refuses to overwrite a different file. Piper `es_MX` stays the default.
+
+#### Qwen voices
+
+Requires macOS on Apple Silicon and a Python with `mlx-audio` (and its dependencies, e.g. `packaging`) importable **under `python -I`** (isolated mode ignores user site-packages), plus the cached model `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16` (the worker runs with `HF_HUB_OFFLINE=1` and never downloads). If a Qwen voice is selected but not installed, speech is refused with an error naming this section and nothing is started. When installed, the first utterance starts `scripts/speak-qwen-worker.py` lazily (the model loads once, a few seconds), long text is synthesized in sentence groups so playback starts early, and the stop key, `/reload` and shutdown kill the worker. Speeds other than 1 need `ffmpeg` on `PATH` (pitch-preserving); without it Qwen voices play at native speed and say so once. Audio still uses the node-cpal runtime installed by `/speak`. Choosing a Qwen voice from the `/speak` menu arrives with the next change; until then set `voice` in `speak-settings.json`.
 
 ## Platform, licenses and verification
 

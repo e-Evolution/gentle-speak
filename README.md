@@ -62,6 +62,13 @@ Requires macOS on Apple Silicon and a Python with `mlx-audio` (and its dependenc
 
 Off by default. `/speak` → `Toggle speak copied selection` speaks, with the current voice, text you select and copy in this Gentle Shell (copy-on-release). It needs macOS and the fullscreen TUI; otherwise it reports "unavailable in this terminal mode" and does not start. Privacy: only copies made in this Gentle Shell are spoken (the terminal app must be frontmost and the text must be the visible selection); concealed, transient and password-manager copies are skipped; clipboard text is never stored or logged.
 
+#### Several sessions (Herdr panes, several harnesses)
+
+- **One voice.** Every playback, Piper or Qwen, takes a lock under `~/.gentle-speak/` for its whole duration, so sessions take turns and never talk over each other. A lock whose owner process died is reclaimed. Your stop key only stops your own session.
+- **Focus with deferral.** A session speaks at once when its pane is focused: the terminal app is frontmost and Herdr (`HERDR_ENV=1`, `herdr pane get $HERDR_PANE_ID`) reports the pane focused. When it is not, only the latest result of that session is kept and spoken once you focus the pane (checked about once a second, only while something is pending). It is dropped on toggle off, stop, `/reload` and shutdown. This applies to automatic speech and the `speak` tool; the speak-last key and copied-selection speech are your own action, so they speak immediately (still one voice at a time).
+- **Focus unknown.** Outside Herdr, on a system other than macOS, when the terminal cannot be identified, or when the Herdr CLI fails or times out, speech takes its turn and starts with the project name: `gentle-theme: …`.
+- `HERDR_BIN_PATH` is honored only when it is an absolute path ending in `herdr`; otherwise `herdr` from `PATH` is used.
+
 ## Platform, licenses and verification
 
 Supported runtime targets: macOS x64/arm64, Linux x64/arm64 (glibc ≥2.34 for native binaries), Windows x64; other platforms are unsupported. The extension installs its own sherpa-onnx-node / node-cpal runtime, independently of Gentle Shell dictation. Converted voice bundles come from [sherpa-onnx TTS model releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models); retain each installed model's `MODEL_CARD` and check dataset/voice rights before redistribution. The es_MX Claude model card identifies Apache-2.0 dataset attribution; es_ES Davefx identifies CC0. Repository code is [MIT](LICENSE); sherpa-onnx-node/platform binaries are Apache-2.0, bundled onnxruntime MIT, and node-cpal ISC with Rust dependencies. Runtime tarballs do not contain all bundled LICENSE/NOTICE texts; resolve notices before distributing a combined runtime.

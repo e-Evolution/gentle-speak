@@ -2,8 +2,8 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 
 /**
- * S9 focus probe, latest-only deferral and project prefix. Pure library: nothing here is wired into the
- * extension yet. The frontmost-terminal check is injected (the S8 bundle-id idea lives in speak-clipboard).
+ * S9 focus probe, frontmost-app reader, latest-only deferral and project prefix. The frontmost-terminal check
+ * is injected (the terminal bundle id lives in speak-clipboard).
  */
 export type FocusState = 'focused' | 'unfocused' | 'unknown';
 
@@ -21,6 +21,22 @@ export interface ProbeHerdrOptions {
   timeoutMs: number;
 }
 
+/** An env-provided binary is executed only when it is an absolute path whose basename is `herdr`. */
+const herdrBinary = (value: string | undefined): string =>
+  value && path.isAbsolute(value) && path.basename(value) === 'herdr' && path.normalize(value) === value ? value : 'herdr';
+
+/** Bundle id of the frontmost macOS app through JXA (no System Events permission); undefined when unreadable. */
+export const FRONTMOST_SCRIPT = "ObjC.import('AppKit'); $.NSWorkspace.sharedWorkspace.frontmostApplication.bundleIdentifier.js";
+export async function readFrontmostBundleId(opts: { exec?: HerdrExec; timeoutMs: number }): Promise<string | undefined> {
+  const exec = opts.exec ?? defaultHerdrExec;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('frontmost read timed out')), opts.timeoutMs); timer.unref?.(); });
+    const out = (await Promise.race([exec('osascript', ['-l', 'JavaScript', '-e', FRONTMOST_SCRIPT], { timeoutMs: opts.timeoutMs }), timeout])).trim();
+    return /^[\w.-]{1,255}$/.test(out) ? out : undefined;
+  } catch { return undefined; } finally { if (timer) clearTimeout(timer); }
+}
+
 /** `herdr pane get $HERDR_PANE_ID` → `result.pane.focused`. Anything unexpected is `unknown`. */
 export async function probeHerdrFocus(opts: ProbeHerdrOptions): Promise<FocusState> {
   const { env, timeoutMs } = opts;
@@ -32,7 +48,7 @@ export async function probeHerdrFocus(opts: ProbeHerdrOptions): Promise<FocusSta
       timer = setTimeout(() => reject(new Error('herdr probe timed out')), timeoutMs);
       timer.unref?.();
     });
-    const out = await Promise.race([exec(env.HERDR_BIN_PATH || 'herdr', ['pane', 'get', env.HERDR_PANE_ID], { timeoutMs }), timeout]);
+    const out = await Promise.race([exec(herdrBinary(env.HERDR_BIN_PATH), ['pane', 'get', env.HERDR_PANE_ID], { timeoutMs }), timeout]);
     const focused = (JSON.parse(out) as any)?.result?.pane?.focused;
     return focused === true ? 'focused' : focused === false ? 'unfocused' : 'unknown';
   } catch {
@@ -44,18 +60,19 @@ export async function probeHerdrFocus(opts: ProbeHerdrOptions): Promise<FocusSta
 
 export interface FocusCheckOptions {
   probeHerdr: () => Promise<FocusState>;
-  isTerminalFrontmost: () => Promise<boolean>;
+  /** undefined (or a throw) means the terminal or the frontmost app cannot be identified. */
+  isTerminalFrontmost: () => Promise<boolean | undefined>;
 }
 
-/** Focused only when the terminal is frontmost and Herdr says focused; unknown follows an unknown Herdr. */
+/** Focused only when the terminal is frontmost and Herdr says focused; unknown follows an unknown Herdr or an unidentifiable frontmost app. */
 export function createFocusCheck(opts: FocusCheckOptions): () => Promise<FocusState> {
   return async () => {
     const herdr = await opts.probeHerdr();
     if (herdr === 'unknown') return 'unknown';
     if (herdr === 'unfocused') return 'unfocused';
-    let front = false;
-    try { front = await opts.isTerminalFrontmost(); } catch { front = false; }
-    return front ? 'focused' : 'unfocused';
+    let front: boolean | undefined;
+    try { front = await opts.isTerminalFrontmost(); } catch { front = undefined; }
+    return front === undefined ? 'unknown' : front ? 'focused' : 'unfocused';
   };
 }
 

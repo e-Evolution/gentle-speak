@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix } from '../lib/speak-focus.ts';
+import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix, readFrontmostBundleId } from '../lib/speak-focus.ts';
 
 const herdrEnv = { HERDR_ENV: '1', HERDR_PANE_ID: 'w4:p1' };
 const reply = (focused: unknown) => async () => JSON.stringify({ result: { pane: { focused, id: 'w4:p1' } } });
@@ -18,6 +18,28 @@ test('probe: HERDR_BIN_PATH replaces the herdr binary', async () => {
   let file = '';
   await probeHerdrFocus({ env: { ...herdrEnv, HERDR_BIN_PATH: '/opt/herdr' }, exec: async f => { file = f; return reply(true)(); }, timeoutMs: 1 });
   assert.equal(file, '/opt/herdr');
+});
+
+test('probe: HERDR_BIN_PATH is executed only when absolute with basename herdr; otherwise PATH herdr', async () => {
+  const run = async (bin: string | undefined) => { let file = ''; await probeHerdrFocus({ env: { ...herdrEnv, ...(bin === undefined ? {} : { HERDR_BIN_PATH: bin }) }, exec: async f => { file = f; return reply(true)(); }, timeoutMs: 1 }); return file; };
+  assert.equal(await run('/usr/local/bin/herdr'), '/usr/local/bin/herdr');
+  for (const bad of ['/tmp/evil', '/opt/herdr/../sh', 'herdr-x', './herdr', 'bin/herdr', '/opt/notherdr', '']) assert.equal(await run(bad), 'herdr', bad);
+  assert.equal(await run(undefined), 'herdr');
+});
+
+test('readFrontmostBundleId runs one JXA osascript without System Events and trims the bundle id', async () => {
+  const calls: any[] = [];
+  const exec = async (file: string, args: string[], opts: any) => { calls.push({ file, args, opts }); return 'com.github.wez.wezterm\n'; };
+  assert.equal(await readFrontmostBundleId({ exec, timeoutMs: 900 }), 'com.github.wez.wezterm');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].file, 'osascript');
+  assert.deepEqual(calls[0].args.slice(0, 2), ['-l', 'JavaScript']);
+  assert.match(calls[0].args.join(' '), /NSWorkspace\.sharedWorkspace\.frontmostApplication\.bundleIdentifier/);
+  assert.doesNotMatch(calls[0].args.join(' '), /System Events/);
+  assert.deepEqual(calls[0].opts, { timeoutMs: 900 });
+  assert.equal(await readFrontmostBundleId({ exec: async () => '\n', timeoutMs: 1 }), undefined);
+  assert.equal(await readFrontmostBundleId({ exec: async () => { throw new Error('x'); }, timeoutMs: 1 }), undefined);
+  assert.equal(await readFrontmostBundleId({ exec: () => new Promise(() => {}), timeoutMs: 20 }), undefined);
 });
 
 test('probe: unknown without Herdr env, without pane id, and never execs', async () => {
@@ -49,7 +71,9 @@ test('focus check: focused only when terminal frontmost and Herdr focused; unkno
   assert.equal(await mk('unfocused', true), 'unfocused');
   assert.equal(await mk('unknown', true), 'unknown');
   assert.equal(await mk('unknown', false), 'unknown');
-  assert.equal(await mk('focused', new Error('x')), 'unfocused');
+  assert.equal(await mk('focused', new Error('x')), 'unknown');
+  assert.equal(await mk('focused', undefined as any), 'unknown');
+  assert.equal(await mk('unfocused', undefined as any), 'unfocused');
 });
 
 test('projectPrefix uses the cwd basename', () => {

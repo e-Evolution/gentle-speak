@@ -36,7 +36,7 @@ function harness(opts: { status?: any; voiceId?: string; manifest?: boolean; spa
     spawn: () => { const a = fakeChild(); if (opts.voiceId && opts.voiceId.startsWith('es_')) piperSpawns.push('piper'); audios.push(a); return a.child; },
     spawnQwen: (python: string, script: string) => { if (failures > 0) { failures--; throw new Error('spawn failed'); } const p = Object.assign(fakeChild(), { python, script }); pythons.push(p); return p.child; },
   };
-  gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut: (k: string, s: any) => shortcuts.set(k, s), registerTool: (t: any) => tools.set(t.name, t) } as any, home, dependencies as any);
+  gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut: (k: string, s: any) => shortcuts.set(k, s), registerTool: (t: any) => tools.set(t.name, t) } as any, home, { focusCheck: async () => 'focused', ...dependencies } as any);
   const speak = (text = 'Hola mundo.') => tools.get('speak').execute('id', { text }, undefined, undefined, ctx);
   return { home, events, shortcuts, tools, notifications, pythons, audios, ctx, speak, piperSpawns, close: () => rmSync(home, { recursive: true, force: true }) };
 }
@@ -426,4 +426,29 @@ test('the audio worker error cause reaches the user: `Audio playback failed: <ca
       assert.deepEqual(errorNotes(h), [[text, 'error']], String(cause).slice(0, 20));
     } finally { h.close(); }
   }
+});
+
+test('S9: a Qwen utterance holds the single-voice lock for its whole duration and releases it on done and on stop', async () => {
+  const h = harness();
+  try {
+    const locked = () => existsSync(join(h.home, 'voice.lock'));
+    const run = h.speak();
+    await until(() => h.pythons.length === 1);
+    assert.equal(locked(), true, 'held before synthesis starts');
+    const py = h.pythons[0];
+    py.emit({ schema: QS, type: 'ready' }); await until(() => py.writes.length === 1);
+    const wav = join(outDirOf(py), 'chunk-1-0.wav'); writeFileSync(wav, 'RIFF');
+    py.emit({ schema: QS, type: 'chunk', id: 1, seq: 0, wav, seconds: 1 });
+    py.emit({ schema: QS, type: 'done', id: 1 });
+    await until(() => h.audios.length === 1 && h.audios[0].writes.length === 1);
+    assert.equal(locked(), true, 'still held while playing');
+    h.audios[0].emit({ schema: AS, type: 'done', id: h.audios[0].writes[0].id });
+    assert.equal((await run).isError, undefined);
+    await until(() => !locked());
+    const again = h.speak();
+    await until(() => h.pythons.length >= 1 && locked());
+    await h.shortcuts.get(DEFAULT_SPEAK_SETTINGS.shortcuts.stop).handler(h.ctx);
+    assert.equal((await again).content[0].text, 'Speech cancelled.');
+    await until(() => !locked());
+  } finally { h.events.get('session_shutdown')!({}, h.ctx); h.close(); }
 });

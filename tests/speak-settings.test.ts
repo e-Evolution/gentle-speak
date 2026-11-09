@@ -22,6 +22,19 @@ test('missing and malformed settings remain off with default mode and Mexican Sp
   assert.equal(DEFAULT_SPEAK_SETTINGS.voice, 'es_MX');
 }));
 
+test('legacy settings without summaryModel migrate to no model; malformed model fails closed', () => withHome(home => {
+  const legacy = { schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS };
+  const path = join(home, 'speak-settings.json');
+  writeFileSync(path, JSON.stringify(legacy));
+  assert.deepEqual(readSpeakSettings(home), { ...DEFAULT_SPEAK_SETTINGS, summaryModel: null });
+  for (const invalid of [{ provider: '', id: 'x' }, { provider: 'a', id: '../bad' }, { provider: 'a', id: 'x', secret: 'no' }]) {
+    assert.throws(() => writeSpeakSettings({ ...DEFAULT_SPEAK_SETTINGS, summaryModel: invalid } as any, home), /Invalid speak settings/);
+    assert.deepEqual(readSpeakSettings(home), { ...DEFAULT_SPEAK_SETTINGS, summaryModel: null });
+  }
+  writeSpeakSettings({ ...DEFAULT_SPEAK_SETTINGS, summaryModel: { provider: 'openai', id: 'gpt-5.2' } }, home);
+  assert.deepEqual(readSpeakSettings(home).summaryModel, { provider: 'openai', id: 'gpt-5.2' });
+}));
+
 test('catalog contains Spanish locales and permits additional languages without changing settings schema', () => {
   assert.equal(VOICE_CATALOG.es_MX.language, 'es');
   assert.equal(VOICE_CATALOG.es_ES.language, 'es');

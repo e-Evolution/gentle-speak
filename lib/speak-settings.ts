@@ -15,6 +15,7 @@ export interface SpeakSettings {
   mode: SpeakMode;
   voice: string;
   speed: number;
+  summaryModel: { provider: string; id: string } | null;
   shortcuts: { speakLast: string; stop: string; toggle: string };
 }
 export const DEFAULT_SPEAK_SETTINGS: SpeakSettings = {
@@ -22,6 +23,7 @@ export const DEFAULT_SPEAK_SETTINGS: SpeakSettings = {
   mode: 'questions-and-results',
   voice: 'es_MX',
   speed: 1,
+  summaryModel: null,
   shortcuts: { speakLast: 'ctrl+alt+v', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m' },
 };
 
@@ -33,14 +35,16 @@ const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
 function validate(value: unknown): SpeakSettings | undefined {
-  if (!record(value) || !hasKeys(value, ['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts']) || value.schema !== SPEAK_SETTINGS_SCHEMA) return undefined;
+  if (!record(value) || ![6, 7].includes(Object.keys(value).length) || !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts'].every(key => Object.hasOwn(value, key)) || Object.keys(value).some(key => !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts', 'summaryModel'].includes(key)) || value.schema !== SPEAK_SETTINGS_SCHEMA) return undefined;
+  const model = value.summaryModel ?? null;
+  if (model !== null && (!record(model) || !hasKeys(model, ['provider', 'id']) || ![model.provider, model.id].every(part => typeof part === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(part as string)))) return undefined;
   if (typeof value.enabled !== 'boolean' || !['all', 'questions-and-results', 'summary'].includes(value.mode as string)) return undefined;
   if (typeof value.voice !== 'string' || !Object.hasOwn(VOICE_CATALOG, value.voice)) return undefined;
   if (typeof value.speed !== 'number' || !Number.isFinite(value.speed) || value.speed < 0.5 || value.speed > 2) return undefined;
   if (!record(value.shortcuts) || !hasKeys(value.shortcuts, keys)) return undefined;
   const shortcuts = keys.map(key => value.shortcuts[key]);
   if (shortcuts.some(key => typeof key !== 'string' || !/^(?:(?:ctrl|alt|shift)\+)+(?:[a-z0-9]|[.,;\/])$/.test(key) || reserved.has(key)) || new Set(shortcuts).size !== shortcuts.length) return undefined;
-  return { enabled: value.enabled, mode: value.mode as SpeakMode, voice: value.voice, speed: value.speed,
+  return { enabled: value.enabled, mode: value.mode as SpeakMode, voice: value.voice, speed: value.speed, summaryModel: model as SpeakSettings['summaryModel'],
     shortcuts: { speakLast: shortcuts[0] as string, stop: shortcuts[1] as string, toggle: shortcuts[2] as string } };
 }
 

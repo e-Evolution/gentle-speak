@@ -7,8 +7,13 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 export const QWEN_SCHEMA = 'gentle.speak.qwen/v1';
 const AUDIO_SCHEMA = 'gentle.speak/v1';
 const MAX_LINE = 16384;
-const READY_TIMEOUT_MS = 180_000;
-const UTTERANCE_TIMEOUT_MS = 300_000;
+/** Bounds model readiness: from spawning the synth worker until it reports `ready`. */
+export const QWEN_READY_TIMEOUT_MS = 180_000;
+/**
+ * Bounds the wait for the next synthesis event (`chunk`, `warning`, or `done`) after `synth` was sent; every event re-arms it and
+ * `done` disarms it. Playback is deliberately outside this bound: it is limited only by the audio worker's own per-chunk caps.
+ */
+export const QWEN_SYNTH_IDLE_TIMEOUT_MS = 120_000;
 
 export type QwenChild = Pick<ChildProcessWithoutNullStreams, 'stdin' | 'stdout' | 'stderr' | 'on' | 'kill'>;
 export interface QwenSpeechDeps {
@@ -98,12 +103,14 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
     return new Promise<QwenOutcome>(resolve => {
       const pending = new Map<number, string>();
       let settled = false, synthDone = false, nextSeq = 0;
-      let readyTimer: ReturnType<typeof setTimeout> | undefined;
-      const worker = python ?? startPython(request.python);
+      let readyTimer: ReturnType<typeof setTimeout> | undefined, idleTimer: ReturnType<typeof setTimeout> | undefined;
+      let worker: NonNullable<typeof python>;
+      try { worker = python ?? startPython(request.python); }
+      catch { busy = false; removeTmp(); resolve({ ok: false, message: 'Qwen worker could not start.' }); return; }
       const finish = (outcome: QwenOutcome) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        clearTimeout(idleTimer);
         clearTimeout(readyTimer);
         worker.handler = undefined;
         if (cancelCurrent === cancel) cancelCurrent = undefined;
@@ -116,7 +123,8 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
       };
       const cancel = () => finish({ ok: false, message: 'Speech cancelled.', cancelled: true });
       cancelCurrent = cancel;
-      const timer = setTimeout(() => finish({ ok: false, message: 'Qwen worker timed out.' }), UTTERANCE_TIMEOUT_MS);
+      const disarmIdle = () => { clearTimeout(idleTimer); idleTimer = undefined; };
+      const armIdle = () => { disarmIdle(); idleTimer = setTimeout(() => finish({ ok: false, message: 'Qwen worker timed out.' }), QWEN_SYNTH_IDLE_TIMEOUT_MS); };
       const maybeDone = () => { if (synthDone && pending.size === 0) finish({ ok: true }); };
 
       const ensureAudio = () => {
@@ -144,6 +152,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
         catch { finish({ ok: false, message: 'Audio worker input failed.' }); }
       };
       const sendSynth = () => {
+        armIdle();
         try {
           worker.child.stdin.write(JSON.stringify({ schema: QWEN_SCHEMA, type: 'synth', id, text: request.text, ref: request.ref, refText: request.refText, outDir: dir, speed: request.speed }) + '\n');
         } catch { finish({ ok: false, message: 'Qwen worker input failed.' }); }
@@ -152,13 +161,13 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
         if (settled) return;
         switch (message.type) {
           case 'ready': sendSynth(); break;
-          case 'warning': if (typeof message.message === 'string') request.onWarning?.(message.message.slice(0, 200)); break;
+          case 'warning': armIdle(); if (typeof message.message === 'string') request.onWarning?.(message.message.slice(0, 200)); break;
           case 'chunk':
             if (message.id !== id || message.seq !== nextSeq || typeof message.wav !== 'string' || !isAbsolute(message.wav) || dirname(message.wav) !== dir) { finish({ ok: false, message: 'Invalid Qwen worker response.' }); break; }
-            nextSeq++; play(message.wav); break;
+            nextSeq++; armIdle(); play(message.wav); break;
           case 'done':
             if (message.id !== id) { finish({ ok: false, message: 'Invalid Qwen worker response.' }); break; }
-            synthDone = true; maybeDone(); break;
+            synthDone = true; disarmIdle(); maybeDone(); break;
           case 'error': finish({ ok: false, message: message.id === null || message.id === id ? 'Qwen synthesis failed. Check that mlx-audio and the model are installed (see README, "Qwen voices").' : 'Invalid Qwen worker response.' }); break;
           case 'exit': finish({ ok: false, message: 'Qwen worker exited before speech finished.' }); break;
           default: finish({ ok: false, message: 'Invalid Qwen worker response.' });
@@ -167,7 +176,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
       worker.handler = handle;
       if (worker.ready) sendSynth();
       else {
-        readyTimer = setTimeout(() => finish({ ok: false, message: 'Qwen worker did not become ready.' }), READY_TIMEOUT_MS);
+        readyTimer = setTimeout(() => finish({ ok: false, message: 'Qwen worker did not become ready.' }), QWEN_READY_TIMEOUT_MS);
         worker.handler = message => { if (message.type === 'ready') clearTimeout(readyTimer); handle(message); };
       }
     });

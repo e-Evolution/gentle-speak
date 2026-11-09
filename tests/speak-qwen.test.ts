@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readdirSync, mkdtempSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA } from '../lib/speak-settings.ts';
@@ -17,13 +17,14 @@ function fakeChild() {
   const child: any = Object.assign(new EventEmitter(), { stdin: { write: (line: string) => { writes.push(JSON.parse(line)); return true; } }, stdout: new EventEmitter(), stderr: new EventEmitter(), killed: 0, kill() { child.killed++; return true; } });
   return { child, writes, emit: (m: object) => child.stdout.emit('data', JSON.stringify(m) + '\n') };
 }
-function harness(opts: { status?: any; voiceId?: string; manifest?: boolean } = {}) {
+function harness(opts: { status?: any; voiceId?: string; manifest?: boolean; spawnFailures?: number } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'speak-qwen-ext-'));
   const events = new Map<string, Function>(), shortcuts = new Map<string, any>(), tools = new Map<string, any>();
   const notifications: Array<[string, string]> = [];
   const pythons: Array<ReturnType<typeof fakeChild> & { python: string; script: string }> = [];
   const audios: Array<ReturnType<typeof fakeChild>> = [];
   const piperSpawns: string[] = [];
+  let failures = opts.spawnFailures ?? 0;
   mkdirSync(join(home, 'voices', 'qwen3'), { recursive: true });
   if (opts.manifest !== false) writeFileSync(join(home, 'voices', 'qwen3', 'manifest.json'), JSON.stringify({ python: '/fake/python3' }));
   writeFileSync(join(home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, voice: opts.voiceId ?? 'qwen-intima', speed: 1.25 }));
@@ -33,7 +34,7 @@ function harness(opts: { status?: any; voiceId?: string; manifest?: boolean } = 
     runtimeStatus: async () => ({ state: 'installed', path: '/verified/runtime' }),
     qwenStatus: async () => opts.status ?? { manifest: 'valid', voices: { 'qwen-intima': 'installed' } },
     spawn: () => { const a = fakeChild(); if (opts.voiceId && opts.voiceId.startsWith('es_')) piperSpawns.push('piper'); audios.push(a); return a.child; },
-    spawnQwen: (python: string, script: string) => { const p = Object.assign(fakeChild(), { python, script }); pythons.push(p); return p.child; },
+    spawnQwen: (python: string, script: string) => { if (failures > 0) { failures--; throw new Error('spawn failed'); } const p = Object.assign(fakeChild(), { python, script }); pythons.push(p); return p.child; },
   };
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut: (k: string, s: any) => shortcuts.set(k, s), registerTool: (t: any) => tools.set(t.name, t) } as any, home, dependencies as any);
   const speak = (text = 'Hola mundo.') => tools.get('speak').execute('id', { text }, undefined, undefined, ctx);
@@ -182,5 +183,186 @@ test('Qwen speech keeps the interactive-parent guard: non-TUI and child sessions
       assert.match(result.content[0].text, /interactive parent TUI/);
     }
     assert.equal(h.pythons.length + h.audios.length + h.notifications.length, 0);
+  } finally { h.close(); }
+});
+
+// ---- timeouts and failure paths (fake clock; no real python) ----
+const READY_MS = 180_000, IDLE_MS = 120_000;
+const withClock = async (body: () => Promise<void>) => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try { await body(); } finally { mock.timers.reset(); }
+};
+const ready = async (h: ReturnType<typeof harness>, n = 0) => { await until(() => h.pythons.length > n); const py = h.pythons[n]; py.emit({ schema: QS, type: 'ready' }); await until(() => py.writes.length >= 1); return py; };
+/** Runs one automatic utterance the way agent_settled does, so failures reach the user as notifications. */
+const auto = (h: ReturnType<typeof harness>) => {
+  writeFileSync(join(h.home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'all', voice: 'qwen-intima', speed: 1.25 }));
+  return h.events.get('agent_settled')!({ aborted: false }, h.ctx) as Promise<void>;
+};
+const errorNotes = (h: ReturnType<typeof harness>) => h.notifications.filter(n => n[1] === 'error');
+
+test('playback time is never counted against synthesis: long playback after fast synthesis completes without a timeout', async () => {
+  await withClock(async () => {
+    const h = harness();
+    try {
+      const run = h.speak();
+      const py = await ready(h);
+      const dir = outDirOf(py);
+      for (let i = 0; i < 3; i++) py.emit({ schema: QS, type: 'chunk', id: 1, seq: i, wav: join(dir, `chunk-1-${i}.wav`), seconds: 200 });
+      py.emit({ schema: QS, type: 'done', id: 1 });
+      await until(() => h.audios[0]?.writes.length === 3);
+      mock.timers.tick(600_000); // 600 s of legitimate playback, far past the old 300 s utterance timeout
+      assert.equal(py.child.killed, 0);
+      for (const id of [1, 2, 3]) h.audios[0].emit({ schema: AS, type: 'done', id });
+      const result = await run;
+      assert.equal(result.isError, undefined);
+      assert.equal(result.content[0].text, 'Speech completed.');
+      assert.equal(py.child.killed, 0, 'the synth worker stays warm');
+    } finally { h.close(); }
+  });
+});
+
+const OK_TEXT = 'Speech completed.';
+/** Every failure must leave no `play` traffic, no chunk files, and no stuck state: the next utterance respawns cleanly. */
+async function assertRecovers(h: ReturnType<typeof harness>, pythonsBefore: number, audiosBefore: number) {
+  const again = h.speak('Otra vez.');
+  const py = await ready(h, pythonsBefore);
+  assert.equal(h.pythons.length, pythonsBefore + 1, 'a fresh synth worker was spawned');
+  assert.equal(py.writes[0].id, 2);
+  const wav = join(outDirOf(py), 'chunk-2-0.wav'); writeFileSync(wav, 'RIFF');
+  py.emit({ schema: QS, type: 'chunk', id: 2, seq: 0, wav, seconds: 1 });
+  py.emit({ schema: QS, type: 'done', id: 2 });
+  await until(() => h.audios.length === audiosBefore + 1 && h.audios[audiosBefore].writes.length === 1);
+  h.audios[audiosBefore].emit({ schema: AS, type: 'done', id: h.audios[audiosBefore].writes[0].id });
+  const result = await again;
+  assert.deepEqual([result.isError, result.content[0].text], [undefined, OK_TEXT]);
+  assert.equal(existsSync(wav), false);
+}
+/** Starts an utterance and drives it to "one chunk is playing", returning what the failure assertions need. */
+async function playing(h: ReturnType<typeof harness>) {
+  const run = auto(h);
+  const py = await ready(h);
+  const dir = outDirOf(py), wav = join(dir, 'chunk-1-0.wav'); writeFileSync(wav, 'RIFF');
+  py.emit({ schema: QS, type: 'chunk', id: 1, seq: 0, wav, seconds: 1 });
+  await until(() => h.audios[0]?.writes.length === 1);
+  return { run, py, dir, wav, audio: h.audios[0] };
+}
+const lateTrafficIgnored = (h: ReturnType<typeof harness>, py: any, dir: string, plays: number) => {
+  py.emit({ schema: QS, type: 'chunk', id: 1, seq: 1, wav: join(dir, 'chunk-1-1.wav'), seconds: 1 });
+  py.emit({ schema: QS, type: 'done', id: 1 });
+  assert.equal(h.audios.reduce((n, a) => n + a.writes.length, 0), plays, 'no further play writes after the failure');
+};
+
+test('failure: the python spawn fails -> error notification, no workers, no temp dir leaked, next utterance respawns', async () => {
+  const h = harness({ spawnFailures: 1 });
+  const leftovers = () => readdirSync(tmpdir()).filter(n => n.startsWith('gentle-speak-')).length;
+  const before = leftovers();
+  try {
+    await auto(h);
+    assert.deepEqual(h.notifications, [['Qwen worker could not start.', 'error']]);
+    assert.equal(h.pythons.length + h.audios.length, 0, 'no child was created');
+    assert.equal(leftovers(), before, 'the private temp dir was removed');
+    h.notifications.length = 0;
+    await assertRecovers(h, 0, 0);
+    assert.deepEqual(h.notifications, []);
+    h.events.get('session_shutdown')!({}, h.ctx);
+  } finally { h.close(); }
+});
+
+test('failure: the worker emits error for the synth -> notified, python and audio killed, chunk removed, nothing more played, respawns', async () => {
+  await withClock(async () => {
+    const h = harness();
+    try {
+      const { run, py, dir, wav, audio } = await playing(h);
+      py.emit({ schema: QS, type: 'error', id: 1, code: 'synth' });
+      await run;
+      assert.deepEqual(errorNotes(h), [['Qwen synthesis failed. Check that mlx-audio and the model are installed (see README, "Qwen voices").', 'error']]);
+      assert.equal(py.child.killed, 1);
+      assert.equal(audio.child.killed, 1);
+      assert.equal(existsSync(wav), false);
+      lateTrafficIgnored(h, py, dir, 1);
+      await assertRecovers(h, 1, 1);
+      assert.equal(existsSync(dir), false, 'the previous utterance directory is gone once the next one starts');
+      h.events.get('session_shutdown')!({}, h.ctx);
+    } finally { h.close(); }
+  });
+});
+
+test('failure: the worker crashes mid-synthesis -> notified, exited python is not killed again, audio killed, chunk removed, respawns', async () => {
+  const h = harness();
+  try {
+    const { run, py, dir, wav, audio } = await playing(h);
+    py.child.emit('exit', 1, null);
+    await run;
+    assert.deepEqual(errorNotes(h), [['Qwen worker exited before speech finished.', 'error']]);
+    assert.equal(py.child.killed, 0, 'an already-exited worker is not killed');
+    assert.equal(audio.child.killed, 1);
+    assert.equal(existsSync(wav), false);
+    lateTrafficIgnored(h, py, dir, 1);
+    await assertRecovers(h, 1, 1);
+    assert.equal(existsSync(dir), false);
+    h.events.get('session_shutdown')!({}, h.ctx);
+  } finally { h.close(); }
+});
+
+test('failure: ready never arrives -> readiness timeout, python killed, no synth and no audio, respawns', async () => {
+  await withClock(async () => {
+    const h = harness();
+    try {
+      const run = auto(h);
+      await until(() => h.pythons.length === 1);
+      const py = h.pythons[0];
+      mock.timers.tick(READY_MS - 1);
+      assert.deepEqual(h.notifications, []);
+      mock.timers.tick(1);
+      await run;
+      assert.deepEqual(errorNotes(h), [['Qwen worker did not become ready.', 'error']]);
+      assert.equal(py.child.killed, 1);
+      assert.equal(py.writes.length, 0, 'synth is never sent');
+      assert.equal(h.audios.length, 0);
+      py.emit({ schema: QS, type: 'ready' });
+      assert.equal(py.writes.length, 0, 'a late ready from the dead worker does nothing');
+      await assertRecovers(h, 1, 0);
+      h.events.get('session_shutdown')!({}, h.ctx);
+    } finally { h.close(); }
+  });
+});
+
+test('failure: no chunk within the progress timeout -> timed out, killed, chunk removed; every chunk re-arms the timer', async () => {
+  await withClock(async () => {
+    const h = harness();
+    try {
+      const { run, py, dir, wav, audio } = await playing(h);
+      mock.timers.tick(IDLE_MS - 1);
+      py.emit({ schema: QS, type: 'chunk', id: 1, seq: 1, wav: join(dir, 'chunk-1-1.wav'), seconds: 1 });
+      await until(() => audio.writes.length === 2);
+      mock.timers.tick(IDLE_MS - 1);
+      assert.deepEqual(h.notifications, [], 'a chunk reset the progress timer');
+      mock.timers.tick(1);
+      await run;
+      assert.deepEqual(errorNotes(h), [['Qwen worker timed out.', 'error']]);
+      assert.equal(py.child.killed, 1);
+      assert.equal(audio.child.killed, 1);
+      assert.equal(existsSync(wav), false);
+      lateTrafficIgnored(h, py, dir, 2);
+      await assertRecovers(h, 1, 1);
+      h.events.get('session_shutdown')!({}, h.ctx);
+    } finally { h.close(); }
+  });
+});
+
+test('failure: the audio worker reports a playback error -> notified, both children killed, chunk removed, nothing more played, respawns', async () => {
+  const h = harness();
+  try {
+    const { run, py, dir, wav, audio } = await playing(h);
+    audio.emit({ schema: AS, type: 'error', id: 1, code: 'playback' });
+    await run;
+    assert.deepEqual(errorNotes(h), [['Audio playback failed.', 'error']]);
+    assert.equal(py.child.killed, 1);
+    assert.equal(audio.child.killed, 1);
+    assert.equal(existsSync(wav), false);
+    lateTrafficIgnored(h, py, dir, 1);
+    await assertRecovers(h, 1, 1);
+    assert.equal(h.audios.length, 2, 'the audio worker is respawned too');
+    h.events.get('session_shutdown')!({}, h.ctx);
   } finally { h.close(); }
 });

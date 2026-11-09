@@ -42,7 +42,7 @@ test('catalog contains Spanish locales and permits additional languages without 
 });
 
 test('validated settings persist atomically and reject invalid input without changing existing data', () => withHome(home => {
-  const settings = { ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'summary' as const, voice: 'es_ES', speed: 1.25, shortcuts: { speakLast: 'ctrl+alt+s', stop: 'ctrl+alt+x', toggle: 'ctrl+alt+t' } };
+  const settings = { ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'summary' as const, voice: 'es_ES', speed: 1.25, shortcuts: { speakLast: 'ctrl+alt+s', stop: 'ctrl+alt+x', toggle: 'ctrl+alt+t', cycleVoice: 'ctrl+alt+b' } };
   const path = writeSpeakSettings(settings, home);
   assert.equal(path, join(home, 'speak-settings.json'));
   assert.deepEqual(readSpeakSettings(home), settings);

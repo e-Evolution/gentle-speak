@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added a catalog of seven Qwen3-TTS reference voices (`qwen-*`, model `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16`), a sha256-verified installer into `~/.gentle-speak/voices/qwen3/`, and a rebindable `cycleVoice` key (default `ctrl+alt+n`). Existing settings files stay valid; Piper `es_MX`/`es_ES` and the default voice are unchanged. Engine routing and menus follow separately.
+
 ## 0.1.0 - 2026-11-08 (local candidate)
 
 - Added opt-in Spanish speech for final questions and usable results, with `all` and model-assisted `summary` modes.

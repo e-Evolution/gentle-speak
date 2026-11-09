@@ -2,11 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-/** A locale-keyed catalog; adding a language does not change the persisted format. */
-export const VOICE_CATALOG: Record<string, { locale: string; language: string; label: string }> = {
-  es_MX: { locale: 'es_MX', language: 'es', label: 'Español (México)' },
-  es_ES: { locale: 'es_ES', language: 'es', label: 'Español (España)' },
-};
+import { VOICE_CATALOG } from './speak-voices.ts';
+
+export { VOICE_CATALOG };
 export const SPEAK_SETTINGS_SCHEMA = 'gentle-speak.settings/v1';
 export const SPEAK_SETTINGS_FILE = 'speak-settings.json';
 export type SpeakMode = 'all' | 'questions-and-results' | 'summary';
@@ -16,7 +14,7 @@ export interface SpeakSettings {
   voice: string;
   speed: number;
   summaryModel: { provider: string; id: string } | null;
-  shortcuts: { speakLast: string; stop: string; toggle: string };
+  shortcuts: { speakLast: string; stop: string; toggle: string; cycleVoice: string };
 }
 export const DEFAULT_SPEAK_SETTINGS: SpeakSettings = {
   enabled: false,
@@ -24,11 +22,11 @@ export const DEFAULT_SPEAK_SETTINGS: SpeakSettings = {
   voice: 'es_MX',
   speed: 1,
   summaryModel: null,
-  shortcuts: { speakLast: 'ctrl+alt+v', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m' },
+  shortcuts: { speakLast: 'ctrl+alt+v', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m', cycleVoice: 'ctrl+alt+n' },
 };
 
 const reserved = new Set(['ctrl+k', 'ctrl+p', 'alt+k', 'alt+a']);
-const keys = ['speakLast', 'stop', 'toggle'];
+const keys = ['speakLast', 'stop', 'toggle', 'cycleVoice'];
 const hasKeys = (value: Record<string, unknown>, expected: string[]) =>
   Object.keys(value).length === expected.length && expected.every(key => Object.hasOwn(value, key));
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -41,11 +39,12 @@ function validate(value: unknown): SpeakSettings | undefined {
   if (typeof value.enabled !== 'boolean' || !['all', 'questions-and-results', 'summary'].includes(value.mode as string)) return undefined;
   if (typeof value.voice !== 'string' || !Object.hasOwn(VOICE_CATALOG, value.voice)) return undefined;
   if (typeof value.speed !== 'number' || !Number.isFinite(value.speed) || value.speed < 0.5 || value.speed > 2) return undefined;
-  if (!record(value.shortcuts) || !hasKeys(value.shortcuts, keys)) return undefined;
-  const shortcuts = keys.map(key => value.shortcuts[key]);
+  // v1 files predate cycleVoice: accept them without it and fill in the default.
+  if (!record(value.shortcuts) || !(hasKeys(value.shortcuts, keys) || hasKeys(value.shortcuts, keys.slice(0, 3)))) return undefined;
+  const shortcuts = keys.map(key => value.shortcuts[key] ?? (key === 'cycleVoice' && !Object.hasOwn(value.shortcuts, key) ? DEFAULT_SPEAK_SETTINGS.shortcuts.cycleVoice : undefined));
   if (shortcuts.some(key => typeof key !== 'string' || !/^(?:(?:ctrl|alt|shift)\+)+(?:[a-z0-9]|[.,;\/])$/.test(key) || reserved.has(key)) || new Set(shortcuts).size !== shortcuts.length) return undefined;
   return { enabled: value.enabled, mode: value.mode as SpeakMode, voice: value.voice, speed: value.speed, summaryModel: model as SpeakSettings['summaryModel'],
-    shortcuts: { speakLast: shortcuts[0] as string, stop: shortcuts[1] as string, toggle: shortcuts[2] as string } };
+    shortcuts: { speakLast: shortcuts[0] as string, stop: shortcuts[1] as string, toggle: shortcuts[2] as string, cycleVoice: shortcuts[3] as string } };
 }
 
 export function parseSpeakSettingsFile(raw: string): SpeakSettings | undefined {

@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { readSpeakSettings, writeSpeakSettings } from '../lib/speak-settings.ts';
 import { filterSettledSpeech } from '../lib/speak-filter.ts';
 import { QWEN_PYTHON_FLAGS, VOICE_CATALOG } from '../lib/speak-voices.ts';
+import { SPEAK_STATUS_KEY, formatSpeakStatus, nextAvailableVoice, voiceMenuEntries } from '../lib/speak-status.ts';
 import { qwenVoicesStatus } from '../lib/speak-voices-install.ts';
 import { createQwenSpeech, readQwenPython, type QwenChild } from '../lib/speak-qwen.ts';
 import { SPEAK_MODELS, SPEAK_TARGETS, installSpeakModel, installSpeakRuntime, readSpeakModelStatus, readSpeakRuntimeStatus, type SpeakTarget } from '../lib/speak-install.ts';
@@ -43,6 +44,28 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   const installs = new Set<AbortController>();
   const summaries = new Set<AbortController>();
   const parent = (ctx: ExtensionContext) => ctx.mode === 'tui' && ctx.sessionManager.getHeader()?.type === 'session' && !ctx.sessionManager.getHeader()?.parentSession;
+  /** The SPEAK row is cosmetic: only the interactive parent TUI sets it, and a failure never affects speech. */
+  const refreshRow = (ctx: ExtensionContext) => {
+    if (stopped || !parent(ctx)) return;
+    try {
+      const settings = readSpeakSettings(home);
+      ctx.ui.setStatus(SPEAK_STATUS_KEY, formatSpeakStatus({ enabled: settings.enabled, voiceLabel: VOICE_CATALOG[settings.voice]?.label ?? settings.voice, shortcuts: settings.shortcuts }));
+    } catch { /* Status is cosmetic. */ }
+  };
+  /** A Piper voice is available when its model is installed; a qwen3 voice when the manifest is valid and the voice installed. */
+  async function voiceAvailability(): Promise<Record<string, boolean>> {
+    const available: Record<string, boolean> = {};
+    let qwenStatus: Awaited<ReturnType<typeof qwenVoicesStatus>> | undefined;
+    try { qwenStatus = await deps.qwenStatus(home); } catch { /* treated as unavailable */ }
+    for (const [id, voice] of Object.entries(VOICE_CATALOG)) {
+      try {
+        available[id] = voice.engine === 'qwen3'
+          ? qwenStatus?.manifest === 'valid' && qwenStatus.voices[id] === 'installed'
+          : (await deps.modelStatus({ home, voice: id as keyof typeof SPEAK_MODELS })).state === 'installed';
+      } catch { available[id] = false; }
+    }
+    return available;
+  }
   const result = (text: string, isError = false) => ({ content: [{ type: 'text' as const, text }], details: {}, ...(isError ? { isError: true } : {}) });
   const stopPiper = () => {
     cancelCurrent?.();
@@ -154,7 +177,11 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     } catch { /* Model failure is silent; never fall back to unsummarized speech. */ }
     finally { summaries.delete(controller); controller.abort(); }
   });
-  pi.on('session_shutdown', () => { stopped = true; for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); stop(); qwen.dispose(); });
+  pi.on('session_start', (_event, ctx) => { refreshRow(ctx); });
+  pi.on('session_shutdown', (_event, ctx) => {
+    if (parent(ctx)) { try { ctx.ui.setStatus(SPEAK_STATUS_KEY, undefined); } catch { /* Status is cosmetic. */ } }
+    stopped = true; for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); stop(); qwen.dispose();
+  });
   pi.registerTool({
     name: 'speak', label: 'Speak', description: 'Speak a short message in the parent interactive TUI after local voice installation.',
     parameters: { type: 'object', properties: { text: { type: 'string', maxLength: 4000 } }, required: ['text'], additionalProperties: false },
@@ -165,7 +192,9 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     async handler(_args, ctx) {
       if (stopped || !parent(ctx)) return;
       const settings = readSpeakSettings(home);
-      const choice = await ctx.ui.select('Speech settings', ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', 'Voice: es_MX', 'Voice: es_ES', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Install voice and runtime', 'Stop playback', 'Cancel']);
+      const voices = voiceMenuEntries(VOICE_CATALOG, await voiceAvailability());
+      if (stopped) return;
+      const choice = await ctx.ui.select('Speech settings', ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Install voice and runtime', 'Stop playback', 'Cancel']);
       if (!choice || choice === 'Cancel' || stopped) return;
       if (choice === 'Stop playback') { stop(); return; }
       if (choice === 'Install voice and runtime') {
@@ -202,13 +231,28 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
       }
       else if (choice === 'Toggle auto-speak') settings.enabled = !settings.enabled;
       else if (choice.startsWith('Mode: ')) settings.mode = choice.slice(6) as typeof settings.mode;
-      else if (choice.startsWith('Voice: ')) settings.voice = choice.slice(7);
+      else if (choice.startsWith('Voice: ')) {
+        const picked = voices.find(entry => entry.text === choice);
+        if (!picked) return;
+        if (!(await voiceAvailability())[picked.id]) {
+          const voice = VOICE_CATALOG[picked.id];
+          // Qwen voices have no in-menu installer, so switching would only fail.
+          // Piper voices keep the previous behavior: select first, then
+          // "Install voice and runtime" installs the selected voice.
+          if (voice.engine === 'qwen3') {
+            if (!stopped) ctx.ui.notify(`Voice "${voice.label}" is not installed, so nothing changed. Install the Qwen voices first (see README, "Qwen voices").`, 'warning');
+            return;
+          }
+          if (!stopped) ctx.ui.notify(`Voice "${voice.label}" is selected but not installed yet. Run /speak → Install voice and runtime to download it.`, 'warning');
+        }
+        settings.voice = picked.id;
+      }
       else if (choice === 'Speed') {
         const input = await ctx.ui.input('Speed (0.5–2)', String(settings.speed));
         if (input === undefined || !input.trim()) return;
         settings.speed = Number(input);
       }
-      try { writeSpeakSettings(settings, home); ctx.ui.notify(choice.startsWith('Key: ') ? 'Speech settings saved. Run /reload to apply shortcut changes.' : 'Speech settings saved.', 'info'); }
+      try { writeSpeakSettings(settings, home); ctx.ui.notify(choice.startsWith('Key: ') ? 'Speech settings saved. Run /reload to apply shortcut changes.' : 'Speech settings saved.', 'info'); refreshRow(ctx); }
       catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); }
     },
   });
@@ -225,5 +269,17 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     const settings = readSpeakSettings(home);
     settings.enabled = !settings.enabled;
     writeSpeakSettings(settings, home);
+    refreshRow(ctx);
+  } });
+  pi.registerShortcut(shortcuts.cycleVoice, { description: 'Cycle to the next installed voice', handler: async ctx => {
+    if (!parent(ctx) || stopped) return;
+    const settings = readSpeakSettings(home);
+    const next = nextAvailableVoice(Object.keys(VOICE_CATALOG), settings.voice, await voiceAvailability());
+    if (stopped) return;
+    if (!next) { ctx.ui.notify('No other voice is installed; nothing changed.', 'info'); return; }
+    settings.voice = next;
+    try { writeSpeakSettings(settings, home); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return; }
+    ctx.ui.notify(`Voice: ${VOICE_CATALOG[next].label}`, 'info');
+    refreshRow(ctx);
   } });
 }

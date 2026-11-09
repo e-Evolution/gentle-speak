@@ -15,12 +15,13 @@ function harness(mode = 'tui', overrides: any = {}) {
   const shortcuts = new Map<string, any>();
   const tools = new Map<string, any>();
   const notifications: string[] = [];
+  const statuses: Array<[string, string | undefined]> = [];
   const selections: string[] = [];
   const confirmations: boolean[] = [];
   const inputs: string[] = [];
-  const ctx = { modelRegistry: overrides.modelRegistry, mode, hasUI: mode === 'tui', isIdle: () => true, sessionManager: { getHeader: () => overrides.header ?? { type: 'session' }, getBranch: () => overrides.branch ?? [{ type: 'message', message }] }, ui: { notify: (text: string) => notifications.push(text), confirm: async () => confirmations.shift() ?? false, select: async () => selections.shift(), input: async () => inputs.shift() } };
+  const ctx = { modelRegistry: overrides.modelRegistry, mode, hasUI: mode === 'tui', isIdle: () => true, sessionManager: { getHeader: () => overrides.header ?? { type: 'session' }, getBranch: () => overrides.branch ?? [{ type: 'message', message }] }, ui: { setStatus: (key: string, text?: string) => statuses.push([key, text]), notify: (text: string) => notifications.push(text), confirm: async () => confirmations.shift() ?? false, select: async () => selections.shift(), input: async () => inputs.shift() } };
   gentleSpeak({ on: (name: string, handler: Function) => events.set(name, handler), registerCommand: (name: string, command: any) => commands.set(name, command), registerShortcut: (key: string, shortcut: any) => shortcuts.set(key, shortcut), registerTool: (tool: any) => tools.set(tool.name, tool) } as any, home, overrides.dependencies);
-  return { home, events, commands, shortcuts, tools, notifications, selections, confirmations, inputs, ctx, close: () => rmSync(home, { recursive: true, force: true }) };
+  return { home, events, commands, shortcuts, tools, notifications, statuses, selections, confirmations, inputs, ctx, close: () => rmSync(home, { recursive: true, force: true }) };
 }
 
 test('startup and settled events remain silent with absent settings; non-TUI tool cannot play', async () => {
@@ -203,5 +204,214 @@ test('settings command is TUI-only and exposes no install on noninteractive sess
   try {
     await h.commands.get('speak').handler('', h.ctx);
     assert.equal(h.notifications.length, 0);
+  } finally { h.close(); }
+});
+
+// ---- T12 (S7): SPEAK status row, cycle-voice shortcut, catalog voice menu ----
+const settingsFile = (h: { home: string }) => join(h.home, 'speak-settings.json');
+const save = (h: { home: string }, patch: Record<string, unknown>) => writeFileSync(settingsFile(h), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, ...patch }));
+const saved = (h: { home: string }) => JSON.parse(readFileSync(settingsFile(h), 'utf8'));
+const piperOnly = { modelStatus: async ({ voice }: any) => ({ state: voice === 'es_MX' ? 'installed' : 'missing', path: '/m' }), qwenStatus: async () => ({ manifest: 'missing', voices: {} }) };
+const qwenReady = (installed: string[]) => ({ modelStatus: async ({ voice }: any) => ({ state: 'installed', path: '/m' }), qwenStatus: async () => ({ manifest: 'valid', voices: Object.fromEntries(['qwen-suave', 'qwen-brisa', 'qwen-coqueta', 'qwen-maestra', 'qwen-intima', 'qwen-serena', 'qwen-viva'].map(id => [id, installed.includes(id) ? 'installed' : 'missing'])) }) });
+const last = (h: { statuses: Array<[string, string | undefined]> }) => h.statuses.at(-1);
+
+test('session start sets the SPEAK row in both states with default keys', async () => {
+  const h = harness();
+  try {
+    await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
+    assert.deepEqual(last(h), ['gentle-speak', 'SPEAK ○ off · Español (México) · ctrl+alt+m on/off · ctrl+alt+n voz']);
+    save(h, { enabled: true, voice: 'qwen-brisa' });
+    await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
+    assert.deepEqual(last(h), ['gentle-speak', 'SPEAK ● on · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz']);
+  } finally { h.close(); }
+});
+
+test('the row reflects custom configured keys', async () => {
+  const h = harness();
+  try {
+    save(h, { shortcuts: { ...DEFAULT_SPEAK_SETTINGS.shortcuts, toggle: 'ctrl+alt+x', cycleVoice: 'ctrl+alt+y' } });
+    await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
+    assert.match(last(h)![1]!, /ctrl\+alt\+x on\/off · ctrl\+alt\+y voz/);
+  } finally { h.close(); }
+});
+
+test('the toggle shortcut still toggles the setting and now refreshes the row', async () => {
+  const h = harness();
+  try {
+    await h.shortcuts.get('ctrl+alt+m').handler(h.ctx);
+    assert.equal(saved(h).enabled, true);
+    assert.match(last(h)![1]!, /^SPEAK ● on/);
+    await h.shortcuts.get('ctrl+alt+m').handler(h.ctx);
+    assert.equal(saved(h).enabled, false);
+    assert.match(last(h)![1]!, /^SPEAK ○ off/);
+  } finally { h.close(); }
+});
+
+test('the toggle shortcut does nothing in a non-TUI session', async () => {
+  const h = harness('rpc');
+  try {
+    await h.shortcuts.get('ctrl+alt+m').handler(h.ctx);
+    assert.equal(existsSync(settingsFile(h)), false);
+    assert.deepEqual(h.statuses, []);
+  } finally { h.close(); }
+});
+
+test('the /speak toggle entry still toggles and refreshes the row', async () => {
+  const h = harness();
+  try {
+    h.selections.push('Toggle auto-speak');
+    await h.commands.get('speak').handler('', h.ctx);
+    assert.equal(saved(h).enabled, true);
+    assert.deepEqual(h.notifications, ['Speech settings saved.']);
+    assert.match(last(h)![1]!, /^SPEAK ● on/);
+  } finally { h.close(); }
+});
+
+test('other /speak entries keep their behavior (mode, speed)', async () => {
+  const h = harness();
+  try {
+    h.selections.push('Mode: all');
+    await h.commands.get('speak').handler('', h.ctx);
+    assert.equal(saved(h).mode, 'all');
+    h.selections.push('Speed'); h.inputs.push('1.5');
+    await h.commands.get('speak').handler('', h.ctx);
+    assert.equal(saved(h).speed, 1.5);
+    assert.equal(saved(h).voice, 'es_MX');
+    assert.deepEqual(h.notifications, ['Speech settings saved.', 'Speech settings saved.']);
+  } finally { h.close(); }
+});
+
+test('the /speak menu lists every catalog voice with label, id and install state, and keeps the other entries', async () => {
+  const h = harness('tui', { dependencies: qwenReady(['qwen-brisa']) });
+  let offered: string[] = [];
+  h.ctx.ui.select = async (_title: string, options: string[]) => { offered = options; return 'Cancel'; };
+  try {
+    await h.commands.get('speak').handler('', h.ctx);
+    const voices = offered.filter(option => option.startsWith('Voice: '));
+    assert.equal(voices.length, 9);
+    assert.equal(voices[0], 'Voice: Español (México) (es_MX) — installed');
+    assert.equal(voices[4], 'Voice: Coqueta (qwen-coqueta) — not installed');
+    assert.equal(voices[3], 'Voice: Brisa (qwen-brisa) — installed');
+    assert.equal(voices.some(option => option === 'Voice: es_MX' || option === 'Voice: es_ES'), false);
+    assert.deepEqual(offered.filter(option => !option.startsWith('Voice: ')), ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Install voice and runtime', 'Stop playback', 'Cancel']);
+  } finally { h.close(); }
+});
+
+test('selecting an installed voice persists it and refreshes the row', async () => {
+  const h = harness('tui', { dependencies: qwenReady(['qwen-brisa']) });
+  try {
+    h.selections.push('Voice: Brisa (qwen-brisa) — installed');
+    await h.commands.get('speak').handler('', h.ctx);
+    assert.equal(saved(h).voice, 'qwen-brisa');
+    assert.deepEqual(h.notifications, ['Speech settings saved.']);
+    assert.match(last(h)![1]!, /^SPEAK ○ off · Brisa · /);
+  } finally { h.close(); }
+});
+
+test('selecting an uninstalled voice explains how to install it and does not switch', async () => {
+  const h = harness('tui', { dependencies: qwenReady([]) });
+  try {
+    h.selections.push('Voice: Brisa (qwen-brisa) — not installed');
+    await h.commands.get('speak').handler('', h.ctx);
+    assert.equal(existsSync(settingsFile(h)), false);
+    assert.equal(h.notifications.length, 1);
+    assert.match(h.notifications[0], /Brisa.*not installed.*README/s);
+    assert.deepEqual(h.statuses, []);
+  } finally { h.close(); }
+});
+
+test('the cycleVoice rebind accepts a free key and rejects reserved or duplicate keys', async () => {
+  const h = harness();
+  try {
+    for (const bad of ['ctrl+k', 'ctrl+alt+m']) {
+      h.selections.push('Key: cycleVoice'); h.inputs.push(bad);
+      await h.commands.get('speak').handler('', h.ctx);
+      assert.equal(existsSync(settingsFile(h)), false);
+      assert.equal(h.notifications.at(-1), 'Invalid speech settings; nothing was saved.');
+    }
+    h.selections.push('Key: cycleVoice'); h.inputs.push('ctrl+alt+y');
+    await h.commands.get('speak').handler('', h.ctx);
+    assert.equal(saved(h).shortcuts.cycleVoice, 'ctrl+alt+y');
+    assert.match(h.notifications.at(-1)!, /reload/);
+    assert.match(last(h)![1]!, /ctrl\+alt\+y voz/);
+  } finally { h.close(); }
+});
+
+test('the cycle shortcut is registered on the configured key and skips unavailable voices, wrapping', async () => {
+  const h = harness('tui', { dependencies: qwenReady(['qwen-brisa', 'qwen-viva']) });
+  try {
+    assert.ok(h.shortcuts.has('ctrl+alt+n'));
+    const cycle = () => h.shortcuts.get('ctrl+alt+n').handler(h.ctx);
+    await cycle(); assert.equal(saved(h).voice, 'es_ES');
+    await cycle(); assert.equal(saved(h).voice, 'qwen-brisa');
+    assert.equal(h.notifications.at(-1), 'Voice: Brisa');
+    assert.match(last(h)![1]!, /Brisa/);
+    await cycle(); assert.equal(saved(h).voice, 'qwen-viva');
+    await cycle(); assert.equal(saved(h).voice, 'es_MX');
+  } finally { h.close(); }
+});
+
+test('cycling skips qwen voices when the manifest is not valid', async () => {
+  const h = harness('tui', { dependencies: { modelStatus: async () => ({ state: 'installed', path: '/m' }), qwenStatus: async () => ({ manifest: 'invalid', voices: { 'qwen-brisa': 'installed' } }) } });
+  try {
+    await h.shortcuts.get('ctrl+alt+n').handler(h.ctx);
+    assert.equal(saved(h).voice, 'es_ES');
+    await h.shortcuts.get('ctrl+alt+n').handler(h.ctx);
+    assert.equal(saved(h).voice, 'es_MX');
+  } finally { h.close(); }
+});
+
+test('cycling with no alternative changes nothing and notifies', async () => {
+  const h = harness('tui', { dependencies: piperOnly });
+  try {
+    await h.shortcuts.get('ctrl+alt+n').handler(h.ctx);
+    assert.equal(existsSync(settingsFile(h)), false);
+    assert.equal(h.notifications.length, 1);
+    assert.match(h.notifications[0], /No other voice is installed/);
+  } finally { h.close(); }
+});
+
+test('the cycle shortcut does nothing in a non-TUI session', async () => {
+  const h = harness('json', { dependencies: qwenReady(['qwen-brisa']) });
+  try {
+    await h.shortcuts.get('ctrl+alt+n').handler(h.ctx);
+    assert.equal(existsSync(settingsFile(h)), false);
+    assert.deepEqual(h.notifications, []);
+  } finally { h.close(); }
+});
+
+test('shutdown clears the row, and nothing is set afterwards', async () => {
+  const h = harness();
+  try {
+    await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
+    h.events.get('session_shutdown')!({ reason: 'reload' }, h.ctx);
+    assert.deepEqual(last(h), ['gentle-speak', undefined]);
+    const count = h.statuses.length;
+    await h.shortcuts.get('ctrl+alt+m').handler(h.ctx);
+    assert.equal(h.statuses.length, count);
+  } finally { h.close(); }
+});
+
+test('no row is ever set in rpc, print, json or child sessions', async () => {
+  for (const h of [harness('rpc'), harness('print'), harness('json'), harness('tui', { header: { type: 'session', parentSession: '/parent.jsonl' } })]) {
+    try {
+      await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
+      h.events.get('session_shutdown')!({ reason: 'quit' }, h.ctx);
+      assert.deepEqual(h.statuses, []);
+    } finally { h.close(); }
+  }
+});
+
+// Previous behavior preserved: an uninstalled Piper voice is still selectable,
+// because "/speak → Install voice and runtime" installs the selected voice.
+import { readFileSync as readSettingsRaw } from 'node:fs';
+import { VOICE_CATALOG as PIPER_CATALOG } from '../lib/speak-voices.ts';
+test('selecting an uninstalled Piper voice still switches so it can be installed', async () => {
+  const h = harness('tui', { dependencies: piperOnly });
+  try {
+    h.selections.push(`Voice: ${PIPER_CATALOG.es_ES.label} (es_ES) — not installed`);
+    await h.commands.get('speak').handler('', h.ctx);
+    assert.equal(JSON.parse(readSettingsRaw(settingsFile(h), 'utf8')).voice, 'es_ES');
+    assert.match(h.notifications.join('\n'), /Install voice and runtime/);
   } finally { h.close(); }
 });

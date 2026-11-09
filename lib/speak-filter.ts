@@ -18,7 +18,10 @@ function spokenProse(markdown: string): string | undefined {
       continue;
     }
     if (fence || /^\s*(?:diff --git\b|index [\da-f]+\.\.[\da-f]+\b|---\s|\+\+\+\s|@@\s|\+(?:\s|\S)|-(?!\s)(?:\S)|\\ No newline)/.test(line)) continue;
-    const prose = line.replace(/`+[^`\n]*`+/g, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/^[\s>*#-]+/, '').replace(/\s+/g, ' ').trim();
+    const prose = line.replace(/`+[^`\n]*`+/g, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/^[\s>*#-]+/, '')
+      // Emphasis markers are formatting, not speech; brackets emptied by removed inline code are noise.
+      .replace(/\*\*|__/g, '').replace(/(^|[\s(])\*(?=\S)([^*\n]*?\S)\*(?=$|[\s),.!?;:])/g, '$1$2').replace(/\(\s*\)|\[\s*\]/g, '')
+      .replace(/\s+/g, ' ').trim();
     if (prose) lines.push(prose);
   }
   return lines.join(' ').replace(/\s+([,.!?;:])/g, '$1').trim() || undefined;

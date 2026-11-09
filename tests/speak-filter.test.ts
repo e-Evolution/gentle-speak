@@ -45,3 +45,8 @@ test('speaks only on the stop reason pi-ai emits for a finished answer', () => {
     assert.equal(filterSettledSpeech([assistant('Resultado listo.', reason)], 'all'), undefined, reason);
   }
 });
+
+test('drops markdown emphasis markers and brackets left empty by removed inline code', () => {
+  assert.equal(filterSettledSpeech([assistant('Corrí la suite: **151/151**, *todo* verde (`npm test`).')], 'all'), 'Corrí la suite: 151/151, todo verde.');
+  assert.equal(filterSettledSpeech([assistant('Tu configuración actual** (`settings.json`): __on__ [`x`].')], 'all'), 'Tu configuración actual: on.');
+});

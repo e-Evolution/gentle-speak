@@ -16,7 +16,7 @@ export interface SpeakSettings {
   summaryModel: { provider: string; id: string } | null;
   /** Opt-in (S8): speak text copied from this Gentle Shell. Optional in files; absent means false. */
   copySpeech: boolean;
-  shortcuts: { speakLast: string; stop: string; toggle: string; cycleVoice: string };
+  shortcuts: { speakLast: string; stop: string; toggle: string; cycleVoice: string; toggleCopy: string };
 }
 export const DEFAULT_SPEAK_SETTINGS: SpeakSettings = {
   enabled: false,
@@ -25,15 +25,17 @@ export const DEFAULT_SPEAK_SETTINGS: SpeakSettings = {
   speed: 1,
   summaryModel: null,
   copySpeech: false,
-  shortcuts: { speakLast: 'ctrl+alt+v', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m', cycleVoice: 'ctrl+alt+n' },
+  shortcuts: { speakLast: 'ctrl+alt+v', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m', cycleVoice: 'ctrl+alt+n', toggleCopy: 'ctrl+alt+c' },
 };
 
 const reserved = new Set(['ctrl+k', 'ctrl+p', 'alt+k', 'alt+a']);
-const keys = ['speakLast', 'stop', 'toggle', 'cycleVoice'];
+const keys = ['speakLast', 'stop', 'toggle', 'cycleVoice', 'toggleCopy'];
 // Default for v1 files that predate cycleVoice: the first candidate the user
 // has not already bound. A fixed ctrl+alt+n made any v1 file that used it for
 // another action fail the duplicate check and silently revert to defaults.
 const CYCLE_VOICE_DEFAULTS = ['ctrl+alt+n', 'ctrl+alt+b', 'ctrl+alt+j', 'ctrl+alt+u'];
+// Same idea for files that predate toggleCopy: the first candidate not already bound.
+const TOGGLE_COPY_DEFAULTS = ['ctrl+alt+c', 'ctrl+alt+y', 'ctrl+alt+g', 'ctrl+alt+h'];
 const hasKeys = (value: Record<string, unknown>, expected: string[]) =>
   Object.keys(value).length === expected.length && expected.every(key => Object.hasOwn(value, key));
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -47,14 +49,16 @@ function validate(value: unknown): SpeakSettings | undefined {
   if (typeof value.enabled !== 'boolean' || !['all', 'questions-and-results', 'summary'].includes(value.mode as string)) return undefined;
   if (typeof value.voice !== 'string' || !Object.hasOwn(VOICE_CATALOG, value.voice)) return undefined;
   if (typeof value.speed !== 'number' || !Number.isFinite(value.speed) || value.speed < 0.5 || value.speed > 2) return undefined;
-  // v1 files predate cycleVoice: accept them without it and fill in the default.
-  if (!record(value.shortcuts) || !(hasKeys(value.shortcuts, keys) || hasKeys(value.shortcuts, keys.slice(0, 3)))) return undefined;
+  // Older files predate cycleVoice (v1) and toggleCopy: accept them without those keys and fill in defaults.
+  if (!record(value.shortcuts) || !(hasKeys(value.shortcuts, keys) || hasKeys(value.shortcuts, keys.slice(0, 4)) || hasKeys(value.shortcuts, keys.slice(0, 3)))) return undefined;
   const bound = keys.slice(0, 3).map(key => value.shortcuts[key]);
   const cycleDefault = CYCLE_VOICE_DEFAULTS.find(key => !bound.includes(key));
-  const shortcuts = keys.map(key => value.shortcuts[key] ?? (key === 'cycleVoice' && !Object.hasOwn(value.shortcuts, key) ? cycleDefault : undefined));
+  const cycle = value.shortcuts.cycleVoice ?? (!Object.hasOwn(value.shortcuts, 'cycleVoice') ? cycleDefault : undefined);
+  const copyDefault = TOGGLE_COPY_DEFAULTS.find(key => ![...bound, cycle].includes(key));
+  const shortcuts = [...bound, cycle, value.shortcuts.toggleCopy ?? (!Object.hasOwn(value.shortcuts, 'toggleCopy') ? copyDefault : undefined)];
   if (shortcuts.some(key => typeof key !== 'string' || !/^(?:(?:ctrl|alt|shift)\+)+(?:[a-z0-9]|[.,;\/])$/.test(key) || reserved.has(key)) || new Set(shortcuts).size !== shortcuts.length) return undefined;
   return { enabled: value.enabled, mode: value.mode as SpeakMode, voice: value.voice, speed: value.speed, summaryModel: model as SpeakSettings['summaryModel'], copySpeech: value.copySpeech === true,
-    shortcuts: { speakLast: shortcuts[0] as string, stop: shortcuts[1] as string, toggle: shortcuts[2] as string, cycleVoice: shortcuts[3] as string } };
+    shortcuts: { speakLast: shortcuts[0] as string, stop: shortcuts[1] as string, toggle: shortcuts[2] as string, cycleVoice: shortcuts[3] as string, toggleCopy: shortcuts[4] as string } };
 }
 
 export function parseSpeakSettingsFile(raw: string): SpeakSettings | undefined {

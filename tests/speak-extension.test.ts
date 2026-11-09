@@ -219,10 +219,10 @@ test('session start sets the SPEAK row in both states with default keys', async 
   const h = harness();
   try {
     await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
-    assert.deepEqual(last(h), ['gentle-speak', 'SPEAK ○ off · modo preguntas y resultados · Español (México) · ctrl+alt+m on/off · ctrl+alt+n voz']);
+    assert.deepEqual(last(h), ['gentle-speak', 'SPEAK ○ off · modo preguntas y resultados · Español (México) · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c']);
     save(h, { enabled: true, voice: 'qwen-brisa' });
     await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
-    assert.deepEqual(last(h), ['gentle-speak', 'SPEAK ● on · modo preguntas y resultados · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz']);
+    assert.deepEqual(last(h), ['gentle-speak', 'SPEAK ● on · modo preguntas y resultados · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c']);
   } finally { h.close(); }
 });
 
@@ -293,7 +293,7 @@ test('the /speak menu lists every catalog voice with label, id and install state
     assert.equal(voices[4], 'Voice: Coqueta (qwen-coqueta) — not installed');
     assert.equal(voices[3], 'Voice: Brisa (qwen-brisa) — installed');
     assert.equal(voices.some(option => option === 'Voice: es_MX' || option === 'Voice: es_ES'), false);
-    assert.deepEqual(offered.filter(option => !option.startsWith('Voice: ')), ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
+    assert.deepEqual(offered.filter(option => !option.startsWith('Voice: ')), ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
   } finally { h.close(); }
 });
 
@@ -565,17 +565,62 @@ test('copy speech uses the current voice path and cancels playback like a manual
   } finally { g.events.get('session_shutdown')!({ reason: 'quit' }, g.ctx); g.close(); }
 });
 
-test('the SPEAK row shows the copy marker only while the option is on', async () => {
+test('the SPEAK row always shows the copy state and its key, in both states', async () => {
   const h = copyHarness();
   try {
     await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
-    assert.match(last(h)![1]!, / · copia$/);
+    assert.match(last(h)![1]!, / · copia ● ctrl\+alt\+c$/);
   } finally { h.close(); }
   const off = copyHarness({ on: false });
   try {
     await off.events.get('session_start')!({ reason: 'startup' }, off.ctx);
-    assert.doesNotMatch(last(off)![1]!, /copia/);
+    assert.match(last(off)![1]!, / · copia ○ ctrl\+alt\+c$/);
   } finally { off.close(); }
+});
+
+test('the toggleCopy key toggles and persists copySpeech with the /speak notify text, runs syncCopy and refreshes the row', async () => {
+  const h = copyHarness({ on: false });
+  try {
+    assert.ok(h.shortcuts.has('ctrl+alt+c'));
+    await h.shortcuts.get('ctrl+alt+c').handler(h.ctx);
+    await h.settle();
+    assert.equal(saved(h).copySpeech, true);
+    assert.equal(h.notifications.at(-1), 'Speak copied selection: on. Only copies made in this Gentle Shell are spoken; concealed/password copies are skipped.');
+    assert.match(last(h)![1]!, / · copia ● ctrl\+alt\+c$/);
+    assert.equal(h.watchers.length, 1);
+    assert.equal(h.watchers[0].starts, 1);
+    await h.shortcuts.get('ctrl+alt+c').handler(h.ctx);
+    assert.equal(saved(h).copySpeech, false);
+    assert.equal(h.notifications.at(-1), 'Speak copied selection: off.');
+    assert.match(last(h)![1]!, / · copia ○ ctrl\+alt\+c$/);
+    assert.equal(h.watchers[0].stops, 1);
+  } finally { h.close(); }
+});
+
+test('the toggleCopy key does nothing in a non-TUI session', async () => {
+  const rpc = harness('rpc');
+  try {
+    await rpc.shortcuts.get('ctrl+alt+c').handler(rpc.ctx);
+    assert.equal(existsSync(settingsFile(rpc)), false);
+    assert.deepEqual(rpc.statuses, []);
+  } finally { rpc.close(); }
+});
+
+test('the toggleCopy rebind in /speak accepts a free key and rejects reserved or duplicate keys', async () => {
+  const h = harness();
+  try {
+    for (const bad of ['ctrl+k', 'ctrl+alt+m', 'ctrl+alt+n', 'c']) {
+      h.selections.push('Key: toggleCopy'); h.inputs.push(bad);
+      await h.commands.get('speak').handler('', h.ctx);
+      assert.equal(existsSync(settingsFile(h)), false);
+      assert.equal(h.notifications.at(-1), 'Invalid speech settings; nothing was saved.');
+    }
+    h.selections.push('Key: toggleCopy'); h.inputs.push('ctrl+alt+q');
+    await h.commands.get('speak').handler('', h.ctx);
+    assert.equal(saved(h).shortcuts.toggleCopy, 'ctrl+alt+q');
+    assert.match(h.notifications.at(-1)!, /reload/);
+    assert.match(last(h)![1]!, / · copia ○ ctrl\+alt\+q$/);
+  } finally { h.close(); }
 });
 
 test('the /speak menu keeps its previous entries and the new one is added', async () => {

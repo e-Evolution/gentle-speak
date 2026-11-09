@@ -42,7 +42,7 @@ test('catalog contains Spanish locales and permits additional languages without 
 });
 
 test('validated settings persist atomically and reject invalid input without changing existing data', () => withHome(home => {
-  const settings = { ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'summary' as const, voice: 'es_ES', speed: 1.25, shortcuts: { speakLast: 'ctrl+alt+s', stop: 'ctrl+alt+x', toggle: 'ctrl+alt+t', cycleVoice: 'ctrl+alt+b' } };
+  const settings = { ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'summary' as const, voice: 'es_ES', speed: 1.25, shortcuts: { speakLast: 'ctrl+alt+s', stop: 'ctrl+alt+x', toggle: 'ctrl+alt+t', cycleVoice: 'ctrl+alt+b', toggleCopy: 'ctrl+alt+y' } };
   const path = writeSpeakSettings(settings, home);
   assert.equal(path, join(home, 'speak-settings.json'));
   assert.deepEqual(readSpeakSettings(home), settings);
@@ -64,7 +64,7 @@ test('v1 files that bind ctrl+alt+n to another action stay valid', () => {
     assert.equal(parsed.enabled, true);
     assert.equal(parsed.shortcuts[key as 'stop'], 'ctrl+alt+n');
     assert.notEqual(parsed.shortcuts.cycleVoice, 'ctrl+alt+n');
-    assert.equal(new Set(Object.values(parsed.shortcuts)).size, 4);
+    assert.equal(new Set(Object.values(parsed.shortcuts)).size, 5);
   }
 });
 
@@ -106,3 +106,39 @@ test('unknown keys and non-boolean copySpeech are rejected', () => {
   }
   assert.throws(() => withHome(home => writeSpeakSettings({ ...DEFAULT_SPEAK_SETTINGS, copySpeech: 'x' } as any, home)), /Invalid speak settings/);
 });
+
+// T24: rebindable toggleCopy key.
+const withShortcuts = (shortcuts: Record<string, unknown>) => JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, enabled: true, mode: 'all', voice: 'es_MX', speed: 1, summaryModel: null, shortcuts });
+const four = { speakLast: 'ctrl+alt+v', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m', cycleVoice: 'ctrl+alt+n' };
+
+test('toggleCopy defaults to ctrl+alt+c; files without it (with or without cycleVoice) load filled with the default', () => {
+  assert.equal(DEFAULT_SPEAK_SETTINGS.shortcuts.toggleCopy, 'ctrl+alt+c');
+  const withCycle = parseSpeakSettingsFile(withShortcuts(four));
+  assert.deepEqual(withCycle?.shortcuts, { ...four, toggleCopy: 'ctrl+alt+c' });
+  const v1 = parseSpeakSettingsFile(withShortcuts({ speakLast: 'ctrl+alt+v', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m' }));
+  assert.deepEqual(v1?.shortcuts, { ...four, toggleCopy: 'ctrl+alt+c' });
+  assert.equal(parseSpeakSettingsFile(withShortcuts({ ...four, toggleCopy: 'ctrl+alt+q' }))?.shortcuts.toggleCopy, 'ctrl+alt+q');
+});
+
+test('an older file that already binds ctrl+alt+c keeps loading; the missing toggleCopy takes a free default', () => {
+  for (const key of ['speakLast', 'stop', 'toggle', 'cycleVoice']) {
+    const parsed = parseSpeakSettingsFile(withShortcuts({ ...four, [key]: 'ctrl+alt+c' }));
+    assert.ok(parsed, `${key}=ctrl+alt+c must still load`);
+    assert.equal(parsed.shortcuts[key as 'stop'], 'ctrl+alt+c');
+    assert.notEqual(parsed.shortcuts.toggleCopy, 'ctrl+alt+c');
+    assert.equal(new Set(Object.values(parsed.shortcuts)).size, 5);
+  }
+});
+
+test('reserved, duplicate and malformed toggleCopy are rejected on parse and write, leaving the file unchanged', () => withHome(home => {
+  for (const toggleCopy of ['ctrl+k', 'ctrl+p', 'alt+k', 'alt+a', four.speakLast, four.stop, four.toggle, four.cycleVoice, 'c', 'ctrl+alt+', 7, null]) {
+    assert.equal(parseSpeakSettingsFile(withShortcuts({ ...four, toggleCopy })), undefined, String(toggleCopy));
+  }
+  const path = writeSpeakSettings(DEFAULT_SPEAK_SETTINGS, home);
+  const before = readFileSync(path, 'utf8');
+  for (const toggleCopy of ['ctrl+k', 'ctrl+alt+m', 'bad']) {
+    assert.throws(() => writeSpeakSettings({ ...DEFAULT_SPEAK_SETTINGS, shortcuts: { ...DEFAULT_SPEAK_SETTINGS.shortcuts, toggleCopy } }, home), /Invalid speak settings/);
+    assert.equal(readFileSync(path, 'utf8'), before);
+    assert.deepEqual(readdirSync(home), ['speak-settings.json']);
+  }
+}));

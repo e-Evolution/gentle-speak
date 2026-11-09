@@ -18,3 +18,4 @@
 - Added package metadata and a representative speech illustration for eventual gallery discovery.
 
 Publication is pending independent installer/archive audit and live Pi integration verification. No public repository, gallery listing, or npm release is claimed.
+- The SPEAK row now always shows the copy-speech state with its key (`· copia ○ ctrl+alt+c` / `· copia ●`), and a new rebindable `toggleCopy` key (default `ctrl+alt+c`, `/speak` → `Key: toggleCopy`) toggles it through the same path as `/speak` → `Toggle speak copied selection`. Existing settings files without `toggleCopy` still load with a free default.

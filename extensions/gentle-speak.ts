@@ -55,7 +55,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     if (stopped || !parent(ctx)) return;
     try {
       const settings = readSpeakSettings(home);
-      ctx.ui.setStatus(SPEAK_STATUS_KEY, formatSpeakStatus({ enabled: settings.enabled, voiceLabel: VOICE_CATALOG[settings.voice]?.label ?? settings.voice, mode: settings.mode, summaryReady: settings.summaryModel !== null, shortcuts: settings.shortcuts }) + (settings.copySpeech ? ' · copia' : ''));
+      ctx.ui.setStatus(SPEAK_STATUS_KEY, formatSpeakStatus({ enabled: settings.enabled, voiceLabel: VOICE_CATALOG[settings.voice]?.label ?? settings.voice, mode: settings.mode, summaryReady: settings.summaryModel !== null, copySpeech: settings.copySpeech, shortcuts: settings.shortcuts }));
     } catch { /* Status is cosmetic. */ }
   };
   /** Copied-selection speech (S8): opt-in, interactive parent only, fail closed. Clipboard text is never logged. */
@@ -97,6 +97,13 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     });
     copyWatcher = watcher;
     watcher.start();
+  }
+  /** Shared by the `/speak` item and the toggleCopy key: persist (caller), notify, refresh the row, restart or stop the watcher. */
+  async function afterCopyToggle(ctx: ExtensionContext, copySpeech: boolean) {
+    ctx.ui.notify(copySpeech ? 'Speak copied selection: on. Only copies made in this Gentle Shell are spoken; concealed/password copies are skipped.' : 'Speak copied selection: off.', 'info');
+    copyUnavailableNotified = false;
+    refreshRow(ctx);
+    await syncCopy(ctx);
   }
   /** A Piper voice is available when its model is installed; a qwen3 voice when the manifest is valid and the voice installed. */
   async function voiceAvailability(): Promise<Record<string, boolean>> {
@@ -241,7 +248,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
       const settings = readSpeakSettings(home);
       const voices = voiceMenuEntries(VOICE_CATALOG, await voiceAvailability());
       if (stopped) return;
-      const choice = await ctx.ui.select('Speech settings', ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
+      const choice = await ctx.ui.select('Speech settings', ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
       if (!choice || choice === 'Cancel' || stopped) return;
       if (choice === 'Stop playback') { stop(); return; }
       if (choice === 'Install voice and runtime') {
@@ -303,10 +310,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
       try {
         writeSpeakSettings(settings, home);
         if (choice === 'Toggle speak copied selection') {
-          ctx.ui.notify(settings.copySpeech ? 'Speak copied selection: on. Only copies made in this Gentle Shell are spoken; concealed/password copies are skipped.' : 'Speak copied selection: off.', 'info');
-          copyUnavailableNotified = false;
-          refreshRow(ctx);
-          await syncCopy(ctx);
+          await afterCopyToggle(ctx, settings.copySpeech);
           return;
         }
         ctx.ui.notify(choice.startsWith('Key: ') ? 'Speech settings saved. Run /reload to apply shortcut changes.' : 'Speech settings saved.', 'info'); refreshRow(ctx);
@@ -339,5 +343,12 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     try { writeSpeakSettings(settings, home); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return; }
     ctx.ui.notify(`Voice: ${VOICE_CATALOG[next].label}`, 'info');
     refreshRow(ctx);
+  } });
+  pi.registerShortcut(shortcuts.toggleCopy, { description: 'Toggle speak copied selection', handler: async ctx => {
+    if (!parent(ctx) || stopped) return;
+    const settings = readSpeakSettings(home);
+    settings.copySpeech = !settings.copySpeech;
+    try { writeSpeakSettings(settings, home); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return; }
+    await afterCopyToggle(ctx, settings.copySpeech);
   } });
 }

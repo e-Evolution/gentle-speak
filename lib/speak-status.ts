@@ -13,20 +13,22 @@ export interface SpeakStatusInput {
   mode?: SpeakMode;
   /** Summary mode needs a configured model; without one it never speaks. */
   summaryReady?: boolean;
-  shortcuts: { toggle: string; cycleVoice: string };
+  /** Copy speech (S8) state; the row always shows it, with its key. */
+  copySpeech: boolean;
+  shortcuts: { toggle: string; cycleVoice: string; toggleCopy: string };
 }
 
 const MODE_LABELS: Readonly<Record<SpeakMode, string>> = { all: 'todo', 'questions-and-results': 'preguntas y resultados', summary: 'resumen' };
 
 /**
- * One plain-text row, e.g. `SPEAK ● on · modo todo · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz`.
+ * One plain-text row, e.g. `SPEAK ● on · modo todo · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c`.
  * Gentle Shell strips control characters and collapses spaces (sanitizeStatus) and wraps rows
  * at word boundaries in its 50-column rail, so the state stays in the first ~12 columns.
  */
-export function formatSpeakStatus({ enabled, voiceLabel, mode, summaryReady, shortcuts }: SpeakStatusInput): string {
+export function formatSpeakStatus({ enabled, voiceLabel, mode, summaryReady, copySpeech, shortcuts }: SpeakStatusInput): string {
   const label = voiceLabel.replace(control, ' ').replace(/ +/g, ' ').trim();
   const modeLabel = mode ? ` · modo ${MODE_LABELS[mode]}${mode === 'summary' && !summaryReady ? ' sin modelo' : ''}` : '';
-  return `SPEAK ${enabled ? '● on' : '○ off'}${modeLabel} · ${label} · ${shortcuts.toggle} on/off · ${shortcuts.cycleVoice} voz`;
+  return `SPEAK ${enabled ? '● on' : '○ off'}${modeLabel} · ${label} · ${shortcuts.toggle} on/off · ${shortcuts.cycleVoice} voz · copia ${copySpeech ? '●' : '○'} ${shortcuts.toggleCopy}`;
 }
 
 /** The next available voice after `current` in `order`, wrapping; undefined when no other voice is available. */

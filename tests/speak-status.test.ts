@@ -9,20 +9,20 @@ const keys = DEFAULT_SPEAK_SETTINGS.shortcuts;
 
 test('status row shows title, state, voice label and configured keys; both states', () => {
   assert.equal(SPEAK_STATUS_KEY, 'gentle-speak');
-  assert.equal(formatSpeakStatus({ enabled: true, voiceLabel: 'Brisa', shortcuts: keys }), 'SPEAK ● on · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz');
-  assert.equal(formatSpeakStatus({ enabled: false, voiceLabel: 'Brisa', shortcuts: keys }), 'SPEAK ○ off · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz');
-  assert.match(formatSpeakStatus({ enabled: true, voiceLabel: 'Brisa', shortcuts: { ...keys, toggle: 'ctrl+alt+x', cycleVoice: 'ctrl+alt+y' } }), /ctrl\+alt\+x on\/off · ctrl\+alt\+y voz/);
+  assert.equal(formatSpeakStatus({ enabled: true, voiceLabel: 'Brisa', copySpeech: false, shortcuts: keys }), 'SPEAK ● on · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c');
+  assert.equal(formatSpeakStatus({ enabled: false, voiceLabel: 'Brisa', copySpeech: false, shortcuts: keys }), 'SPEAK ○ off · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c');
+  assert.match(formatSpeakStatus({ enabled: true, voiceLabel: 'Brisa', copySpeech: false, shortcuts: { ...keys, toggle: 'ctrl+alt+x', cycleVoice: 'ctrl+alt+y', toggleCopy: 'ctrl+alt+z' } }), /ctrl\+alt\+x on\/off · ctrl\+alt\+y voz/);
 });
 
 test('status row survives the Gentle Shell sanitizer unchanged and keeps the state in the first 44 columns', () => {
   // Mirrors gentle-pi lib/shell-bar.ts sanitizeStatus: strip control chars, collapse spaces, trim.
   const sanitize = (text: string) => text.replace(/[\r\n\t]/g, ' ').replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '').replace(/ +/g, ' ').trim();
   for (const enabled of [true, false]) {
-    const row = formatSpeakStatus({ enabled, voiceLabel: 'Español (México)', shortcuts: keys });
+    const row = formatSpeakStatus({ enabled, voiceLabel: 'Español (México)', copySpeech: false, shortcuts: keys });
     assert.equal(sanitize(row), row);
     assert.ok(row.slice(0, 44).includes(enabled ? '● on' : '○ off'));
   }
-  assert.equal(formatSpeakStatus({ enabled: true, voiceLabel: 'Bad\u001b[31m\nLabel\u0007', shortcuts: keys }).includes('\u001b'), false);
+  assert.equal(formatSpeakStatus({ enabled: true, voiceLabel: 'Bad\u001b[31m\nLabel\u0007', copySpeech: false, shortcuts: keys }).includes('\u001b'), false);
 });
 
 test('cycling advances to the next available voice in catalog order and wraps', () => {
@@ -51,9 +51,21 @@ test('voice menu entries follow catalog order with label, id and installed state
 });
 
 test('status row shows the active mode right after the on/off state', () => {
-  assert.equal(formatSpeakStatus({ enabled: true, voiceLabel: 'Brisa', mode: 'all', shortcuts: keys }), 'SPEAK ● on · modo todo · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz');
-  assert.equal(formatSpeakStatus({ enabled: true, voiceLabel: 'Brisa', mode: 'questions-and-results', shortcuts: keys }), 'SPEAK ● on · modo preguntas y resultados · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz');
-  assert.equal(formatSpeakStatus({ enabled: false, voiceLabel: 'Brisa', mode: 'summary', summaryReady: true, shortcuts: keys }), 'SPEAK ○ off · modo resumen · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz');
+  assert.equal(formatSpeakStatus({ enabled: true, voiceLabel: 'Brisa', mode: 'all', copySpeech: false, shortcuts: keys }), 'SPEAK ● on · modo todo · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c');
+  assert.equal(formatSpeakStatus({ enabled: true, voiceLabel: 'Brisa', mode: 'questions-and-results', copySpeech: false, shortcuts: keys }), 'SPEAK ● on · modo preguntas y resultados · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c');
+  assert.equal(formatSpeakStatus({ enabled: false, voiceLabel: 'Brisa', mode: 'summary', summaryReady: true, copySpeech: false, shortcuts: keys }), 'SPEAK ○ off · modo resumen · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c');
   // Summary without a configured model never speaks, so the row says so.
-  assert.equal(formatSpeakStatus({ enabled: true, voiceLabel: 'Brisa', mode: 'summary', summaryReady: false, shortcuts: keys }), 'SPEAK ● on · modo resumen sin modelo · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz');
+  assert.equal(formatSpeakStatus({ enabled: true, voiceLabel: 'Brisa', mode: 'summary', summaryReady: false, copySpeech: false, shortcuts: keys }), 'SPEAK ● on · modo resumen sin modelo · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c');
+});
+
+test('status row always shows the copy state with its key: on/off speech x on/off copy, plus sin modelo', () => {
+  const row = (enabled: boolean, copySpeech: boolean, extra: object = {}) => formatSpeakStatus({ enabled, voiceLabel: 'Íntima', mode: 'all', copySpeech, shortcuts: keys, ...extra });
+  assert.equal(row(true, false), 'SPEAK ● on · modo todo · Íntima · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c');
+  assert.equal(row(true, true), 'SPEAK ● on · modo todo · Íntima · ctrl+alt+m on/off · ctrl+alt+n voz · copia ● ctrl+alt+c');
+  assert.equal(row(false, false), 'SPEAK ○ off · modo todo · Íntima · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c');
+  assert.equal(row(false, true), 'SPEAK ○ off · modo todo · Íntima · ctrl+alt+m on/off · ctrl+alt+n voz · copia ● ctrl+alt+c');
+  assert.equal(row(true, true, { mode: 'summary', summaryReady: false }), 'SPEAK ● on · modo resumen sin modelo · Íntima · ctrl+alt+m on/off · ctrl+alt+n voz · copia ● ctrl+alt+c');
+  assert.equal(row(true, false, { shortcuts: { ...keys, toggleCopy: 'ctrl+alt+y' } }).endsWith('· copia ○ ctrl+alt+y'), true);
+  const sanitize = (text: string) => text.replace(/[\r\n\t]/g, ' ').replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '').replace(/ +/g, ' ').trim();
+  for (const copy of [true, false]) assert.equal(sanitize(row(true, copy)), row(true, copy));
 });

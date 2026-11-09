@@ -10,7 +10,7 @@ import gentleSpeak from '../extensions/gentle-speak.ts';
 
 const QS = 'gentle.speak.qwen/v1', AS = 'gentle.speak/v1';
 const voice = QWEN_VOICES['qwen-intima'];
-const message = { role: 'assistant', stopReason: 'end_turn', content: [{ type: 'text', text: 'Resultado listo.' }] };
+const message = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Resultado listo.' }] };
 const until = async (predicate: () => boolean) => { for (let i = 0; i < 200 && !predicate(); i++) await new Promise(r => setImmediate(r)); assert.ok(predicate(), 'condition not reached'); };
 function fakeChild() {
   const writes: any[] = [];

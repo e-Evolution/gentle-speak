@@ -28,7 +28,7 @@ function spokenProse(markdown: string): string | undefined {
 export function filterSettledSpeech(messages: readonly SettledSpeechMessage[], mode: SpeakMode = DEFAULT_SPEAK_SETTINGS.mode): string | undefined {
   if (mode === 'summary') return undefined;
   const last = messages.at(-1);
-  if (last?.role !== 'assistant' || last.stopReason !== 'end_turn' || !Array.isArray(last.content)) return undefined;
+  if (last?.role !== 'assistant' || last.stopReason !== 'stop' || !Array.isArray(last.content)) return undefined;
   // A turn containing a tool call is not a final human-facing answer.
   if (last.content.some(block => block.type === 'toolCall')) return undefined;
   const text = last.content.filter(block => block.type === 'text' && typeof block.text === 'string').map(block => block.text).join('\n');

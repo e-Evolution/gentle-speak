@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import gentleSpeak from '../extensions/gentle-speak.ts';
 
-const message = { role: 'assistant', stopReason: 'end_turn', content: [{ type: 'text', text: 'Resultado listo.' }] };
+const message = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Resultado listo.' }] };
 function harness(mode = 'tui', overrides: any = {}) {
   const home = mkdtempSync(join(tmpdir(), 'speak-extension-'));
   const events = new Map<string, Function>();
@@ -65,7 +65,7 @@ test('enabled all settled response plays sanitized prose and reports playback er
   const children: any[] = [];
   const branch = [
     { type: 'message', message: { role: 'toolResult', content: [{ type: 'text', text: 'SECRET_TOOL' }] } },
-    { type: 'message', message: { role: 'assistant', stopReason: 'end_turn', content: [{ type: 'text', text: 'Resultado listo.\n```sh\nSECRET_CODE\n```' }] } },
+    { type: 'message', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Resultado listo.\n```sh\nSECRET_CODE\n```' }] } },
   ];
   const h = harness('tui', { branch, dependencies: {
     modelStatus: async () => ({ state: 'installed', path: '/verified/model' }),
@@ -132,7 +132,7 @@ test('configured summary sends sanitized final prose and one sentence to verifie
   let modelInput: any;
   const branch = [
     { type: 'message', message: { role: 'toolResult', content: [{ type: 'text', text: 'PRIVATE_TOOL_OUTPUT' }] } },
-    { type: 'message', message: { role: 'assistant', stopReason: 'end_turn', content: [{ type: 'text', text: 'Resultado listo.\n```sh\nPRIVATE_CODE\n```\n+PRIVATE_DIFF\n`PRIVATE_INLINE`' }] } },
+    { type: 'message', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Resultado listo.\n```sh\nPRIVATE_CODE\n```\n+PRIVATE_DIFF\n`PRIVATE_INLINE`' }] } },
   ];
   const h = harness('tui', { branch, modelRegistry: {
     find: (provider: string, id: string) => provider === 'openai' && id === 'gpt-5.2' ? { provider, id } : undefined,

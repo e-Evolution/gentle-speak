@@ -562,7 +562,7 @@ test('copy speech uses the current voice path and cancels playback like a manual
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(children[0].killed >= 1, true, 'previous playback cancelled');
     assert.equal(JSON.parse(writes[1]).text, 'segunda');
-  } finally { g.close(); }
+  } finally { g.events.get('session_shutdown')!({ reason: 'quit' }, g.ctx); g.close(); }
 });
 
 test('the SPEAK row shows the copy marker only while the option is on', async () => {

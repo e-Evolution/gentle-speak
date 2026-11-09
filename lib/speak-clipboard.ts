@@ -164,7 +164,8 @@ export function createCopiedSelectionWatcher(opts: CopiedSelectionWatcherOptions
     const text = (await readText()).trim().slice(0, MAX_COPIED_CHARS);
     if (!text) return;
     if (opts.isOwnCopy && !opts.isOwnCopy(text)) return;
-    await opts.speak(text);
+    // The gate needs the copied lines; speech takes one line, since the speak path rejects control characters (L51).
+    await opts.speak(text.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim());
   };
 
   return {
@@ -233,8 +234,19 @@ export function createOwnCopyGate(getTui: () => unknown): (text: string) => bool
       if (!isSelectionTui(tui) || tui.getCopyOnSelect() !== true || tui.hasActiveSelection() !== true) return false;
       const wanted = normalize(text);
       if (!wanted) return false;
-      const screen = normalize(tui.getScreenLines().map((line) => String(line).replace(ANSI, '')).join(' '));
-      return screen.includes(wanted);
+      // pi-tui builds the copied text with this (TS-private) method; when present, require the copy to be exactly it (L51).
+      const selectionText = (tui as { getActiveSelectionText?: unknown }).getActiveSelectionText;
+      if (typeof selectionText === 'function') {
+        const selected = selectionText.call(tui);
+        if (typeof selected !== 'string') return false;
+        const own = normalize(selected);
+        return own === wanted || (text.length >= MAX_COPIED_CHARS && own.startsWith(wanted));
+      }
+      // Fallback: the copied text on screen, either whole or line by line (a multi-row copy skips the right rail).
+      const rows = tui.getScreenLines().map((line) => normalize(String(line).replace(ANSI, '')));
+      if (normalize(rows.join(' ')).includes(wanted)) return true;
+      const lines = text.split('\n').map(normalize).filter(Boolean);
+      return lines.every((line) => rows.some((row) => row.includes(line)));
     } catch {
       return false;
     }

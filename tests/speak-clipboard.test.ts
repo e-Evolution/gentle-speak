@@ -262,3 +262,50 @@ test('real osascript: the JXA emitter writes one parseable line to stdout and no
   assert.equal(run.stdout, 'GSCLIP\t7\tpublic.utf8-plain-text\tcom.github.wez.wezterm\n');
   assert.deepEqual(parseClipboardLine(run.stdout.trimEnd()), { count: 7, types: ['public.utf8-plain-text'], frontmost: 'com.github.wez.wezterm' });
 });
+
+// L51: pi-tui copies a multi-row selection from the chat box only, while every screen row also holds the right rail.
+const RAIL_SCREEN = [
+  '   GIT:  On branch feat/gentle-speak      PATH:  /x/gentle-speak        │ - SPEAK ● on · modo todo │',
+  '   MCP:  3 server(s)                      PLUGINS:  11 pac               │   on/off · copia ● ctrl+alt+c │',
+];
+const RAIL_COPY = 'On branch feat/gentle-speak      PATH:  /x/gentle-speak\n   MCP:  3 server(s)                      PLUGINS:  11 pac';
+const selTui = (selection: unknown, o: Record<string, unknown> = {}) => ({
+  getCopyOnSelect: () => true, hasActiveSelection: () => true, getScreenLines: () => RAIL_SCREEN,
+  getActiveSelectionText: typeof selection === 'function' ? selection : () => selection, ...o,
+});
+
+test('own-copy gate: a multi-row copy equal to the active selection text passes despite the rail', () => {
+  assert.equal(createOwnCopyGate(() => selTui(RAIL_COPY))(RAIL_COPY), true);
+});
+
+test('own-copy gate: with a selection text, only an exact (normalized) match passes, not any on-screen text', () => {
+  assert.equal(createOwnCopyGate(() => selTui('On branch feat/gentle-speak'))('3 server(s)'), false);
+  assert.equal(createOwnCopyGate(() => selTui('On branch feat/gentle-speak'))('On  branch\nfeat/gentle-speak '), true);
+  assert.equal(createOwnCopyGate(() => selTui(undefined))('On branch feat/gentle-speak'), false);
+  assert.equal(createOwnCopyGate(() => selTui(() => { throw new Error('boom'); }))('On branch feat/gentle-speak'), false);
+  assert.equal(createOwnCopyGate(() => selTui(RAIL_COPY, { hasActiveSelection: () => false }))(RAIL_COPY), false);
+});
+
+test('own-copy gate: a copy truncated to MAX_COPIED_CHARS passes when the selection starts with it', () => {
+  const long = 'palabra '.repeat(700).trim();
+  const copied = long.trim().slice(0, MAX_COPIED_CHARS); // exactly what the watcher hands the gate
+  assert.equal(copied.length, MAX_COPIED_CHARS);
+  assert.equal(createOwnCopyGate(() => selTui(long))(copied), true);
+  assert.equal(createOwnCopyGate(() => selTui(long))('palabra palabra'), false);
+});
+
+test('own-copy gate fallback (no selection text getter): each copied line found on one screen row passes', () => {
+  const tui = { getCopyOnSelect: () => true, hasActiveSelection: () => true, getScreenLines: () => RAIL_SCREEN };
+  assert.equal(createOwnCopyGate(() => tui)(RAIL_COPY), true);
+  assert.equal(createOwnCopyGate(() => tui)('On branch feat/gentle-speak\nno está en pantalla'), false);
+});
+
+// L51: a multi-row copy carries newlines, which the speak path rejects as "Invalid speech text."
+test('a multi-line copy is spoken as one line: newlines, tabs and control characters become single spaces', async () => {
+  const s = setup({ text: '  On branch feat/gentle-speak   PATH: /x\n   MCP:\t3 server(s)\r\n\u0007fin  ' });
+  s.w.start();
+  s.child.line(9, ['public.utf8-plain-text'], TERM);
+  await s.flush();
+  assert.deepEqual(s.spoken, ['On branch feat/gentle-speak PATH: /x MCP: 3 server(s) fin']);
+  assert.equal(/[\x00-\x1f]/.test(s.spoken[0]), false);
+});

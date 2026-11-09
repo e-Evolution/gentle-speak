@@ -90,6 +90,11 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
       catch { finish(result('Audio worker input failed.', true)); }
     });
   }
+  async function speakAutomatically(text: string, ctx: ExtensionContext, signal?: AbortSignal) {
+    const outcome = await speak(text, ctx, signal);
+    const message = outcome.content[0].text;
+    if (outcome.isError && message !== 'Speech cancelled.' && !stopped && !signal?.aborted && parent(ctx)) ctx.ui.notify(message, 'error');
+  }
   pi.on('agent_settled', async (event, ctx) => {
     if (stopped || event.aborted || !parent(ctx)) return;
     const settings = readSpeakSettings(home);
@@ -98,7 +103,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     // Summarize only sanitized final assistant prose, never a transcript, tool output, code, or diffs.
     const source = filterSettledSpeech(messages, settings.mode === 'summary' ? 'questions-and-results' : settings.mode);
     if (!source) return;
-    if (settings.mode !== 'summary') { await speak(source, ctx); return; }
+    if (settings.mode !== 'summary') { await speakAutomatically(source, ctx); return; }
     if (!settings.summaryModel) return;
     const model = ctx.modelRegistry.find(settings.summaryModel.provider, settings.summaryModel.id);
     if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) return;

@@ -59,6 +59,45 @@ test('manual speech verifies both installed roots before child creation and send
   } finally { h.close(); }
 });
 
+test('enabled all settled response plays sanitized prose and reports playback errors but not cancellation', async () => {
+  const writes: string[] = [];
+  const children: any[] = [];
+  const branch = [
+    { type: 'message', message: { role: 'toolResult', content: [{ type: 'text', text: 'SECRET_TOOL' }] } },
+    { type: 'message', message: { role: 'assistant', stopReason: 'end_turn', content: [{ type: 'text', text: 'Resultado listo.\n```sh\nSECRET_CODE\n```' }] } },
+  ];
+  const h = harness('tui', { branch, dependencies: {
+    modelStatus: async () => ({ state: 'installed', path: '/verified/model' }),
+    runtimeStatus: async () => ({ state: 'installed', path: '/verified/runtime' }),
+    spawn: () => {
+      const child = Object.assign(new EventEmitter(), { stdin: { write: (line: string) => { writes.push(line); return true; } }, stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true });
+      children.push(child);
+      return child;
+    },
+  } });
+  try {
+    writeFileSync(join(h.home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'all' }));
+    const settled = h.events.get('agent_settled')!({ aborted: false }, h.ctx);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(children.length, 1);
+    assert.equal(JSON.parse(writes[0]).text, 'Resultado listo.');
+    assert.doesNotMatch(writes[0], /SECRET_TOOL|SECRET_CODE/);
+    children[0].stdout.emit('data', JSON.stringify({ schema: 'gentle.speak/v1', type: 'done', id: 1 }) + '\n');
+    await settled;
+    assert.deepEqual(h.notifications, []);
+    const failed = h.events.get('agent_settled')!({ aborted: false }, h.ctx);
+    await new Promise(resolve => setImmediate(resolve));
+    children[1].stdout.emit('data', JSON.stringify({ schema: 'gentle.speak/v1', type: 'error', id: 2 }) + '\n');
+    await failed;
+    assert.deepEqual(h.notifications, ['Audio playback failed.']);
+    const cancelled = h.events.get('agent_settled')!({ aborted: false }, h.ctx);
+    await new Promise(resolve => setImmediate(resolve));
+    h.events.get('session_shutdown')!({}, h.ctx);
+    await cancelled;
+    assert.deepEqual(h.notifications, ['Audio playback failed.']);
+  } finally { h.close(); }
+});
+
 test('missing model never starts child and installing requires separate confirmations', async () => {
   let created = 0, installed = 0;
   const h = harness('tui', { dependencies: { modelStatus: async () => ({ state: 'missing', path: '/missing' }), runtimeStatus: async () => ({ state: 'missing', path: '/missing' }), spawn: () => { created++; }, installModel: async () => { installed++; }, installRuntime: async () => { installed++; } } });

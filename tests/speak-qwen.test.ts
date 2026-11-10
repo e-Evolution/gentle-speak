@@ -7,6 +7,7 @@ import { join, basename } from 'node:path';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA } from '../lib/speak-settings.ts';
 import { QWEN_VOICES } from '../lib/speak-voices.ts';
 import gentleSpeak from '../extensions/gentle-speak.ts';
+import { createQwenSpeech } from '../lib/speak-qwen.ts';
 
 const QS = 'gentle.speak.qwen/v1', AS = 'gentle.speak/v1';
 const voice = QWEN_VOICES['qwen-intima'];
@@ -521,4 +522,200 @@ test('streamed parts + replay: parts of the superseded id that arrive mid-stream
     audio.emit({ schema: AS, type: 'done', id: 2 });
     assert.equal((await second).isError, undefined);
   } finally { h.close(); }
+});
+
+// ---- T30a: prepare (synthesize without playing) and speakPrepared, driven directly through createQwenSpeech ----
+const tickMany = async () => { for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r)); };
+function direct() {
+  const root = mkdtempSync(join(tmpdir(), 'speak-qwen-prep-'));
+  const pythons: Array<ReturnType<typeof fakeChild>> = [], audios: Array<ReturnType<typeof fakeChild>> = [];
+  const qwen = createQwenSpeech({ tmpRoot: root, spawnPython: () => { const p = fakeChild(); pythons.push(p); return p.child; }, spawnAudio: () => { const a = fakeChild(); audios.push(a); return a.child; } });
+  const base = { python: '/fake/python3', ref: '/ref.wav', refText: 'ref', speed: 1.25 };
+  const synths = () => pythons.flatMap(p => p.writes.filter(w => w.type === 'synth'));
+  const chunk = (py: ReturnType<typeof fakeChild>, id: number, seq: number) => {
+    const wav = join(synths().find(w => w.id === id).outDir, `chunk-${id}-${seq}.wav`); writeFileSync(wav, 'RIFF');
+    py.emit({ schema: QS, type: 'chunk', id, seq, wav, seconds: 1 }); return wav;
+  };
+  const leftovers = () => readdirSync(root);
+  return { root, pythons, audios, qwen, base, synths, chunk, leftovers, close: () => { qwen.dispose(); rmSync(root, { recursive: true, force: true }); } };
+}
+const readyOne = async (d: ReturnType<typeof direct>, count = 1) => { await until(() => d.pythons.length === 1); d.pythons[0].emit({ schema: QS, type: 'ready' }); await until(() => d.synths().length === count); };
+
+test('prepare synthesizes WAV chunks in order without spawning the audio worker or playing', async () => {
+  const d = direct();
+  try {
+    const result = d.qwen.prepare({ ...d.base, text: 'Hola. Adios.' });
+    await readyOne(d);
+    assert.deepEqual({ ...d.synths()[0], outDir: undefined }, { schema: QS, type: 'synth', id: 1, text: 'Hola. Adios.', ref: '/ref.wav', refText: 'ref', outDir: undefined, speed: 1.25 });
+    const a = d.chunk(d.pythons[0], 1, 0), b = d.chunk(d.pythons[0], 1, 1);
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 1 });
+    assert.deepEqual(await result, { ok: true, wavs: [a, b] });
+    assert.equal(d.audios.length, 0, 'nothing plays');
+    assert.equal(existsSync(a) && existsSync(b), true, 'the files wait for speakPrepared or discard');
+    d.qwen.discard([a, b]);
+    assert.equal(existsSync(a) || existsSync(b), false);
+    assert.deepEqual(d.leftovers(), [], 'discarding every WAV removes the prepare directory');
+  } finally { d.close(); }
+});
+
+test('prepare rejects an out-of-order chunk, deleting what it wrote and not reusing the worker', async () => {
+  const d = direct();
+  try {
+    const bad = d.qwen.prepare({ ...d.base, text: 'Uno.' });
+    await readyOne(d);
+    const first = d.chunk(d.pythons[0], 1, 0);
+    d.chunk(d.pythons[0], 1, 5);
+    assert.deepEqual(await bad, { ok: false, message: 'Invalid Qwen worker response.' });
+    assert.equal(existsSync(first), false);
+    assert.equal(d.pythons[0].child.killed, 1);
+    assert.deepEqual(d.leftovers(), []);
+  } finally { d.close(); }
+});
+
+test('cancelling a prepare through its AbortSignal resolves cancelled and deletes its WAVs but keeps the worker warm', async () => {
+  const d = direct();
+  try {
+    const controller = new AbortController();
+    const result = d.qwen.prepare({ ...d.base, text: 'Uno.', signal: controller.signal });
+    await readyOne(d);
+    const wav = d.chunk(d.pythons[0], 1, 0);
+    controller.abort();
+    assert.deepEqual(await result, { ok: false, message: 'Speech cancelled.', cancelled: true });
+    assert.equal(existsSync(wav), false);
+    assert.deepEqual(d.leftovers(), []);
+    assert.equal(d.pythons[0].child.killed, 0);
+    const already = await d.qwen.prepare({ ...d.base, text: 'Dos.', signal: controller.signal });
+    assert.equal(already.ok === false && already.cancelled, true, 'an already-aborted signal never starts');
+    assert.equal(d.synths().length, 1);
+  } finally { d.close(); }
+});
+
+test('speakPrepared plays the prepared WAVs in order, then synthesizes and plays the remainder', async () => {
+  const d = direct();
+  try {
+    const prep = d.qwen.prepare({ ...d.base, text: 'Uno.' });
+    await readyOne(d);
+    const a = d.chunk(d.pythons[0], 1, 0), b = d.chunk(d.pythons[0], 1, 1);
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 1 });
+    assert.equal((await prep).ok, true);
+    const run = d.qwen.speakPrepared({ ...d.base, wavs: [a, b], remainderText: ' Dos tres. ', runtime: '/rt' });
+    await until(() => d.audios[0]?.writes.length === 2 && d.synths().length === 2);
+    assert.deepEqual(d.audios[0].writes, [
+      { schema: AS, type: 'play', id: 1, wav: a, speed: 1, runtime: '/rt' },
+      { schema: AS, type: 'play', id: 2, wav: b, speed: 1, runtime: '/rt' },
+    ]);
+    assert.deepEqual([d.synths()[1].id, d.synths()[1].text], [2, 'Dos tres.']);
+    assert.equal(d.pythons.length, 1, 'the same warm worker');
+    const c = d.chunk(d.pythons[0], 2, 0);
+    await until(() => d.audios[0].writes.length === 3);
+    assert.equal(d.audios[0].writes[2].wav, c);
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 2 });
+    for (const id of [1, 2, 3]) d.audios[0].emit({ schema: AS, type: 'done', id });
+    assert.deepEqual(await run, { ok: true });
+    assert.equal([a, b, c].some(existsSync), false, 'every WAV is deleted once played');
+    assert.deepEqual(d.leftovers().filter(name => name.startsWith('gentle-speak-prep-')), [], 'the prepare directory is gone');
+  } finally { d.close(); }
+});
+
+test('speakPrepared with an empty remainder plays the WAVs and synthesizes nothing', async () => {
+  const d = direct();
+  try {
+    const prep = d.qwen.prepare({ ...d.base, text: 'Uno.' });
+    await readyOne(d);
+    const a = d.chunk(d.pythons[0], 1, 0);
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 1 }); await prep;
+    const run = d.qwen.speakPrepared({ ...d.base, wavs: [a], remainderText: '', runtime: '/rt' });
+    await until(() => d.audios[0]?.writes.length === 1);
+    d.audios[0].emit({ schema: AS, type: 'done', id: 1 });
+    assert.deepEqual(await run, { ok: true });
+    assert.equal(d.synths().length, 1);
+    assert.equal(existsSync(a), false);
+  } finally { d.close(); }
+});
+
+test('a failing audio worker fails speakPrepared with the same outcome shape as speak and deletes the WAVs', async () => {
+  const d = direct();
+  try {
+    const prep = d.qwen.prepare({ ...d.base, text: 'Uno.' });
+    await readyOne(d);
+    const a = d.chunk(d.pythons[0], 1, 0);
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 1 }); await prep;
+    const run = d.qwen.speakPrepared({ ...d.base, wavs: [a], remainderText: '', runtime: '/rt' });
+    await until(() => d.audios[0]?.writes.length === 1);
+    d.audios[0].emit({ schema: AS, type: 'error', id: 1, cause: 'device gone' });
+    assert.deepEqual(await run, { ok: false, message: 'Audio playback failed: device gone.' });
+    assert.equal(existsSync(a), false);
+  } finally { d.close(); }
+});
+
+test('a prepare requested while a speak runs waits for it: the worker is never given two requests at once', async () => {
+  const d = direct();
+  try {
+    const speaking = d.qwen.speak({ ...d.base, text: 'Habla.', runtime: '/rt' });
+    await until(() => d.pythons.length === 1);
+    const prep = d.qwen.prepare({ ...d.base, text: 'Luego.' });
+    d.pythons[0].emit({ schema: QS, type: 'ready' }); await until(() => d.synths().length === 1);
+    await tickMany();
+    assert.deepEqual(d.synths().map(w => w.text), ['Habla.'], 'prepare has not reached the worker');
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 1 });
+    assert.deepEqual(await speaking, { ok: true });
+    await until(() => d.synths().length === 2);
+    assert.deepEqual(d.synths().map(w => [w.id, w.text]), [[1, 'Habla.'], [2, 'Luego.']]);
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 2 });
+    assert.deepEqual(await prep, { ok: true, wavs: [] });
+  } finally { d.close(); }
+});
+
+test('a speak that arrives while a prepare runs cancels the prepare (its WAVs are deleted) and takes the worker', async () => {
+  const d = direct();
+  try {
+    const prep = d.qwen.prepare({ ...d.base, text: 'Especula.' });
+    await readyOne(d);
+    const wav = d.chunk(d.pythons[0], 1, 0);
+    const speaking = d.qwen.speak({ ...d.base, text: 'Real.', runtime: '/rt' });
+    assert.deepEqual(await prep, { ok: false, message: 'Speech cancelled.', cancelled: true });
+    assert.equal(existsSync(wav), false);
+    await until(() => d.synths().length === 2);
+    assert.deepEqual([d.synths()[1].id, d.synths()[1].text], [2, 'Real.']);
+    d.pythons[0].emit({ schema: QS, type: 'chunk', id: 1, seq: 1, wav: join(d.root, 'late.wav'), seconds: 1 }); // late traffic of the cancelled prepare is ignored
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 1 });
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 2 });
+    assert.deepEqual(await speaking, { ok: true });
+  } finally { d.close(); }
+});
+
+test('stop cancels a running prepare and deletes finished prepared WAVs; a plain speak does not touch them', async () => {
+  const d = direct();
+  try {
+    const first = d.qwen.prepare({ ...d.base, text: 'Uno.' });
+    await readyOne(d);
+    const kept = d.chunk(d.pythons[0], 1, 0);
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 1 }); await first;
+    const other = d.qwen.speak({ ...d.base, text: 'Otro.', runtime: '/rt' });
+    await until(() => d.synths().length === 2);
+    assert.equal(existsSync(kept), true, 'a speak keeps buffered speculative audio');
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 2 }); await other;
+    const second = d.qwen.prepare({ ...d.base, text: 'Dos.' });
+    await until(() => d.synths().length === 3);
+    const wav = d.chunk(d.pythons[0], 3, 0);
+    d.qwen.stop();
+    assert.deepEqual(await second, { ok: false, message: 'Speech cancelled.', cancelled: true });
+    assert.equal(existsSync(kept) || existsSync(wav), false);
+    assert.deepEqual(d.leftovers(), []);
+  } finally { d.close(); }
+});
+
+test('preserve: speak alone still uses its own directory, plays chunks in order, and removes its temp dir on stop', async () => {
+  const d = direct();
+  try {
+    const run = d.qwen.speak({ ...d.base, text: 'Solo.', runtime: '/rt' });
+    await readyOne(d);
+    assert.match(basename(d.synths()[0].outDir), /^gentle-speak-\w/);
+    const wav = d.chunk(d.pythons[0], 1, 0);
+    await until(() => d.audios[0]?.writes.length === 1);
+    assert.equal(d.audios[0].writes[0].wav, wav);
+    d.qwen.stop();
+    assert.deepEqual(await run, { ok: false, message: 'Speech cancelled.', cancelled: true });
+    assert.deepEqual(d.leftovers(), []);
+  } finally { d.close(); }
 });

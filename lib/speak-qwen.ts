@@ -32,12 +32,22 @@ export interface QwenPrepareRequest {
   python: string; text: string; ref: string; refText: string; speed: number;
   signal?: AbortSignal; onWarning?: (message: string) => void;
 }
-/** Plays `wavs` (from `prepare`) in order, then synthesizes and plays `remainderText` (may be empty). */
+/** Plays `wavs` (from `prepare`) in order, then the parts of the still-running `inflight` prepare as they arrive, then synthesizes and plays `remainderText` (may be empty). */
 export interface QwenSpeakPreparedRequest {
-  python: string; wavs: readonly string[]; remainderText: string; ref: string; refText: string; speed: number; runtime: string;
+  python: string; wavs: readonly string[]; inflight?: QwenPrepareHandle; remainderText: string; ref: string; refText: string; speed: number; runtime: string;
   onWarning?: (message: string) => void;
 }
 export type QwenPrepareOutcome = { ok: true; wavs: string[] } | { ok: false; message: string; cancelled?: boolean };
+/** A running `prepare`: its parts can be consumed while it is still synthesizing. */
+export interface QwenPrepareHandle {
+  /** Calls `listener` with every part so far (replay), then with each new part in order; returns an unsubscribe. */
+  onPart(listener: (wav: string) => void): () => void;
+  /** Settles like the `prepare` promise. */
+  readonly done: Promise<QwenPrepareOutcome>;
+  /** Cancels the synthesis and deletes its files (no effect once finished). */
+  cancel(): void;
+}
+export type QwenPreparation = Promise<QwenPrepareOutcome> & { handle: QwenPrepareHandle };
 export type QwenOutcome = { ok: true } | { ok: false; message: string; cancelled?: boolean };
 
 /** The interpreter recorded in the installer's manifest.json, or undefined when it is missing or malformed. */
@@ -82,6 +92,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
   /** At most one `prepare` runs, never while a `speak` runs: the others wait here. */
   let activePrepare: PrepareJob | undefined;
   const prepareQueue: PrepareJob[] = [];
+  const jobs = new WeakMap<QwenPrepareHandle, PrepareJob>();
 
   const removeTmp = () => { if (tmp) { try { rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ } tmp = undefined; } };
   const killPython = () => { const old = python; python = undefined; try { old?.child.kill(); } catch { /* already gone */ } };
@@ -116,9 +127,9 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
     prepareQueue.shift()?.start();
   }
   /** A speak has priority over speculation: every running or queued prepare is cancelled (its files deleted). */
-  function cancelPrepares() {
-    const jobs = [...(activePrepare ? [activePrepare] : []), ...prepareQueue.splice(0)];
-    for (const job of jobs) job.cancel();
+  function cancelPrepares(keep?: PrepareJob) {
+    const all = [...(activePrepare ? [activePrepare] : []), ...prepareQueue.splice(0)];
+    for (const job of all) if (job !== keep) job.cancel(); // a kept job that was still queued is started by its adopter
   }
 
   /** Stops playback and drops queued chunks. A hard stop also kills the synth worker; it respawns lazily. */
@@ -137,12 +148,13 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
 
   function speakPrepared(request: QwenSpeakPreparedRequest): Promise<QwenOutcome> {
     const { wavs, remainderText, ...rest } = request;
-    return run({ ...rest, text: remainderText.trim() }, wavs);
+    return run({ ...rest, text: remainderText.trim() }, wavs, request.inflight);
   }
 
   /** The shared utterance path: plays `initial` WAVs first, then synthesizes `request.text` unless it is empty (never for `speak`). */
-  function run(request: QwenSpeakRequest, initial: readonly string[]): Promise<QwenOutcome> {
-    cancelPrepares();
+  function run(request: QwenSpeakRequest & { inflight?: QwenPrepareHandle }, initial: readonly string[], inflight?: QwenPrepareHandle): Promise<QwenOutcome> {
+    const adopted = inflight ? jobs.get(inflight) : undefined;
+    cancelPrepares(adopted); // an adopted prepare keeps running: its parts are played as they arrive
     stop(false); // supersede the previous utterance; keep an idle model loaded
     const dir = ensureTmp();
     const id = ++requestId;
@@ -151,10 +163,11 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
       const pending = new Map<number, string>();
       let settled = false, synthDone = false, nextSeq = 0;
       let readyTimer: ReturnType<typeof setTimeout> | undefined, idleTimer: ReturnType<typeof setTimeout> | undefined;
-      const synthesizes = initial.length === 0 || request.text !== '';
+      const synthesizes = (initial.length === 0 && !inflight) || request.text !== '';
       const preparedDirs = new Set(initial.map(wav => dirname(wav)).filter(dir => prepDirs.has(dir)));
       let worker!: NonNullable<typeof python>;
-      try { if (synthesizes) worker = python ?? startPython(request.python); }
+      let unsubscribe: (() => void) | undefined, inflightDone = false;
+      try { if (synthesizes && !inflight) worker = python ?? startPython(request.python); }
       catch { busy = false; removeTmp(); for (const wav of initial) rmSync(wav, { force: true }); preparedDirs.forEach(dropPrepDir); resolve({ ok: false, message: 'Qwen worker could not start.' }); startNext(); return; }
       const finish = (outcome: QwenOutcome) => {
         if (settled) return;
@@ -162,6 +175,8 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
         clearTimeout(idleTimer);
         clearTimeout(readyTimer);
         if (worker) worker.handler = undefined;
+        unsubscribe?.();
+        if (inflight && !inflightDone) inflight.cancel(); // an unfinished adopted prepare dies with its utterance
         if (cancelCurrent === cancel) cancelCurrent = undefined;
         for (const wav of pending.values()) rmSync(wav, { force: true });
         pending.clear();
@@ -226,35 +241,60 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
           default: finish({ ok: false, message: 'Invalid Qwen worker response.' });
         }
       }
+      const beginSynth = () => {
+        worker.handler = handle;
+        if (worker.ready) sendSynth();
+        else {
+          readyTimer = setTimeout(() => finish({ ok: false, message: 'Qwen worker did not become ready.' }), QWEN_READY_TIMEOUT_MS);
+          worker.handler = message => { if (message.type === 'ready') clearTimeout(readyTimer); handle(message); };
+        }
+      };
       if (!synthesizes) {
         synthDone = true;
         for (const wav of initial) play(wav);
-        maybeDone();
+        if (!inflight) { maybeDone(); return; }
+      } else for (const wav of initial) play(wav);
+      if (inflight) {
+        // Strict order: finished WAVs, then each part of the in-flight sentence as it arrives, then the remainder once the worker is free.
+        if (adopted && !adopted.started && !adopted.settled) { const queued = prepareQueue.indexOf(adopted); if (queued >= 0) prepareQueue.splice(queued, 1); adopted.start(); }
+        unsubscribe = inflight.onPart(wav => { if (!settled) { const dir = dirname(wav); if (prepDirs.has(dir)) preparedDirs.add(dir); play(wav); } });
+        inflight.done.then(outcome => {
+          inflightDone = true;
+          if (settled) return;
+          if (!outcome.ok) { finish({ ok: false, message: outcome.message, cancelled: outcome.cancelled }); return; }
+          unsubscribe?.();
+          if (!synthesizes) { maybeDone(); return; }
+          try { worker = python ?? startPython(request.python); } catch { finish({ ok: false, message: 'Qwen worker could not start.' }); return; }
+          beginSynth();
+        });
         return;
       }
-      for (const wav of initial) play(wav);
-      worker.handler = handle;
-      if (worker.ready) sendSynth();
-      else {
-        readyTimer = setTimeout(() => finish({ ok: false, message: 'Qwen worker did not become ready.' }), QWEN_READY_TIMEOUT_MS);
-        worker.handler = message => { if (message.type === 'ready') clearTimeout(readyTimer); handle(message); };
-      }
+      beginSynth();
     });
   }
 
-  interface PrepareJob { start: () => void; cancel: () => void }
+  interface PrepareJob { start: () => void; cancel: () => void; started?: boolean; settled?: boolean }
 
   /** Synthesizes into WAV files without playing, through the same warm worker and per-part streaming. */
-  function prepare(request: QwenPrepareRequest): Promise<QwenPrepareOutcome> {
-    return new Promise<QwenPrepareOutcome>(resolve => {
+  function prepare(request: QwenPrepareRequest): QwenPreparation {
+    let handle!: QwenPrepareHandle;
+    const promise = new Promise<QwenPrepareOutcome>(resolve => {
       let settled = false, nextSeq = 0, dir: string | undefined;
       let readyTimer: ReturnType<typeof setTimeout> | undefined, idleTimer: ReturnType<typeof setTimeout> | undefined;
       let worker: NonNullable<typeof python> | undefined;
       const wavs: string[] = [];
+      const listeners = new Set<(wav: string) => void>();
       const job: PrepareJob = { start, cancel: () => finish({ ok: false, message: 'Speech cancelled.', cancelled: true }) };
+      handle = {
+        onPart(listener) { for (const wav of wavs) listener(wav); listeners.add(listener); return () => { listeners.delete(listener); }; },
+        get done() { return promise; },
+        cancel: () => job.cancel(),
+      };
+      jobs.set(handle, job);
       const finish = (outcome: QwenPrepareOutcome) => {
         if (settled) return;
-        settled = true;
+        settled = true; job.settled = true;
+        listeners.clear();
         clearTimeout(idleTimer); clearTimeout(readyTimer);
         request.signal?.removeEventListener('abort', job.cancel);
         if (worker) worker.handler = undefined;
@@ -270,6 +310,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
       const armIdle = () => { clearTimeout(idleTimer); idleTimer = setTimeout(() => finish({ ok: false, message: 'Qwen worker timed out.' }), QWEN_SYNTH_IDLE_TIMEOUT_MS); };
       function start() {
         if (settled) return;
+        job.started = true;
         activePrepare = job;
         const id = ++requestId;
         try {
@@ -291,7 +332,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
             case 'warning': armIdle(); if (typeof message.message === 'string') request.onWarning?.(message.message.slice(0, 200)); break;
             case 'chunk':
               if (message.id !== id || message.seq !== nextSeq || typeof message.wav !== 'string' || !isAbsolute(message.wav) || dirname(message.wav) !== outDir) { finish({ ok: false, message: 'Invalid Qwen worker response.' }); break; }
-              nextSeq++; armIdle(); wavs.push(message.wav); break;
+              nextSeq++; armIdle(); wavs.push(message.wav); for (const listener of [...listeners]) listener(message.wav); break;
             case 'done':
               if (message.id !== id) { finish({ ok: false, message: 'Invalid Qwen worker response.' }); break; }
               clearTimeout(idleTimer); finish({ ok: true, wavs: [...wavs] }); break;
@@ -309,6 +350,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
       prepareQueue.push(job);
       startNext();
     });
+    return Object.assign(promise, { handle });
   }
 
   /** Deletes prepared WAVs that will never play (and their directory once empty). */

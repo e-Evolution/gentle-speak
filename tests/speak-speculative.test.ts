@@ -166,3 +166,33 @@ test('a failed synthesis stops speculating without retrying; settle returns the 
   assert.equal(f.calls.length, 2);
   assert.deepEqual(f.planner.settle('Uno. Dos. Tres.'), { wavs: ['/t/a.wav'], matchedText: 'Uno.', remainderText: 'Dos. Tres.' });
 });
+
+test('settle hands over a matching in-flight synthesis without aborting it or discarding its result', async () => {
+  const f = fixture();
+  f.planner.update('Uno. Dos. Tres');
+  await tick();
+  await f.finish(0, ['/t/a.wav']);
+  assert.deepEqual(f.calls.map(c => c.text), ['Uno.', 'Dos.']);
+  const settlement = f.planner.settle('Uno. Dos. Tres.');
+  assert.deepEqual(settlement.wavs, ['/t/a.wav']);
+  assert.equal(settlement.matchedText, 'Uno. Dos.');
+  assert.equal(settlement.remainderText, 'Tres.');
+  assert.equal(settlement.inflight?.text, 'Dos.');
+  assert.equal(f.calls[1].signal.aborted, false, 'a useful in-flight synthesis is kept');
+  await f.finish(1, ['/t/b.wav']);
+  assert.deepEqual(await settlement.inflight!.done, { ok: true, wavs: ['/t/b.wav'] });
+  assert.deepEqual(f.discarded, [], 'the planner no longer owns it');
+});
+
+test('settle aborts an in-flight synthesis that does not continue the matched text and returns no handle', async () => {
+  const f = fixture();
+  f.planner.update('Uno. Dos. Tres');
+  await tick();
+  await f.finish(0, ['/t/a.wav']);
+  const settlement = f.planner.settle('Uno. Otra cosa.');
+  assert.equal(settlement.inflight, undefined);
+  assert.equal(settlement.matchedText, 'Uno.');
+  assert.equal(f.calls[1].signal.aborted, true);
+  await f.finish(1, ['/t/b.wav']);
+  assert.deepEqual(f.discarded, [['/t/b.wav']], 'its late result is deleted');
+});

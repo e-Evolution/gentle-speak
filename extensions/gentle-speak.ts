@@ -10,7 +10,8 @@ import { qwenVoicesStatus } from '../lib/speak-voices-install.ts';
 import { createCopiedSelectionWatcher, createOwnCopyGate, isSelectionTui, resolveTerminalBundleId } from '../lib/speak-clipboard.ts';
 import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix, readFrontmostBundleId, type FocusState, type HerdrExec } from '../lib/speak-focus.ts';
 import { createVoiceLock } from '../lib/speak-voice-lock.ts';
-import { createQwenSpeech, playbackFailure, readQwenPython, type QwenChild } from '../lib/speak-qwen.ts';
+import { createSpeculativePlanner } from '../lib/speak-speculative.ts';
+import { createQwenSpeech, playbackFailure, readQwenPython, type QwenChild, type QwenPrepareHandle } from '../lib/speak-qwen.ts';
 import { SPEAK_MODELS, SPEAK_TARGETS, installSpeakModel, installSpeakRuntime, readSpeakModelStatus, readSpeakRuntimeStatus, type SpeakTarget } from '../lib/speak-install.ts';
 
 type Child = Pick<ChildProcessWithoutNullStreams, 'stdin' | 'stdout' | 'stderr' | 'on' | 'kill'>;
@@ -32,6 +33,8 @@ type Dependencies = {
   readFrontmost: () => Promise<string | undefined>;
   focusPollMs: number;
   lockPollMs: number;
+  /** Scratch root of the Qwen engine (tests); defaults to the system temp dir. */
+  qwenTmpRoot?: string;
 };
 const defaults: Dependencies = {
   modelStatus: readSpeakModelStatus, runtimeStatus: readSpeakRuntimeStatus,
@@ -59,7 +62,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   let current: Child | undefined;
   let cancelCurrent: (() => void) | undefined;
   let sequence = 0;
-  const qwen = createQwenSpeech({ spawnPython: python => deps.spawnQwen(python, qwenWorker), spawnAudio: () => deps.spawn(worker) });
+  const qwen = createQwenSpeech({ tmpRoot: deps.qwenTmpRoot, spawnPython: python => deps.spawnQwen(python, qwenWorker), spawnAudio: () => deps.spawn(worker) });
   const reported = new WeakSet<object>();
   // S9 single voice: one cross-process lock under the speak home, held for a whole playback.
   const voiceLock = createVoiceLock({ dir: home, pollMs: deps.lockPollMs });
@@ -181,7 +184,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     }
   }
   /** Qwen3 voices: verified install first, then the lazy Python synth worker feeds the audio worker. */
-  async function speakQwen(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, settings: ReturnType<typeof readSpeakSettings>) {
+  async function speakQwen(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, settings: ReturnType<typeof readSpeakSettings>, prepared?: Prepared) {
     const voice = VOICE_CATALOG[settings.voice] as Extract<(typeof VOICE_CATALOG)[string], { engine: 'qwen3' }>;
     const status = await deps.qwenStatus(home);
     const python = status.manifest === 'valid' && status.voices[settings.voice] === 'installed' ? readQwenPython(home) : undefined;
@@ -201,17 +204,26 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
       const onAbort = () => qwen.stop(false);
       held.addEventListener('abort', onAbort, { once: true });
       try {
-        const outcome = await qwen.speak({ python, text, ref: join(home, 'voices', 'qwen3', voice.file), refText: voice.transcript, speed: settings.speed, runtime: runtime.path, onWarning: message => { if (!stopped && parent(ctx)) ctx.ui.notify(message, 'warning'); } });
+        const request = { python, ref: join(home, 'voices', 'qwen3', voice.file), refText: voice.transcript, speed: settings.speed, runtime: runtime.path, onWarning: (message: string) => { if (!stopped && parent(ctx)) ctx.ui.notify(message, 'warning'); } };
+        // Prepared audio only plays in the voice and speed it was synthesized with; anything else takes today's path.
+        const usable = prepared && !prepared.taken && prepared.voice === settings.voice && prepared.speed === settings.speed;
+        if (prepared && usable) prepared.taken = true; // the Qwen engine owns (and deletes) the files from here on
+        const outcome = usable ? await qwen.speakPrepared({ ...request, wavs: prepared.wavs, inflight: prepared.inflight?.handle, remainderText: prepared.remainderText }) : await qwen.speak({ ...request, text });
         return outcome.ok ? result('Speech completed.') : result(outcome.message, true);
       } finally { held.removeEventListener('abort', onAbort); }
     });
   }
-  async function speak(text: string, ctx: ExtensionContext, signal?: AbortSignal) {
+  /** Prepared audio never outlives its utterance: whatever the Qwen engine did not take over is deleted here. */
+  async function speak(text: string, ctx: ExtensionContext, signal?: AbortSignal, prepared?: Prepared) {
+    try { return await speakNow(text, ctx, signal, prepared); }
+    finally { if (prepared && !prepared.taken) { prepared.taken = true; discardPrepared(prepared); } }
+  }
+  async function speakNow(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, prepared: Prepared | undefined) {
     if (stopped || !parent(ctx)) return result('Speech requires an interactive parent TUI session.', true);
     if (!text.trim() || text.length > 4000 || /[\x00-\x1f]/.test(text)) return result('Invalid speech text.', true);
     if (!SPEAK_TARGETS.includes(target)) return result('Unsupported audio runtime platform.', true);
     const settings = readSpeakSettings(home);
-    if (VOICE_CATALOG[settings.voice]?.engine === 'qwen3') return speakQwen(text, ctx, signal, settings);
+    if (VOICE_CATALOG[settings.voice]?.engine === 'qwen3') return speakQwen(text, ctx, signal, settings, prepared);
     const voice = settings.voice as keyof typeof SPEAK_MODELS;
     // Never transmit paths to the native child until BOTH installers validate the complete artifacts.
     const model = await deps.modelStatus({ home, voice });
@@ -267,43 +279,140 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     if (!text.trim() || text.length > 4000 || /[\x00-\x1f]/.test(text)) return result('Invalid speech text.', true);
     return undefined;
   }
-  type Pending = { text: string; ctx: ExtensionContext; signal?: AbortSignal; report: boolean; started: boolean; detached: boolean; outcome?: Promise<ReturnType<typeof result> | undefined> };
+  /** S10: WAVs synthesized while the answer was written; owned by the pending item until it plays (the Qwen engine then owns them) or is dropped. */
+  type Prepared = { wavs: string[]; /** A sentence still being synthesized at settle; it plays right after `wavs`, part by part. */ inflight?: { handle: QwenPrepareHandle; abort: () => void; done: Promise<{ ok: boolean; wavs?: string[] }> }; remainderText: string; voice: string; speed: number; taken?: boolean };
+  /** Deletes prepared audio that will never play, including an in-flight synthesis (aborted, and its files deleted even if it finished meanwhile). */
+  function discardPrepared(prepared: Prepared) {
+    qwen.discard(prepared.wavs);
+    const flying = prepared.inflight;
+    if (!flying) return;
+    flying.abort();
+    void flying.done.then(outcome => { if (outcome.ok && outcome.wavs) qwen.discard(outcome.wavs); });
+  }
+  let pendingItem: Pending | undefined;
+  const dropPrepared = (item: Pending) => { const prepared = item.prepared; item.prepared = undefined; if (prepared && !prepared.taken) { prepared.taken = true; discardPrepared(prepared); } };
+  type Pending = { text: string; ctx: ExtensionContext; signal?: AbortSignal; report: boolean; prepared?: Prepared; started: boolean; detached: boolean; outcome?: Promise<ReturnType<typeof result> | undefined> };
   /** S9: focused speaks now, unfocused keeps only the latest and speaks it on focus, unknown speaks in turn with the project prefix. */
   const deferral = createLatestOnlyDeferral<Pending>({
     checkFocus: focusCheck,
     pollMs: deps.focusPollMs,
     onReady: (item, delivery) => {
-      if (stopped) return;
+      if (stopped) { dropPrepared(item); return; }
       item.started = true;
+      // Prepared audio carries no project prefix, so an unknown focus (prefix applies) speaks the prefixed text normally.
+      if (delivery?.prefixProject) dropPrepared(item);
+      const prepared = item.prepared; item.prepared = undefined;
       const text = delivery?.prefixProject ? projectPrefix(item.ctx.cwd, item.text).replace(/[\x00-\x1f]/g, ' ').slice(0, 4000) : item.text;
       const signal = item.detached ? undefined : item.signal;
-      item.outcome = (item.report ? speakAutomatically(text, item.ctx, signal).then(() => undefined) : speak(text, item.ctx, signal)).catch(() => undefined);
+      item.outcome = (item.report ? speakAutomatically(text, item.ctx, signal, prepared).then(() => undefined) : speak(text, item.ctx, signal, prepared)).catch(() => undefined);
     },
   });
   /** Resolves with the playback outcome when it started now; undefined when it was deferred (the caller then no longer waits). */
-  async function speakWhenFocused(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, report: boolean) {
-    const item: Pending = { text, ctx, signal, report, started: false, detached: false };
+  async function speakWhenFocused(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, report: boolean, prepared?: Prepared) {
+    const item: Pending = { text, ctx, signal, report, prepared, started: false, detached: false };
+    // The latest item replaces a pending one; the replaced item's prepared audio is deleted, never left behind.
+    if (pendingItem && !pendingItem.started) dropPrepared(pendingItem);
+    pendingItem = item;
     await deferral.offer(item);
     if (item.started) return item.outcome;
     item.detached = true;
     return undefined;
   }
   /** User stop: halts playback and drops the pending item. Internal supersession uses `stop()` alone. */
-  const stopAll = () => { deferral.clear(); stop(); };
-  async function speakAutomatically(text: string, ctx: ExtensionContext, signal?: AbortSignal) {
-    const outcome = await speak(text, ctx, signal);
+  const clearPending = () => { deferral.clear(); if (pendingItem && !pendingItem.started) dropPrepared(pendingItem); pendingItem = undefined; };
+  const stopAll = () => { clearPending(); cancelSpeculation(); stop(); };
+  async function speakAutomatically(text: string, ctx: ExtensionContext, signal?: AbortSignal, prepared?: Prepared) {
+    const outcome = await speak(text, ctx, signal, prepared);
     const message = outcome.content[0].text;
     if (outcome.isError && !reported.has(outcome) && message !== 'Speech cancelled.' && !stopped && !signal?.aborted && parent(ctx)) ctx.ui.notify(message, 'error');
   }
+  /**
+   * S10 speculative synthesis: only a parent TUI with auto-speak on, a qwen3 voice installed and a mode other than summary.
+   * Nothing plays before the answer is final; the planner only synthesizes completed sentences ahead of time.
+   */
+  type Speculation = { voice: string; speed: number; planner: ReturnType<typeof createSpeculativePlanner> };
+  let speculation: Speculation | undefined;
+  let speculationStarting = false;
+  let speculationGeneration = 0;
+  let streamedText = '';
+  const cancelSpeculation = () => { speculationGeneration++; speculation?.planner.cancel(); };
+  const disposeSpeculation = () => { speculationGeneration++; speculation?.planner.dispose(); speculation = undefined; };
+  const assistantText = (message: any): { text: string; toolCall: boolean; ended: boolean } | undefined => {
+    if (message?.role !== 'assistant' || !Array.isArray(message.content)) return undefined;
+    const blocks = message.content as Array<{ type: string; text?: string }>;
+    return {
+      text: blocks.filter(block => block.type === 'text' && typeof block.text === 'string').map(block => block.text).join('\n'),
+      toolCall: blocks.some(block => block.type === 'toolCall') || message.stopReason === 'toolUse',
+      ended: message.stopReason === 'error' || message.stopReason === 'aborted',
+    };
+  };
+  async function startSpeculation(settings: ReturnType<typeof readSpeakSettings>) {
+    const voice = VOICE_CATALOG[settings.voice] as Extract<(typeof VOICE_CATALOG)[string], { engine: 'qwen3' }>;
+    const generation = speculationGeneration;
+    speculationStarting = true;
+    try {
+      const status = await deps.qwenStatus(home);
+      const python = status.manifest === 'valid' && status.voices[settings.voice] === 'installed' ? readQwenPython(home) : undefined;
+      if (!python || stopped || generation !== speculationGeneration) return;
+      const speed = settings.speed;
+      const planner = createSpeculativePlanner({
+        maxAheadChars: 500,
+        synthesize: (text, signal) => qwen.prepare({ python, text, ref: join(home, 'voices', 'qwen3', voice.file), refText: voice.transcript, speed, signal }),
+        discard: wavs => qwen.discard(wavs),
+      });
+      speculation = { voice: settings.voice, speed, planner };
+      planner.update(streamedText);
+    } catch { /* Speculation is an optimization: a failure leaves today's path. */ }
+    finally { speculationStarting = false; }
+  }
+  async function speculate(text: string, ctx: ExtensionContext) {
+    streamedText = text;
+    let settings: ReturnType<typeof readSpeakSettings>;
+    try { settings = readSpeakSettings(home); } catch { return; }
+    if (!settings.enabled || settings.mode === 'summary' || VOICE_CATALOG[settings.voice]?.engine !== 'qwen3' || !SPEAK_TARGETS.includes(target)) { if (speculation) disposeSpeculation(); return; }
+    if (speculation && (speculation.voice !== settings.voice || speculation.speed !== settings.speed)) disposeSpeculation();
+    if (speculation) { speculation.planner.update(text); return; }
+    if (!speculationStarting) await startSpeculation(settings);
+  }
+  pi.on('message_update', async (event, ctx) => {
+    if (stopped || !parent(ctx)) return;
+    const message = assistantText(event.message);
+    if (!message) return;
+    if (message.toolCall || message.ended) { cancelSpeculation(); return; }
+    await speculate(message.text, ctx);
+  });
+  pi.on('message_end', (event, ctx) => {
+    if (stopped || !parent(ctx)) return;
+    const message = assistantText(event.message);
+    if (message && (message.toolCall || message.ended)) cancelSpeculation();
+  });
+  pi.on('agent_start', () => { cancelSpeculation(); });
+  /** At settle: S1 has decided the spoken text; matching buffered audio plays first, the rest is synthesized. */
+  function settleSpeculation(finalText: string): Prepared | undefined {
+    const active = speculation;
+    speculationGeneration++;
+    if (!active) return undefined;
+    const settlement = active.planner.settle(finalText);
+    const flying = settlement.inflight && settlement.inflight.handle ? { handle: settlement.inflight.handle as QwenPrepareHandle, abort: settlement.inflight.abort, done: settlement.inflight.done as Promise<{ ok: boolean; wavs?: string[] }> } : undefined;
+    if (settlement.inflight && !flying) { settlement.inflight.abort(); void settlement.inflight.done.then(outcome => { if (outcome.ok) qwen.discard(outcome.wavs); }); }
+    return settlement.wavs.length || flying ? { wavs: settlement.wavs, inflight: flying, remainderText: settlement.remainderText, voice: active.voice, speed: active.speed } : undefined;
+  }
   pi.on('agent_settled', async (event, ctx) => {
-    if (stopped || event.aborted || !parent(ctx)) return;
+    if (stopped) return;
+    if (event.aborted || !parent(ctx)) { cancelSpeculation(); return; }
     const settings = readSpeakSettings(home);
-    if (!settings.enabled) return;
+    if (!settings.enabled) { cancelSpeculation(); return; }
     const messages = ctx.sessionManager.getBranch().filter(entry => entry.type === 'message').map(entry => entry.message);
     // Summarize only sanitized final assistant prose, never a transcript, tool output, code, or diffs.
     const source = filterSettledSpeech(messages, settings.mode === 'summary' ? 'questions-and-results' : settings.mode);
+    if (settings.mode === 'summary') cancelSpeculation();
+    const prepared = settings.mode === 'summary' ? undefined : settleSpeculation(source ?? ''); // empty text discards everything
     if (!source) return;
-    if (settings.mode !== 'summary') { if (!unspeakable(source, ctx)) await speakWhenFocused(source, ctx, undefined, true); return; }
+    if (settings.mode !== 'summary') {
+      if (unspeakable(source, ctx)) { if (prepared) { prepared.taken = true; discardPrepared(prepared); } return; }
+      await speakWhenFocused(source, ctx, undefined, true, prepared);
+      return;
+    }
     if (!settings.summaryModel) return;
     const model = ctx.modelRegistry.find(settings.summaryModel.provider, settings.summaryModel.id);
     if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) return;
@@ -322,7 +431,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   pi.on('session_shutdown', (_event, ctx) => {
     if (parent(ctx)) { try { ctx.ui.setStatus(SPEAK_STATUS_KEY, undefined); } catch { /* Status is cosmetic. */ } }
     stopCopy(ctx);
-    stopped = true; for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); deferral.dispose(); stop(); voiceLock.close(); qwen.dispose(); // close(): rejects a pending acquire, releases a held lock once, refuses later acquires
+    stopped = true; for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); deferral.dispose(); if (pendingItem && !pendingItem.started) dropPrepared(pendingItem); pendingItem = undefined; disposeSpeculation(); stop(); voiceLock.close(); qwen.dispose(); // close(): rejects a pending acquire, releases a held lock once, refuses later acquires
   });
   pi.registerTool({
     name: 'speak', label: 'Speak', description: 'Speak a short message in the parent interactive TUI after local voice installation.',
@@ -375,7 +484,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
         if (input === undefined || stopped) return;
         settings.shortcuts[key] = input;
       }
-      else if (choice === 'Toggle auto-speak') { settings.enabled = !settings.enabled; if (!settings.enabled) deferral.clear(); }
+      else if (choice === 'Toggle auto-speak') { settings.enabled = !settings.enabled; if (!settings.enabled) { clearPending(); cancelSpeculation(); } }
       else if (choice === 'Toggle speak copied selection') settings.copySpeech = !settings.copySpeech;
       else if (choice.startsWith('Mode: ')) settings.mode = choice.slice(6) as typeof settings.mode;
       else if (choice.startsWith('Voice: ')) {
@@ -401,6 +510,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
       }
       try {
         writeSpeakSettings(settings, home);
+        if (choice.startsWith('Voice: ') || choice === 'Speed' || choice.startsWith('Mode: ')) cancelSpeculation(); // the next stream starts fresh with the new settings
         if (choice === 'Toggle speak copied selection') {
           await afterCopyToggle(ctx, settings.copySpeech);
           return;
@@ -423,7 +533,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     const settings = readSpeakSettings(home);
     settings.enabled = !settings.enabled;
     writeSpeakSettings(settings, home);
-    if (!settings.enabled) deferral.clear();
+    if (!settings.enabled) { clearPending(); cancelSpeculation(); }
     refreshRow(ctx);
   } });
   pi.registerShortcut(shortcuts.cycleVoice, { description: 'Cycle to the next installed voice', handler: async ctx => {
@@ -434,6 +544,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     if (!next) { ctx.ui.notify('No other voice is installed; nothing changed.', 'info'); return; }
     settings.voice = next;
     try { writeSpeakSettings(settings, home); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return; }
+    cancelSpeculation();
     ctx.ui.notify(`Voice: ${VOICE_CATALOG[next].label}`, 'info');
     refreshRow(ctx);
   } });

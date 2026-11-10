@@ -3,9 +3,12 @@ import { filterSettledSpeech } from './speak-filter.ts';
 /** What one speculative synthesis resolves to; the WAVs are owned by the planner until `settle` hands them over. */
 export type SpeculativeSynthesis = { ok: true; wavs: string[] } | { ok: false; cancelled?: boolean; message?: string };
 
+/** A synthesis in progress; `handle` is opaque to the planner and lets the caller consume the parts while it still runs. */
+export type SpeculativeFlight = Promise<SpeculativeSynthesis> & { handle?: unknown };
+
 export interface SpeculativeDeps {
   /** Synthesizes `text` into WAV files without playing; must resolve (not reject) and honour `signal`. */
-  synthesize: (text: string, signal: AbortSignal) => Promise<SpeculativeSynthesis>;
+  synthesize: (text: string, signal: AbortSignal) => SpeculativeFlight;
   /** Deletes WAV files that will never play. */
   discard: (wavs: readonly string[]) => void;
   /**
@@ -24,6 +27,11 @@ export interface SpeculativeSettlement {
   matchedText: string;
   /** What is still to be synthesized after the matched prefix. */
   remainderText: string;
+  /**
+   * A synthesis still running at settle whose sentence continues the matched text. It is NOT aborted: it follows `wavs` in order and
+   * the caller owns it (consume `handle`, or call `abort` and discard its WAVs once `done` resolves). `matchedText` includes it.
+   */
+  inflight?: { text: string; handle: unknown; done: Promise<SpeculativeSynthesis>; abort: () => void };
 }
 
 export const DEFAULT_MAX_AHEAD_CHARS = 500;
@@ -82,7 +90,7 @@ export function createSpeculativePlanner(deps: SpeculativeDeps) {
   /** Sentence texts already dispatched, in order: buffered ones first, the in-flight one last. */
   let dispatched: string[] = [];
   let buffer: Array<{ text: string; wavs: string[] }> = [];
-  let inflight: { controller: AbortController } | undefined;
+  let inflight: { controller: AbortController; text: string; promise?: SpeculativeFlight; adopted?: boolean } | undefined;
   let failed = false, disposed = false;
 
   const pendingChars = () => dispatched.reduce((sum, text) => sum + text.length, 0);
@@ -98,10 +106,13 @@ export function createSpeculativePlanner(deps: SpeculativeDeps) {
     if (disposed || failed || inflight) return;
     const text = sentences[dispatched.length];
     if (text === undefined || pendingChars() + text.length > maxAhead) return;
-    const flight = { controller: new AbortController() };
+    const flight: NonNullable<typeof inflight> = { controller: new AbortController(), text };
     inflight = flight;
     dispatched.push(text);
-    deps.synthesize(text, flight.controller.signal).then(result => result, () => ({ ok: false } as SpeculativeSynthesis)).then(result => {
+    const started = deps.synthesize(text, flight.controller.signal);
+    flight.promise = started;
+    started.then(result => result, () => ({ ok: false } as SpeculativeSynthesis)).then(result => {
+      if (flight.adopted) return; // handed over at settle: the caller owns the result
       if (inflight !== flight) { if (result.ok) deps.discard(result.wavs); return; } // cancelled, settled or disposed meanwhile
       inflight = undefined;
       if (result.ok) buffer.push({ text, wavs: result.wavs });
@@ -131,12 +142,25 @@ export function createSpeculativePlanner(deps: SpeculativeDeps) {
           matched = candidate; count++;
         }
       }
+      const allMatched = count === buffer.length;
       const wavs = buffer.slice(0, count).flatMap(entry => entry.wavs);
       for (const entry of buffer.slice(count)) deps.discard(entry.wavs);
       buffer = [];
-      const flying = inflight; inflight = undefined; flying?.controller.abort();
+      const flying = inflight; inflight = undefined;
+      let keep: SpeculativeSettlement['inflight'];
+      if (flying && !disposed && allMatched) {
+        const candidate = matched ? `${matched} ${flying.text}` : flying.text;
+        if (final.startsWith(candidate) && (final.length === candidate.length || final[candidate.length] === ' ')) {
+          flying.adopted = true;
+          matched = candidate;
+          const flight = flying;
+          keep = { text: flight.text, handle: flight.promise?.handle, done: flight.promise!.then(result => result, () => ({ ok: false } as SpeculativeSynthesis)), abort: () => flight.controller.abort() };
+        }
+      }
+      if (flying && !keep) flying.controller.abort();
+      buffer = [];
       dispatched = []; sentences = []; failed = false;
-      return { wavs, matchedText: matched, remainderText: final.slice(matched.length).trim() };
+      return { wavs, matchedText: matched, remainderText: final.slice(matched.length).trim(), ...(keep ? { inflight: keep } : {}) };
     },
     /** Discards everything and aborts the in-flight synthesis (tool-call turn, abort/retry, toggle off, stop). */
     cancel() { reset(); },

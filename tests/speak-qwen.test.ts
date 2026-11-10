@@ -719,3 +719,71 @@ test('preserve: speak alone still uses its own directory, plays chunks in order,
     assert.deepEqual(d.leftovers(), []);
   } finally { d.close(); }
 });
+
+// ---- T30b: a prepare handle streams parts; speakPrepared adopts a still-running prepare ----
+test('a prepare handle replays its parts to a late subscriber and then delivers new ones in order', async () => {
+  const d = direct();
+  try {
+    const prep = d.qwen.prepare({ ...d.base, text: 'Uno.' });
+    await readyOne(d);
+    const a = d.chunk(d.pythons[0], 1, 0);
+    const seen: string[] = [];
+    prep.handle.onPart(wav => seen.push(wav));
+    assert.deepEqual(seen, [a], 'existing parts are replayed');
+    const b = d.chunk(d.pythons[0], 1, 1);
+    assert.deepEqual(seen, [a, b]);
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 1 });
+    assert.deepEqual(await prep, { ok: true, wavs: [a, b] });
+    assert.deepEqual(await prep.handle.done, { ok: true, wavs: [a, b] });
+    d.qwen.discard([a, b]);
+  } finally { d.close(); }
+});
+
+test('speakPrepared adopts a running prepare: finished WAVs, then each part as it arrives, then the remainder after it finishes', async () => {
+  const d = direct();
+  try {
+    const first = d.qwen.prepare({ ...d.base, text: 'Uno.' });
+    await readyOne(d);
+    const a = d.chunk(d.pythons[0], 1, 0);
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 1 });
+    await first;
+    const second = d.qwen.prepare({ ...d.base, text: 'Dos.' });
+    await until(() => d.synths().length === 2);
+    const b0 = d.chunk(d.pythons[0], 2, 0);
+    const run = d.qwen.speakPrepared({ ...d.base, wavs: [a], inflight: second.handle, remainderText: 'Tres.', runtime: '/rt' });
+    await until(() => d.audios[0]?.writes.length === 2);
+    assert.deepEqual(d.audios[0].writes.map(w => w.wav), [a, b0], 'the first part plays before the prepare finished');
+    assert.equal(d.synths().length, 2, 'the adopted prepare was not cancelled and the remainder waits');
+    const b1 = d.chunk(d.pythons[0], 2, 1);
+    await until(() => d.audios[0].writes.length === 3);
+    assert.equal(d.audios[0].writes[2].wav, b1);
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 2 });
+    await until(() => d.synths().length === 3);
+    assert.deepEqual([d.synths()[2].id, d.synths()[2].text], [3, 'Tres.']);
+    const c = d.chunk(d.pythons[0], 3, 0);
+    await until(() => d.audios[0].writes.length === 4);
+    assert.equal(d.audios[0].writes[3].wav, c);
+    d.pythons[0].emit({ schema: QS, type: 'done', id: 3 });
+    for (const id of [1, 2, 3, 4]) d.audios[0].emit({ schema: AS, type: 'done', id });
+    assert.deepEqual(await run, { ok: true });
+    assert.equal([a, b0, b1, c].some(existsSync), false);
+    assert.deepEqual(d.leftovers().filter(name => name.startsWith('gentle-speak-prep-')), []);
+  } finally { d.close(); }
+});
+
+test('cancelling a speakPrepared that adopted a running prepare cancels it and deletes its files', async () => {
+  const d = direct();
+  try {
+    const second = d.qwen.prepare({ ...d.base, text: 'Dos.' });
+    await readyOne(d);
+    const b0 = d.chunk(d.pythons[0], 1, 0);
+    const run = d.qwen.speakPrepared({ ...d.base, wavs: [], inflight: second.handle, remainderText: '', runtime: '/rt' });
+    await until(() => d.audios[0]?.writes.length === 1);
+    d.qwen.stop(false);
+    const outcome = await run;
+    assert.equal(outcome.ok, false);
+    assert.equal((await second).ok, false);
+    assert.equal(existsSync(b0), false);
+    assert.deepEqual(d.leftovers().filter(name => name.startsWith('gentle-speak-prep-')), []);
+  } finally { d.close(); }
+});

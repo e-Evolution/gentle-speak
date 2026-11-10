@@ -452,3 +452,73 @@ test('S9: a Qwen utterance holds the single-voice lock for its whole duration an
     await until(() => !locked());
   } finally { h.events.get('session_shutdown')!({}, h.ctx); h.close(); }
 });
+
+test('streamed parts: every part plays in arrival order, and speech finishes only after worker done and the last play', async () => {
+  const h = harness();
+  try {
+    const run = h.speak();
+    await until(() => h.pythons.length === 1);
+    const py = h.pythons[0];
+    py.emit({ schema: QS, type: 'ready' }); await until(() => py.writes.length === 1);
+    const dir = outDirOf(py);
+    const wavs = [0, 1, 2].map(i => join(dir, `chunk-1-${i}.wav`)); wavs.forEach(w => writeFileSync(w, 'RIFF'));
+    let outcome: any; run.then(r => { outcome = r; });
+    py.emit({ schema: QS, type: 'chunk', id: 1, seq: 0, wav: wavs[0], seconds: 2 });
+    await until(() => h.audios[0]?.writes.length === 1);
+    py.emit({ schema: QS, type: 'chunk', id: 1, seq: 1, wav: wavs[1], seconds: 2 });
+    py.emit({ schema: QS, type: 'chunk', id: 1, seq: 2, wav: wavs[2], seconds: 2 });
+    py.emit({ schema: QS, type: 'done', id: 1 });
+    await until(() => h.audios[0].writes.length === 3);
+    assert.deepEqual(h.audios[0].writes.map(w => w.wav), wavs, 'played in arrival order');
+    h.audios[0].emit({ schema: AS, type: 'done', id: 1 }); h.audios[0].emit({ schema: AS, type: 'done', id: 2 });
+    await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r));
+    assert.equal(outcome, undefined, 'worker done alone does not finish while a chunk is still playing');
+    assert.equal(existsSync(wavs[2]), true);
+    h.audios[0].emit({ schema: AS, type: 'done', id: 3 });
+    assert.equal((await run).isError, undefined);
+    assert.deepEqual(wavs.map(existsSync), [false, false, false]);
+  } finally { h.close(); }
+});
+
+test('streamed parts: a duplicate seq is rejected as invalid and the repeated part is never played', async () => {
+  const h = harness();
+  try {
+    const run = h.speak();
+    await until(() => h.pythons.length === 1);
+    const py = h.pythons[0];
+    py.emit({ schema: QS, type: 'ready' }); await until(() => py.writes.length === 1);
+    const dir = outDirOf(py);
+    py.emit({ schema: QS, type: 'chunk', id: 1, seq: 0, wav: join(dir, 'chunk-1-0.wav'), seconds: 2 });
+    py.emit({ schema: QS, type: 'chunk', id: 1, seq: 0, wav: join(dir, 'chunk-1-0.wav'), seconds: 2 });
+    const result = await run;
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /Invalid Qwen worker response/);
+    assert.equal(h.audios[0].writes.length, 1);
+  } finally { h.close(); }
+});
+
+test('streamed parts + replay: parts of the superseded id that arrive mid-stream are ignored; the new id plays its own parts', async () => {
+  const h = harness();
+  try {
+    const first = h.speak('Primera.');
+    await until(() => h.pythons.length === 1);
+    const py = h.pythons[0];
+    py.emit({ schema: QS, type: 'ready' }); await until(() => py.writes.length === 1);
+    const dir = outDirOf(py);
+    py.emit({ schema: QS, type: 'chunk', id: 1, seq: 0, wav: join(dir, 'chunk-1-0.wav'), seconds: 2 });
+    await until(() => h.audios[0]?.writes.length === 1);
+    const second = h.speak('Segunda.');
+    assert.equal((await first).content[0].text, 'Speech cancelled.');
+    await until(() => py.writes.length === 2);
+    py.emit({ schema: QS, type: 'chunk', id: 1, seq: 1, wav: join(dir, 'chunk-1-1.wav'), seconds: 2 }); // late part of id 1
+    py.emit({ schema: QS, type: 'done', id: 1 });
+    py.emit({ schema: QS, type: 'chunk', id: 2, seq: 0, wav: join(outDirOf({ writes: [py.writes[1]] }), 'chunk-2-0.wav'), seconds: 2 });
+    py.emit({ schema: QS, type: 'chunk', id: 2, seq: 1, wav: join(outDirOf({ writes: [py.writes[1]] }), 'chunk-2-1.wav'), seconds: 2 });
+    py.emit({ schema: QS, type: 'done', id: 2 });
+    await until(() => h.audios.at(-1)!.writes.length === 2);
+    const audio = h.audios.at(-1)!;
+    audio.emit({ schema: AS, type: 'done', id: 3 }); // play ids continue across utterances: parts of id 2 are play ids 2 and 3
+    audio.emit({ schema: AS, type: 'done', id: 2 });
+    assert.equal((await second).isError, undefined);
+  } finally { h.close(); }
+});

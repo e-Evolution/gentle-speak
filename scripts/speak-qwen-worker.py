@@ -18,6 +18,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
 import wave
 
 SCHEMA = "gentle.speak.qwen/v1"
@@ -26,6 +27,7 @@ MAX_LINE = 65536
 MAX_TEXT = 4000
 GROUP_CHARS = 250
 FAKE = os.environ.get("GENTLE_SPEAK_QWEN_FAKE") == "1"
+FAKE_MODEL = os.environ.get("GENTLE_SPEAK_QWEN_FAKE_MODEL") == "1"
 SYNTH_KEYS = {"schema", "type", "id", "text", "ref", "refText", "outDir", "speed"}
 
 _out = sys.stdout
@@ -160,27 +162,60 @@ class FakeEngine:
 
 
 class QwenEngine:
-    def __init__(self):
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        import mlx.core as mx
-        import numpy as np
-        from mlx_audio.tts.utils import load_model
+    def __init__(self, model=None):
+        if model is None:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            import mlx.core as mx
+            import numpy as np
+            from mlx_audio.tts.utils import load_model
 
-        self.mx, self.np = mx, np
-        self.model = load_model(QWEN_MODEL_ID)
-        self.rate = getattr(self.model, "sample_rate", 24000)
+            self.mx, self.np = mx, np
+            model = load_model(QWEN_MODEL_ID)
+        self.model = model
+        self.rate = getattr(model, "sample_rate", 24000)
+
+    def to_pcm(self, audios):
+        mx, np = self.mx, self.np
+        pcm = (mx.clip(mx.concatenate(audios), -1.0, 1.0) * 32767.0).astype(mx.int16)
+        mx.eval(pcm)
+        return np.asarray(pcm).tobytes()
 
     def synthesize(self, group, ref, ref_text):
-        mx, np = self.mx, self.np
-        parts = []
+        produced = False
         for result in self.model.generate(text=group, ref_audio=ref, ref_text=ref_text, language="Spanish", stream=True):
-            parts.append(result.audio)
-            mx.eval(parts[-1])
-        if not parts:
+            produced = True
+            yield self.to_pcm([result.audio]), self.rate  # one part at a time: the caller sends it at once
+        if not produced:
             raise RuntimeError("model produced no audio")
-        pcm = (mx.clip(mx.concatenate(parts), -1.0, 1.0) * 32767.0).astype(mx.int16)
-        mx.eval(pcm)
-        yield np.asarray(pcm).tobytes(), self.rate
+
+
+class _FakePart:
+    def __init__(self, audio):
+        self.audio = audio
+
+
+class FakeModel:
+    """Test-only stand-in for the mlx-audio model: N streamed parts, a delay before each."""
+
+    sample_rate = 24000
+
+    def __init__(self, parts, delay):
+        self.parts, self.delay = parts, delay
+
+    def generate(self, text, ref_audio, ref_text, language, stream):
+        for index in range(self.parts):
+            time.sleep(self.delay)
+            yield _FakePart([0.25 * math.sin(2 * math.pi * 440 * (index * 4800 + i) / self.sample_rate) for i in range(4800)])
+
+
+class FakeModelEngine(QwenEngine):
+    """QwenEngine's real streaming code path over FakeModel; pure Python PCM16 (GENTLE_SPEAK_QWEN_FAKE_MODEL=1, tests only)."""
+
+    def __init__(self):
+        super().__init__(FakeModel(int(os.environ.get("GENTLE_SPEAK_QWEN_FAKE_PARTS", "3")), float(os.environ.get("GENTLE_SPEAK_QWEN_FAKE_DELAY", "0.2"))))
+
+    def to_pcm(self, audios):
+        return b"".join(struct.pack("<h", int(max(-1.0, min(1.0, x)) * 32767.0)) for audio in audios for x in audio)
 
 
 def handle_synth(engine, request):
@@ -200,7 +235,7 @@ def handle_synth(engine, request):
 
 def main():
     try:
-        engine = FakeEngine() if FAKE else QwenEngine()
+        engine = FakeEngine() if FAKE else FakeModelEngine() if FAKE_MODEL else QwenEngine()
     except Exception as error:  # noqa: BLE001 - report and exit; the parent shows a clear failure
         log("model load failed:", repr(error))
         send("error", id=None, message="model load failed")

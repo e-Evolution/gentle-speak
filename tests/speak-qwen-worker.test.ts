@@ -15,8 +15,9 @@ const skip = existsSync(PYTHON) ? false : `${PYTHON} is not installed`;
 function start(env: Record<string, string> = {}) {
   const child = spawn(PYTHON, [...QWEN_PYTHON_FLAGS, SCRIPT], { env: { PATH: '/usr/bin:/bin', GENTLE_SPEAK_QWEN_FAKE: '1', ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
   const lines: any[] = [];
+  const stamps: number[] = [];
   const waiters: Array<() => void> = [];
-  createInterface({ input: child.stdout }).on('line', line => { lines.push(JSON.parse(line)); waiters.splice(0).forEach(w => w()); });
+  createInterface({ input: child.stdout }).on('line', line => { stamps.push(performance.now()); lines.push(JSON.parse(line)); waiters.splice(0).forEach(w => w()); });
   const until = async (predicate: (all: any[]) => boolean) => {
     const deadline = Date.now() + 10_000;
     while (!predicate(lines)) {
@@ -26,7 +27,7 @@ function start(env: Record<string, string> = {}) {
   };
   const send = (value: unknown) => child.stdin.write((typeof value === 'string' ? value : JSON.stringify(value)) + '\n');
   const exited = new Promise<number | null>(resolveExit => child.on('exit', code => resolveExit(code)));
-  return { child, lines, until, send, exited };
+  return { child, lines, stamps, until, send, exited };
 }
 function scratch() {
   const dir = mkdtempSync(join(tmpdir(), 'speak-qwen-'));
@@ -100,5 +101,32 @@ test('speed != 1 with ffmpeg shortens the chunk (pitch-preserving atempo)', { sk
     assert.ok(w.lines.find(m => m.type === 'chunk').seconds < 0.2, 'a 0.25 s chunk at 2x is about 0.125 s');
     assert.equal(w.lines.filter(m => m.type === 'warning').length, 0);
     w.send({ schema, type: 'shutdown' }); await w.exited;
+  } finally { w.child.kill(); s.close(); }
+});
+
+test('fake-model worker sends each streamed part as its own chunk, in order, before the group finishes', { skip }, async () => {
+  const s = scratch();
+  const w = start({ GENTLE_SPEAK_QWEN_FAKE: '0', GENTLE_SPEAK_QWEN_FAKE_MODEL: '1', GENTLE_SPEAK_QWEN_FAKE_PARTS: '4', GENTLE_SPEAK_QWEN_FAKE_DELAY: '0.3' });
+  try {
+    await w.until(l => l.length >= 1);
+    assert.deepEqual(w.lines[0], { schema, type: 'ready' });
+    const sent = performance.now();
+    w.send(synth(s, { text: 'Una sola frase corta.' })); // one group, four streamed parts of 0.3 s each
+    await w.until(l => l.some(m => m.type === 'done'));
+    const chunks = w.lines.filter(m => m.type === 'chunk');
+    assert.equal(chunks.length, 4, 'one chunk per streamed part');
+    assert.deepEqual(chunks.map(c => c.seq), [0, 1, 2, 3]);
+    assert.deepEqual(w.lines.at(-1), { schema, type: 'done', id: 7 });
+    assert.ok(w.lines.slice(0, -1).every(m => m.type === 'ready' || m.type === 'chunk'));
+    const first = w.stamps[1] - sent, done = w.stamps.at(-1)! - sent;
+    assert.ok(first < 800, `first chunk after the first part, not the group (${first.toFixed(0)} ms)`);
+    assert.ok(done - first > 600, `later parts keep arriving after the first chunk (${(done - first).toFixed(0)} ms)`);
+    for (const c of chunks) {
+      assert.equal(readFileSync(c.wav).subarray(0, 4).toString(), 'RIFF');
+      assert.equal(Math.round(c.seconds * 1000), 200, 'each part is its own 0.2 s PCM16 WAV');
+    }
+    assert.equal(readdirSync(s.out).filter(f => f.includes('.tmp') || f.includes('.tempo')).length, 0);
+    w.send({ schema, type: 'shutdown' });
+    assert.equal(await w.exited, 0);
   } finally { w.child.kill(); s.close(); }
 });

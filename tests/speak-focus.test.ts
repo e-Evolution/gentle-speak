@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix, readFrontmostBundleId } from '../lib/speak-focus.ts';
 
@@ -14,17 +17,44 @@ test('probe: focused true/false map to focused/unfocused and run `herdr pane get
   assert.equal(await probeHerdrFocus({ env: herdrEnv, exec: reply(false), timeoutMs: 700 }), 'unfocused');
 });
 
-test('probe: HERDR_BIN_PATH replaces the herdr binary', async () => {
-  let file = '';
-  await probeHerdrFocus({ env: { ...herdrEnv, HERDR_BIN_PATH: '/opt/herdr' }, exec: async f => { file = f; return reply(true)(); }, timeoutMs: 1 });
-  assert.equal(file, '/opt/herdr');
+/** A scratch dir with files whose names and modes the herdr binary validation cares about. */
+function binFixture() {
+  const dir = mkdtempSync(join(tmpdir(), 'speak-herdr-bin-'));
+  const make = (rel: string, mode: number) => { const f = join(dir, rel); mkdirSync(join(f, '..'), { recursive: true }); writeFileSync(f, '#!/bin/sh\n'); chmodSync(f, mode); return f; };
+  return { dir, make, done: () => rmSync(dir, { recursive: true, force: true }) };
+}
+const runBin = async (bin: string | undefined) => { let file = ''; await probeHerdrFocus({ env: { ...herdrEnv, ...(bin === undefined ? {} : { HERDR_BIN_PATH: bin }) }, exec: async f => { file = f; return reply(true)(); }, timeoutMs: 1 }); return file; };
+
+test('probe: HERDR_BIN_PATH replaces the herdr binary when it is an executable regular file', async () => {
+  const fx = binFixture();
+  try {
+    const good = fx.make('herdr', 0o755);
+    assert.equal(await runBin(good), good);
+  } finally { fx.done(); }
 });
 
 test('probe: HERDR_BIN_PATH is executed only when absolute with basename herdr; otherwise PATH herdr', async () => {
-  const run = async (bin: string | undefined) => { let file = ''; await probeHerdrFocus({ env: { ...herdrEnv, ...(bin === undefined ? {} : { HERDR_BIN_PATH: bin }) }, exec: async f => { file = f; return reply(true)(); }, timeoutMs: 1 }); return file; };
-  assert.equal(await run('/usr/local/bin/herdr'), '/usr/local/bin/herdr');
-  for (const bad of ['/tmp/evil', '/opt/herdr/../sh', 'herdr-x', './herdr', 'bin/herdr', '/opt/notherdr', '']) assert.equal(await run(bad), 'herdr', bad);
-  assert.equal(await run(undefined), 'herdr');
+  const fx = binFixture();
+  try {
+    const good = fx.make('bin/herdr', 0o755);
+    assert.equal(await runBin(good), good);
+    for (const bad of ['/tmp/evil', '/opt/herdr/../sh', 'herdr-x', './herdr', 'bin/herdr', '/opt/notherdr', '']) assert.equal(await runBin(bad), 'herdr', bad);
+    assert.equal(await runBin(undefined), 'herdr');
+  } finally { fx.done(); }
+});
+
+test('probe: HERDR_BIN_PATH that does not exist, is not executable or is not a regular file falls back to PATH herdr', async () => {
+  const fx = binFixture();
+  try {
+    assert.equal(await runBin(join(fx.dir, 'missing', 'herdr')), 'herdr', 'missing');
+    assert.equal(await runBin(fx.make('noexec/herdr', 0o644)), 'herdr', 'not executable');
+    mkdirSync(join(fx.dir, 'dir', 'herdr'), { recursive: true });
+    assert.equal(await runBin(join(fx.dir, 'dir', 'herdr')), 'herdr', 'directory');
+    const target = fx.make('real/tool', 0o755);
+    mkdirSync(join(fx.dir, 'link'));
+    symlinkSync(target, join(fx.dir, 'link', 'herdr'));
+    assert.equal(await runBin(join(fx.dir, 'link', 'herdr')), join(fx.dir, 'link', 'herdr'), 'symlink to an executable file is a regular executable');
+  } finally { fx.done(); }
 });
 
 test('readFrontmostBundleId runs one JXA osascript without System Events and trims the bundle id', async () => {
@@ -74,6 +104,28 @@ test('focus check: focused only when terminal frontmost and Herdr focused; unkno
   assert.equal(await mk('focused', new Error('x')), 'unknown');
   assert.equal(await mk('focused', undefined as any), 'unknown');
   assert.equal(await mk('unfocused', undefined as any), 'unfocused');
+});
+
+test('focus check: both probes start at once, before either settles', async () => {
+  const started: string[] = [];
+  const never = new Promise<never>(() => {});
+  const check = createFocusCheck({
+    timeoutMs: 5,
+    probeHerdr: () => { started.push('herdr'); return never; },
+    isTerminalFrontmost: () => { started.push('front'); return never; },
+  })();
+  assert.deepEqual(started, ['herdr', 'front']);
+  assert.equal(await check, 'unknown');
+});
+
+test('focus check: a probe that never settles times out to unknown; a prompt unfocused still wins', async () => {
+  const never = new Promise<never>(() => {});
+  const mk = (herdr: any, front: any) => createFocusCheck({ timeoutMs: 5, probeHerdr: () => herdr, isTerminalFrontmost: () => front })();
+  assert.equal(await mk(never, Promise.resolve(true)), 'unknown', 'herdr hangs');
+  assert.equal(await mk(Promise.resolve('focused'), never), 'unknown', 'osascript hangs');
+  assert.equal(await mk(Promise.resolve('unfocused'), never), 'unfocused', 'unfocused is decided by herdr alone');
+  assert.equal(await mk(Promise.resolve('focused'), Promise.resolve(true)), 'focused');
+  assert.equal(await mk(Promise.resolve('focused'), Promise.reject(new Error('x'))), 'unknown');
 });
 
 test('projectPrefix uses the cwd basename', () => {

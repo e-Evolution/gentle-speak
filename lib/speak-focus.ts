@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -21,9 +22,15 @@ export interface ProbeHerdrOptions {
   timeoutMs: number;
 }
 
-/** An env-provided binary is executed only when it is an absolute path whose basename is `herdr`. */
-const herdrBinary = (value: string | undefined): string =>
-  value && path.isAbsolute(value) && path.basename(value) === 'herdr' && path.normalize(value) === value ? value : 'herdr';
+/** An env-provided binary is executed only when it is an absolute path with basename `herdr` to an existing executable regular file. */
+const herdrBinary = (value: string | undefined): string => {
+  if (!value || !path.isAbsolute(value) || path.basename(value) !== 'herdr' || path.normalize(value) !== value) return 'herdr';
+  try {
+    if (!fs.statSync(value).isFile()) return 'herdr';
+    fs.accessSync(value, fs.constants.X_OK);
+    return value;
+  } catch { return 'herdr'; }
+};
 
 /** Bundle id of the frontmost macOS app through JXA (no System Events permission); undefined when unreadable. */
 export const FRONTMOST_SCRIPT = "ObjC.import('AppKit'); $.NSWorkspace.sharedWorkspace.frontmostApplication.bundleIdentifier.js";
@@ -62,16 +69,35 @@ export interface FocusCheckOptions {
   probeHerdr: () => Promise<FocusState>;
   /** undefined (or a throw) means the terminal or the frontmost app cannot be identified. */
   isTerminalFrontmost: () => Promise<boolean | undefined>;
+  /** Bound for each probe; a probe that does not settle in time counts as unknown. Default 700 ms. */
+  timeoutMs?: number;
 }
 
-/** Focused only when the terminal is frontmost and Herdr says focused; unknown follows an unknown Herdr or an unidentifiable frontmost app. */
+/** Settles with `fallback` when `make()` throws, rejects or does not settle within `ms`. */
+function bounded<T>(make: () => Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>(resolve => {
+    const timer = setTimeout(() => resolve(fallback), ms);
+    timer.unref?.();
+    let p: Promise<T>;
+    try { p = make(); } catch { clearTimeout(timer); resolve(fallback); return; }
+    p.then(v => { clearTimeout(timer); resolve(v); }, () => { clearTimeout(timer); resolve(fallback); });
+  });
+}
+
+/**
+ * Focused only when the terminal is frontmost and Herdr says focused; unknown follows an unknown Herdr or an
+ * unidentifiable frontmost app. Both probes run at once, each bounded by `timeoutMs`; a prompt `unfocused` from Herdr
+ * decides alone.
+ */
 export function createFocusCheck(opts: FocusCheckOptions): () => Promise<FocusState> {
+  const ms = opts.timeoutMs ?? 700;
   return async () => {
-    const herdr = await opts.probeHerdr();
+    const herdrP = bounded(opts.probeHerdr, ms, 'unknown' as FocusState);
+    const frontP = bounded(opts.isTerminalFrontmost, ms, undefined as boolean | undefined);
+    const herdr = await herdrP;
     if (herdr === 'unknown') return 'unknown';
     if (herdr === 'unfocused') return 'unfocused';
-    let front: boolean | undefined;
-    try { front = await opts.isTerminalFrontmost(); } catch { front = undefined; }
+    const front = await frontP;
     return front === undefined ? 'unknown' : front ? 'focused' : 'unfocused';
   };
 }

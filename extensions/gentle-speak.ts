@@ -73,7 +73,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     const front = await deps.readFrontmost();
     return front === undefined ? undefined : front === terminal;
   };
-  const focusCheck = deps.focusCheck ?? createFocusCheck({ probeHerdr: () => probeHerdrFocus({ env: deps.env, exec: deps.herdrExec, timeoutMs: 700 }), isTerminalFrontmost });
+  const focusCheck = deps.focusCheck ?? createFocusCheck({ probeHerdr: () => probeHerdrFocus({ env: deps.env, exec: deps.herdrExec, timeoutMs: 700 }), isTerminalFrontmost, timeoutMs: 700 });
   const installs = new Set<AbortController>();
   const summaries = new Set<AbortController>();
   const parent = (ctx: ExtensionContext) => ctx.mode === 'tui' && ctx.sessionManager.getHeader()?.type === 'session' && !ctx.sessionManager.getHeader()?.parentSession;
@@ -322,7 +322,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   pi.on('session_shutdown', (_event, ctx) => {
     if (parent(ctx)) { try { ctx.ui.setStatus(SPEAK_STATUS_KEY, undefined); } catch { /* Status is cosmetic. */ } }
     stopCopy(ctx);
-    stopped = true; for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); deferral.dispose(); stop(); void voiceLock.release(); qwen.dispose();
+    stopped = true; for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); deferral.dispose(); stop(); voiceLock.close(); qwen.dispose(); // close(): rejects a pending acquire, releases a held lock once, refuses later acquires
   });
   pi.registerTool({
     name: 'speak', label: 'Speak', description: 'Speak a short message in the parent interactive TUI after local voice installation.',

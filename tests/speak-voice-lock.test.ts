@@ -193,3 +193,126 @@ test('stale reclaim does not delete a live lock that replaced the stale one befo
     assert.deepEqual(fs.readdirSync(dir).sort(), ['voice.lock']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+/** Records every fs call that removes or moves something, to prove who touches the lock path. */
+function spyDestructive() {
+  const calls: Array<{ op: string; args: string[] }> = [];
+  const originals: Record<string, any> = {};
+  for (const op of ['renameSync', 'rmSync', 'rmdirSync', 'unlinkSync']) {
+    originals[op] = (fs as any)[op];
+    (fs as any)[op] = (...args: any[]) => { calls.push({ op, args: args.filter(a => typeof a === 'string') }); return originals[op](...args); };
+  }
+  return { calls, restore: () => { for (const op of Object.keys(originals)) (fs as any)[op] = originals[op]; } };
+}
+const touchesLock = (calls: Array<{ args: string[] }>, dir: string) => calls.filter(c => c.args.some(a => a === lockDir(dir)));
+
+test('owner release never renames the lock path, so there is no window in which it is absent', async () => {
+  const dir = tmp();
+  const spy = spyDestructive();
+  try {
+    const lock = createVoiceLock({ dir, pollMs: 5 });
+    await lock.acquire();
+    spy.calls.length = 0;
+    await lock.release();
+    assert.deepEqual(spy.calls.filter(c => c.op === 'renameSync'), []);
+    assert.equal(fs.existsSync(lockDir(dir)), false);
+    assert.deepEqual(fs.readdirSync(dir), []);
+  } finally { spy.restore(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a waiter on a live owner never renames or removes the lock path', async () => {
+  const dir = tmp();
+  const spy = spyDestructive();
+  try {
+    writeOwner(dir, { pid: 4242, at: Date.now(), token: 'live-other' });
+    const waiter = createVoiceLock({ dir, pollMs: 2, isPidAlive: () => true });
+    const ac = new AbortController();
+    const p = waiter.acquire({ signal: ac.signal });
+    await sleep(40);
+    ac.abort();
+    await assert.rejects(p, { name: 'AbortError' });
+    assert.deepEqual(touchesLock(spy.calls, dir), []);
+    assert.equal(ownerOf(dir).token, 'live-other');
+  } finally { spy.restore(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('stale reclaim holds a separate voice.reclaim mutex while it removes the lock, and releases it afterwards', async () => {
+  const dir = tmp();
+  try {
+    writeOwner(dir, { pid: 999999, at: 1, token: 'dead' });
+    let mutexSeenDuringReclaim = false;
+    const lock = createVoiceLock({ dir, pollMs: 2, isPidAlive: () => false, hooks: { beforeAct: kind => { if (kind === 'reclaim') mutexSeenDuringReclaim = fs.existsSync(path.join(dir, 'voice.reclaim')); } } });
+    await lock.acquire();
+    assert.equal(mutexSeenDuringReclaim, true);
+    assert.equal(fs.existsSync(path.join(dir, 'voice.reclaim')), false);
+    assert.equal(ownerOf(dir).pid, process.pid);
+    await lock.release();
+    assert.deepEqual(fs.readdirSync(dir), []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('close(): rejects a pending acquire, releases a held lock exactly once and refuses later acquires', async () => {
+  const dir = tmp();
+  try {
+    const owner = createVoiceLock({ dir, pollMs: 2 });
+    const waiter = createVoiceLock({ dir, pollMs: 2 });
+    await owner.acquire();
+    const pending = waiter.acquire();
+    const settled = pending.then(() => 'taken', e => e.name);
+    await sleep(15);
+    waiter.close();
+    assert.equal(await settled, 'AbortError');
+    owner.close();
+    assert.equal(fs.existsSync(lockDir(dir)), false);
+    // A foreign lock taken after our close() must not be removed by a second close() or release().
+    writeOwner(dir, { pid: 4242, at: Date.now(), token: 'live-other' });
+    owner.close();
+    await owner.release();
+    assert.equal(ownerOf(dir).token, 'live-other');
+    await assert.rejects(owner.acquire(), { name: 'AbortError' });
+    await assert.rejects(waiter.acquire(), { name: 'AbortError' });
+    fs.rmSync(lockDir(dir), { recursive: true });
+    await sleep(15);
+    assert.equal(fs.existsSync(lockDir(dir)), false, 'nothing is acquired after close');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('close() while the acquire is already waiting for the lock to free never leaves it held', async () => {
+  const dir = tmp();
+  try {
+    const owner = createVoiceLock({ dir, pollMs: 2 });
+    const waiter = createVoiceLock({ dir, pollMs: 2 });
+    await owner.acquire();
+    const settled = waiter.acquire().then(() => 'taken', e => e.name);
+    await sleep(10);
+    await owner.release();
+    waiter.close(); // same tick as the owner letting go: the waiter may already have its mkdir in flight
+    const outcome = await settled;
+    await sleep(15);
+    assert.equal(fs.existsSync(lockDir(dir)), false, `outcome ${outcome}`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('no raw fs error escapes acquire: a transient race error polls again, anything else rejects as VoiceLockError', async () => {
+  const dir = tmp();
+  const original = fs.writeFileSync;
+  try {
+    let fail: string | undefined = 'EINVAL';
+    (fs as any).writeFileSync = (...args: any[]) => {
+      if (fail && String(args[0]).endsWith('owner.json')) { const code = fail; fail = undefined; throw Object.assign(new Error(code), { code }); }
+      return (original as any)(...args);
+    };
+    const lock = createVoiceLock({ dir, pollMs: 2 });
+    await lock.acquire();
+    assert.equal(ownerOf(dir).pid, process.pid, 'EINVAL meant poll again, then the lock was taken');
+    await lock.release();
+    assert.deepEqual(fs.readdirSync(dir), [], 'no temp dir left behind');
+
+    (fs as any).writeFileSync = (...args: any[]) => {
+      if (String(args[0]).endsWith('owner.json')) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      return (original as any)(...args);
+    };
+    await assert.rejects(createVoiceLock({ dir, pollMs: 2 }).acquire(), (e: any) => e.name === 'VoiceLockError' && e.cause?.code === 'EACCES');
+    assert.deepEqual(fs.readdirSync(dir), []);
+  } finally { (fs as any).writeFileSync = original; fs.rmSync(dir, { recursive: true, force: true }); }
+});

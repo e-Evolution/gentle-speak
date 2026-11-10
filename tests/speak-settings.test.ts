@@ -142,3 +142,46 @@ test('reserved, duplicate and malformed toggleCopy are rejected on parse and wri
     assert.deepEqual(readdirSync(home), ['speak-settings.json']);
   }
 }));
+
+// S11: macVoice / macFallback
+test('macVoice defaults to null (auto) and macFallback to true; old files without them still load', () => withHome(home => {
+  assert.equal(DEFAULT_SPEAK_SETTINGS.macVoice, null);
+  assert.equal(DEFAULT_SPEAK_SETTINGS.macFallback, true);
+  const { macVoice: _a, macFallback: _b, ...old } = DEFAULT_SPEAK_SETTINGS;
+  const raw = JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...old, enabled: true });
+  writeFileSync(join(home, 'speak-settings.json'), raw);
+  const loaded = readSpeakSettings(home);
+  assert.equal(loaded.enabled, true);
+  assert.equal(loaded.macVoice, null);
+  assert.equal(loaded.macFallback, true);
+}));
+
+test('valid macVoice and macFallback persist and round-trip', () => withHome(home => {
+  for (const name of ['Paulina', 'Eddy (Español (México))', "O'Brien-2 x.y_z", 'a'.repeat(64)]) {
+    writeSpeakSettings({ ...DEFAULT_SPEAK_SETTINGS, macVoice: name, macFallback: false }, home);
+    const loaded = readSpeakSettings(home);
+    assert.equal(loaded.macVoice, name);
+    assert.equal(loaded.macFallback, false);
+  }
+}));
+
+test('invalid macVoice or macFallback rejects the file and leaves stored data unchanged', () => withHome(home => {
+  const path = writeSpeakSettings({ ...DEFAULT_SPEAK_SETTINGS, macVoice: 'Paulina' }, home);
+  const before = readFileSync(path, 'utf8');
+  for (const bad of ['', 'a'.repeat(65), 'Bad/Name', 'rm -rf; x', 'x\ny', 7, true, ['Paulina'], {}]) {
+    assert.throws(() => writeSpeakSettings({ ...DEFAULT_SPEAK_SETTINGS, macVoice: bad as any }, home), /Invalid speak settings/);
+    assert.equal(readFileSync(path, 'utf8'), before);
+    assert.equal(parseSpeakSettingsFile(JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, macVoice: bad })), undefined);
+  }
+  for (const bad of ['true', 1, null, 'yes']) {
+    assert.throws(() => writeSpeakSettings({ ...DEFAULT_SPEAK_SETTINGS, macFallback: bad as any }, home), /Invalid speak settings/);
+    assert.equal(readFileSync(path, 'utf8'), before);
+    assert.equal(parseSpeakSettingsFile(JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, macFallback: bad })), undefined);
+  }
+  assert.deepEqual(readdirSync(home), ['speak-settings.json']);
+}));
+
+test('mac is a valid voice id in settings', () => withHome(home => {
+  writeSpeakSettings({ ...DEFAULT_SPEAK_SETTINGS, voice: 'mac' }, home);
+  assert.equal(readSpeakSettings(home).voice, 'mac');
+}));

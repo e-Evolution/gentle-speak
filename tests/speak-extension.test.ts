@@ -21,7 +21,7 @@ function harness(mode = 'tui', overrides: any = {}) {
   const inputs: string[] = [];
   const ctx = { cwd: '/work/gentle-theme', modelRegistry: overrides.modelRegistry, mode, hasUI: mode === 'tui', isIdle: () => true, sessionManager: { getHeader: () => overrides.header ?? { type: 'session' }, getBranch: () => overrides.branch ?? [{ type: 'message', message }] }, ui: { setStatus: (key: string, text?: string) => statuses.push([key, text]), notify: (text: string) => notifications.push(text), confirm: async () => confirmations.shift() ?? false, select: async () => selections.shift(), input: async () => inputs.shift() } };
   // Hermetic: never probe the real herdr or osascript; the lock dir is the (temp) home.
-  gentleSpeak({ on: (name: string, handler: Function) => events.set(name, handler), registerCommand: (name: string, command: any) => commands.set(name, command), registerShortcut: (key: string, shortcut: any) => shortcuts.set(key, shortcut), registerTool: (tool: any) => tools.set(tool.name, tool) } as any, home, { focusCheck: async () => 'focused', ...overrides.dependencies });
+  gentleSpeak({ on: (name: string, handler: Function) => events.set(name, handler), registerCommand: (name: string, command: any) => commands.set(name, command), registerShortcut: (key: string, shortcut: any) => shortcuts.set(key, shortcut), registerTool: (tool: any) => tools.set(tool.name, tool) } as any, home, { focusCheck: async () => 'focused', sayAvailable: () => false, ...overrides.dependencies });
   return { home, events, commands, shortcuts, tools, notifications, statuses, selections, confirmations, inputs, ctx, close: () => rmSync(home, { recursive: true, force: true }) };
 }
 
@@ -289,12 +289,13 @@ test('the /speak menu lists every catalog voice with label, id and install state
   try {
     await h.commands.get('speak').handler('', h.ctx);
     const voices = offered.filter(option => option.startsWith('Voice: '));
-    assert.equal(voices.length, 9);
+    assert.equal(voices.length, 10);
+    assert.equal(voices[9], 'Voice: Mac (mac) — not installed');
     assert.equal(voices[0], 'Voice: Español (México) (es_MX) — installed');
     assert.equal(voices[4], 'Voice: Coqueta (qwen-coqueta) — not installed');
     assert.equal(voices[3], 'Voice: Brisa (qwen-brisa) — installed');
     assert.equal(voices.some(option => option === 'Voice: es_MX' || option === 'Voice: es_ES'), false);
-    assert.deepEqual(offered.filter(option => !option.startsWith('Voice: ')), ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
+    assert.deepEqual(offered.filter(option => !option.startsWith('Voice: ')), ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel'].flatMap(entry => entry === 'Speed' ? ['Mac voice', 'Toggle Mac fallback', entry] : [entry]));
   } finally { h.close(); }
 });
 

@@ -62,6 +62,14 @@ Requires macOS on Apple Silicon and a Python with `mlx-audio` (and its dependenc
 
 While the answer is being written, a Qwen voice already synthesizes its completed sentences (at most 500 characters ahead); nothing plays before the answer is final. When the run settles, the audio that matches the final spoken text plays at once and only the rest is synthesized. It applies to automatic speech in the interactive parent TUI, not to `summary` mode, Piper voices, copied-selection speech or the speak-last key. Tool-call turns, stop, toggle off, a voice change and shutdown delete the prepared audio. When focus is unknown and the project prefix applies, prepared audio is discarded and the prefixed text is synthesized normally, because prepared audio has no prefix. An unfocused pane keeps only the latest result, prepared audio included.
 
+#### Mac voice (extra voice and fallback)
+
+macOS only, nothing to download or install: the `Mac` voice speaks through `/usr/bin/say`, with the text on stdin (never in the command line), so it needs neither the Piper/Qwen runtime nor node-cpal. It takes the same voice lock, deferral and stop key as every voice, never speculates, and speed maps to the say rate `round(185 × speed)` words per minute.
+
+- **Voice.** `/speak` → `Mac voice` lists the installed Spanish voices (`say -v '?'`) or `Auto`. Auto (`macVoice: null`) picks `Paulina` (es_MX), then `Mónica` (es_ES), then the first es_MX voice, then the first `es_*` voice. The SPEAK row shows `Mac · <voice>`, and the `cycleVoice` key includes `Mac` when `say` exists.
+- **Fallback.** With `macFallback` on (the default; `/speak` → `Toggle Mac fallback`), a Piper or Qwen voice that is not installed, or whose runtime or worker fails to start or synthesize, speaks the same text with the Mac voice, and you are told once per session. A cancel, a stop, invalid text and the parent-session refusal never fall back. Off macOS, or without `say`, there is no Mac voice and the usual errors stand.
+- **Settings.** `macVoice` (a voice name or `null`) and `macFallback` (boolean); old settings files stay valid.
+
 #### Speak copied selection
 
 Off by default. `/speak` → `Toggle speak copied selection` speaks, with the current voice, text you select and copy in this Gentle Shell (copy-on-release). It needs macOS and the fullscreen TUI; otherwise it reports "unavailable in this terminal mode" and does not start. Privacy: only copies made in this Gentle Shell are spoken (the terminal app must be frontmost and the text must be the visible selection); concealed, transient and password-manager copies are skipped; clipboard text is never stored or logged.

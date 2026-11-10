@@ -37,7 +37,7 @@ function harness(opts: { status?: any; voiceId?: string; manifest?: boolean; spa
     spawn: () => { const a = fakeChild(); if (opts.voiceId && opts.voiceId.startsWith('es_')) piperSpawns.push('piper'); audios.push(a); return a.child; },
     spawnQwen: (python: string, script: string) => { if (failures > 0) { failures--; throw new Error('spawn failed'); } const p = Object.assign(fakeChild(), { python, script }); pythons.push(p); return p.child; },
   };
-  gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut: (k: string, s: any) => shortcuts.set(k, s), registerTool: (t: any) => tools.set(t.name, t) } as any, home, { focusCheck: async () => 'focused', ...dependencies } as any);
+  gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut: (k: string, s: any) => shortcuts.set(k, s), registerTool: (t: any) => tools.set(t.name, t) } as any, home, { focusCheck: async () => 'focused', sayAvailable: () => false, ...dependencies } as any);
   const speak = (text = 'Hola mundo.') => tools.get('speak').execute('id', { text }, undefined, undefined, ctx);
   return { home, events, shortcuts, tools, notifications, pythons, audios, ctx, speak, piperSpawns, close: () => rmSync(home, { recursive: true, force: true }) };
 }

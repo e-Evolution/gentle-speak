@@ -12,7 +12,9 @@ export const QWEN_PYTHON_FLAGS: readonly string[] = Object.freeze(['-E', '-P']);
 export interface PiperVoice { engine: 'piper'; locale: string; language: string; label: string }
 /** A Qwen3-TTS voice clones `file` (reference audio) using its exact `transcript`. */
 export interface QwenVoice { engine: 'qwen3'; label: string; file: string; transcript: string; sha256: string; bytes: number }
-export type CatalogVoice = PiperVoice | QwenVoice;
+/** The macOS system voice (`say`): no download, no runtime; the concrete voice is the `macVoice` setting. */
+export interface SystemVoice { engine: 'system'; label: string }
+export type CatalogVoice = PiperVoice | QwenVoice | SystemVoice;
 
 export const QWEN_VOICES: Readonly<Record<string, QwenVoice>> = {
   "qwen-suave": { engine: 'qwen3', label: "Suave", file: "f3-suave.wav", transcript: "¿Ya estás despierto? Mira, te tengo una noticia buena y una mala, y voy a empezar por la buena, porque me cae bien tu cara. Terminé todo. Sí, todo, y sin quejarme ni una sola vez... bueno, casi ninguna. Ahora la mala: vas a tener que revisar lo que hice, y sé que eso te da pereza. Ven, siéntate. Escúchame un segundo y me dices si te convence, ¿va?", sha256: "d2bddd57ef9268065b53b7c42a6d1051a438e00c1c519bb9cac275699ca3a48a", bytes: 1080130 },
@@ -29,4 +31,5 @@ export const VOICE_CATALOG: Record<string, CatalogVoice> = {
   es_MX: { engine: 'piper', locale: 'es_MX', language: 'es', label: 'Español (México)' },
   es_ES: { engine: 'piper', locale: 'es_ES', language: 'es', label: 'Español (España)' },
   ...QWEN_VOICES,
+  mac: { engine: 'system', label: 'Mac' },
 };

@@ -40,7 +40,7 @@ function setup(opts: { voice?: string; mode?: string; ctxMode?: string; header?:
     qwenStatus: async () => installed(['qwen-intima', 'qwen-brisa']),
     spawn: () => { const a = fakeChild(); audios.push(a); return a.child; },
     spawnQwen: () => { const p = fakeChild(); pythons.push(p); return p.child; },
-    focusCheck: async () => (opts.focus ? opts.focus() : state.focus) as any, focusPollMs: 5, lockPollMs: 5, qwenTmpRoot: scratch,
+    focusCheck: async () => (opts.focus ? opts.focus() : state.focus) as any, focusPollMs: 5, lockPollMs: 5, sayAvailable: () => false, qwenTmpRoot: scratch,
   } as any);
   const synths = () => pythons.flatMap((p, index) => p.writes.filter(w => w.type === 'synth').map(w => ({ ...w, python: index })));
   const synthTexts = () => synths().map(w => w.text as string);

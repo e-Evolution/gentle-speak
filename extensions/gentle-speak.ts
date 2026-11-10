@@ -9,6 +9,7 @@ import { SPEAK_STATUS_KEY, formatSpeakStatus, nextAvailableVoice, voiceMenuEntri
 import { qwenVoicesStatus } from '../lib/speak-voices-install.ts';
 import { createCopiedSelectionWatcher, createOwnCopyGate, isSelectionTui, resolveTerminalBundleId } from '../lib/speak-clipboard.ts';
 import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix, readFrontmostBundleId, type FocusState, type HerdrExec } from '../lib/speak-focus.ts';
+import { MAC_VOICE_NAME, listSpanishSayVoices, pickMacVoice, sayAvailable, speakWithSay, type MacVoice } from '../lib/speak-say.ts';
 import { createVoiceLock } from '../lib/speak-voice-lock.ts';
 import { createSpeculativePlanner } from '../lib/speak-speculative.ts';
 import { createQwenSpeech, playbackFailure, readQwenPython, type QwenChild, type QwenPrepareHandle } from '../lib/speak-qwen.ts';
@@ -33,6 +34,10 @@ type Dependencies = {
   readFrontmost: () => Promise<string | undefined>;
   focusPollMs: number;
   lockPollMs: number;
+  /** S11: the Mac voice. Defaults check macOS and `/usr/bin/say`; tests inject fakes so nothing ever speaks aloud. */
+  sayAvailable: () => boolean;
+  listMacVoices: () => Promise<MacVoice[]>;
+  say: typeof speakWithSay;
   /** Scratch root of the Qwen engine (tests); defaults to the system temp dir. */
   qwenTmpRoot?: string;
 };
@@ -48,6 +53,9 @@ const defaults: Dependencies = {
   readFrontmost: async () => process.platform === 'darwin' ? readFrontmostBundleId({ timeoutMs: 900 }) : undefined,
   focusPollMs: 1000,
   lockPollMs: 100,
+  sayAvailable: () => sayAvailable(),
+  listMacVoices: () => listSpanishSayVoices(),
+  say: speakWithSay,
 };
 const COPY_WIDGET_KEY = 'gentle-speak-copy';
 const schema = 'gentle.speak/v1';
@@ -80,12 +88,25 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   const installs = new Set<AbortController>();
   const summaries = new Set<AbortController>();
   const parent = (ctx: ExtensionContext) => ctx.mode === 'tui' && ctx.sessionManager.getHeader()?.type === 'session' && !ctx.sessionManager.getHeader()?.parentSession;
+  /** S11: installed Spanish `say` voices, listed once and cached; `fresh` re-lists (the voice picker). */
+  let macVoices: MacVoice[] | undefined;
+  const loadMacVoices = async (fresh = false): Promise<MacVoice[]> => {
+    if (fresh || !macVoices) { try { macVoices = await deps.listMacVoices(); } catch { macVoices = []; } }
+    return macVoices;
+  };
+  /** The row names the Mac voice, which needs the voice list: prime it before an async refresh. */
+  const refreshRowPrimed = async (ctx: ExtensionContext) => {
+    try { if (readSpeakSettings(home).voice === 'mac') await loadMacVoices(); } catch { /* cosmetic */ }
+    refreshRow(ctx);
+  };
   /** The SPEAK row is cosmetic: only the interactive parent TUI sets it, and a failure never affects speech. */
   const refreshRow = (ctx: ExtensionContext) => {
     if (stopped || !parent(ctx)) return;
     try {
       const settings = readSpeakSettings(home);
-      ctx.ui.setStatus(SPEAK_STATUS_KEY, formatSpeakStatus({ enabled: settings.enabled, voiceLabel: VOICE_CATALOG[settings.voice]?.label ?? settings.voice, mode: settings.mode, summaryReady: settings.summaryModel !== null, copySpeech: settings.copySpeech, shortcuts: settings.shortcuts }));
+      const label = VOICE_CATALOG[settings.voice]?.label ?? settings.voice;
+      const voiceLabel = settings.voice === 'mac' ? `${label} · ${pickMacVoice(macVoices ?? [], settings.macVoice) ?? 'auto'}` : label;
+      ctx.ui.setStatus(SPEAK_STATUS_KEY, formatSpeakStatus({ enabled: settings.enabled, voiceLabel, mode: settings.mode, summaryReady: settings.summaryModel !== null, copySpeech: settings.copySpeech, shortcuts: settings.shortcuts }));
     } catch { /* Status is cosmetic. */ }
   };
   /** Copied-selection speech (S8): opt-in, interactive parent only, fail closed. Clipboard text is never logged. */
@@ -142,7 +163,8 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     try { qwenStatus = await deps.qwenStatus(home); } catch { /* treated as unavailable */ }
     for (const [id, voice] of Object.entries(VOICE_CATALOG)) {
       try {
-        available[id] = voice.engine === 'qwen3'
+        available[id] = voice.engine === 'system' ? deps.sayAvailable()
+          : voice.engine === 'qwen3'
           ? qwenStatus?.manifest === 'valid' && qwenStatus.voices[id] === 'installed'
           : (await deps.modelStatus({ home, voice: id as keyof typeof SPEAK_MODELS })).state === 'installed';
       } catch { available[id] = false; }
@@ -191,6 +213,8 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     if (stopped || signal?.aborted || !parent(ctx)) return result('Speech cancelled.', true);
     if (!python) {
       const message = `Qwen voice "${voice.label}" is not installed or is invalid. Install the Qwen voices (requires macOS Apple Silicon with mlx-audio; see README, "Qwen voices"), or choose a Piper voice with /speak.`;
+      // With the Mac fallback on, the fallback speaks instead and announces itself; otherwise today's error.
+      if (canFallBack(settings, ctx, signal)) return result(message, true);
       ctx.ui.notify(message, 'error');
       const failure = result(message, true);
       reported.add(failure);
@@ -221,8 +245,44 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   async function speakNow(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, prepared: Prepared | undefined) {
     if (stopped || !parent(ctx)) return result('Speech requires an interactive parent TUI session.', true);
     if (!text.trim() || text.length > 4000 || /[\x00-\x1f]/.test(text)) return result('Invalid speech text.', true);
-    if (!SPEAK_TARGETS.includes(target)) return result('Unsupported audio runtime platform.', true);
     const settings = readSpeakSettings(home);
+    // S11: the Mac voice needs no Piper/Qwen runtime and no node-cpal, and never speculates.
+    if (VOICE_CATALOG[settings.voice]?.engine === 'system') return speakMac(text, ctx, signal, settings);
+    const outcome = await speakEngine(text, ctx, signal, settings, prepared);
+    if (!outcome.isError || !canFallBack(settings, ctx, signal)) return outcome;
+    const failure = outcome.content[0].text;
+    if (failure === 'Speech cancelled.') return outcome; // a cancel or stop never falls back
+    const voice = await resolveMacVoice(settings);
+    if (!voice || stopped || signal?.aborted || !parent(ctx)) return outcome; // Mac unavailable: today's error stands
+    if (!fallbackNotified) {
+      fallbackNotified = true;
+      const reason = /not installed|Install and verify/.test(failure) ? 'not installed' : /Unsupported audio/.test(failure) ? 'unsupported platform' : failure.replace(/\.$/, '').slice(0, 60);
+      try { ctx.ui.notify(`gentle-speak: ${VOICE_CATALOG[settings.voice]?.label ?? settings.voice} unavailable (${reason}); speaking with the Mac voice.`, 'warning'); } catch { /* cosmetic */ }
+    }
+    return playMac(text, signal, settings, voice);
+  }
+  /** S11: Mac speech through `say`; the cross-process lock is held for the whole playback like every voice. */
+  let fallbackNotified = false;
+  const canFallBack = (settings: ReturnType<typeof readSpeakSettings>, ctx: ExtensionContext, signal: AbortSignal | undefined) =>
+    settings.macFallback && VOICE_CATALOG[settings.voice]?.engine !== 'system' && !stopped && !signal?.aborted && parent(ctx) && deps.sayAvailable();
+  async function resolveMacVoice(settings: ReturnType<typeof readSpeakSettings>): Promise<string | undefined> {
+    if (!deps.sayAvailable()) return undefined;
+    return pickMacVoice(await loadMacVoices(), settings.macVoice);
+  }
+  function playMac(text: string, signal: AbortSignal | undefined, settings: ReturnType<typeof readSpeakSettings>, voice: string) {
+    return playLocked(signal, () => result('Speech cancelled.', true), async held => {
+      const outcome = await deps.say({ voice, text, speed: settings.speed, signal: held });
+      return outcome.cancelled ? result('Speech cancelled.', true) : outcome.ok ? result('Speech completed.') : result(outcome.message, true);
+    });
+  }
+  async function speakMac(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, settings: ReturnType<typeof readSpeakSettings>) {
+    const voice = await resolveMacVoice(settings);
+    if (stopped || signal?.aborted || !parent(ctx)) return result('Speech cancelled.', true);
+    if (!voice) return result('The Mac voice is not available: it needs macOS with /usr/bin/say and a Spanish voice installed.', true);
+    return playMac(text, signal, settings, voice);
+  }
+  async function speakEngine(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, settings: ReturnType<typeof readSpeakSettings>, prepared: Prepared | undefined) {
+    if (!SPEAK_TARGETS.includes(target)) return result('Unsupported audio runtime platform.', true);
     if (VOICE_CATALOG[settings.voice]?.engine === 'qwen3') return speakQwen(text, ctx, signal, settings, prepared);
     const voice = settings.voice as keyof typeof SPEAK_MODELS;
     // Never transmit paths to the native child until BOTH installers validate the complete artifacts.
@@ -427,7 +487,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     } catch { /* Model failure is silent; never fall back to unsummarized speech. */ }
     finally { summaries.delete(controller); controller.abort(); }
   });
-  pi.on('session_start', async (_event, ctx) => { refreshRow(ctx); await syncCopy(ctx); });
+  pi.on('session_start', async (_event, ctx) => { await refreshRowPrimed(ctx); await syncCopy(ctx); });
   pi.on('session_shutdown', (_event, ctx) => {
     if (parent(ctx)) { try { ctx.ui.setStatus(SPEAK_STATUS_KEY, undefined); } catch { /* Status is cosmetic. */ } }
     stopCopy(ctx);
@@ -449,7 +509,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
       const settings = readSpeakSettings(home);
       const voices = voiceMenuEntries(VOICE_CATALOG, await voiceAvailability());
       if (stopped) return;
-      const choice = await ctx.ui.select('Speech settings', ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
+      const choice = await ctx.ui.select('Speech settings', ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Mac voice', 'Toggle Mac fallback', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
       if (!choice || choice === 'Cancel' || stopped) return;
       if (choice === 'Stop playback') { stopAll(); return; }
       if (choice === 'Install voice and runtime') {
@@ -495,6 +555,10 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
           // Qwen voices have no in-menu installer, so switching would only fail.
           // Piper voices keep the previous behavior: select first, then
           // "Install voice and runtime" installs the selected voice.
+          if (voice.engine === 'system') {
+            if (!stopped) ctx.ui.notify('The Mac voice is not available: it needs macOS with /usr/bin/say. Nothing changed.', 'warning');
+            return;
+          }
           if (voice.engine === 'qwen3') {
             if (!stopped) ctx.ui.notify(`Voice "${voice.label}" is not installed, so nothing changed. Install the Qwen voices first (see README, "Qwen voices").`, 'warning');
             return;
@@ -503,6 +567,15 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
         }
         settings.voice = picked.id;
       }
+      else if (choice === 'Mac voice') {
+        const installed = deps.sayAvailable() ? [...new Set((await loadMacVoices(true)).map(voice => voice.name))].filter(name => MAC_VOICE_NAME.test(name)) : [];
+        if (stopped) return;
+        if (!installed.length) { ctx.ui.notify('No Spanish Mac voice is installed (or say is unavailable); nothing changed.', 'warning'); return; }
+        const selected = await ctx.ui.select('Mac voice', ['Auto', ...installed]);
+        if (!selected || stopped || (selected !== 'Auto' && !installed.includes(selected))) return;
+        settings.macVoice = selected === 'Auto' ? null : selected;
+      }
+      else if (choice === 'Toggle Mac fallback') settings.macFallback = !settings.macFallback;
       else if (choice === 'Speed') {
         const input = await ctx.ui.input('Speed (0.5–2)', String(settings.speed));
         if (input === undefined || !input.trim()) return;
@@ -510,12 +583,12 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
       }
       try {
         writeSpeakSettings(settings, home);
-        if (choice.startsWith('Voice: ') || choice === 'Speed' || choice.startsWith('Mode: ')) cancelSpeculation(); // the next stream starts fresh with the new settings
+        if (choice.startsWith('Voice: ') || choice === 'Mac voice' || choice === 'Speed' || choice.startsWith('Mode: ')) cancelSpeculation(); // the next stream starts fresh with the new settings
         if (choice === 'Toggle speak copied selection') {
           await afterCopyToggle(ctx, settings.copySpeech);
           return;
         }
-        ctx.ui.notify(choice.startsWith('Key: ') ? 'Speech settings saved. Run /reload to apply shortcut changes.' : 'Speech settings saved.', 'info'); refreshRow(ctx);
+        ctx.ui.notify(choice.startsWith('Key: ') ? 'Speech settings saved. Run /reload to apply shortcut changes.' : 'Speech settings saved.', 'info'); await refreshRowPrimed(ctx);
       }
       catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); }
     },
@@ -546,7 +619,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     try { writeSpeakSettings(settings, home); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return; }
     cancelSpeculation();
     ctx.ui.notify(`Voice: ${VOICE_CATALOG[next].label}`, 'info');
-    refreshRow(ctx);
+    await refreshRowPrimed(ctx);
   } });
   pi.registerShortcut(shortcuts.toggleCopy, { description: 'Toggle speak copied selection', handler: async ctx => {
     if (!parent(ctx) || stopped) return;

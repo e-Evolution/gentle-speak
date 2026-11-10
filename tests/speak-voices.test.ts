@@ -36,7 +36,8 @@ test('catalog has exactly the seven qwen voices with exact files, transcripts an
   }
   assert.deepEqual({ ...VOICE_CATALOG.es_MX }, { engine: 'piper', locale: 'es_MX', language: 'es', label: 'Español (México)' });
   assert.deepEqual({ ...VOICE_CATALOG.es_ES }, { engine: 'piper', locale: 'es_ES', language: 'es', label: 'Español (España)' });
-  assert.equal(Object.keys(VOICE_CATALOG).length, 9);
+  assert.deepEqual({ ...VOICE_CATALOG.mac }, { engine: 'system', label: 'Mac' });
+  assert.equal(Object.keys(VOICE_CATALOG).length, 10);
   assert.equal(Object.keys(QWEN_VOICES).length, 7);
   assert.equal(QWEN_MODEL_ID, 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16');
 });
@@ -54,7 +55,7 @@ test('v1 file without cycleVoice loads unchanged plus the default; cycleVoice is
   assert.equal(DEFAULT_SPEAK_SETTINGS.shortcuts.cycleVoice, 'ctrl+alt+n');
   const shortcuts = { speakLast: 'ctrl+alt+s', stop: 'ctrl+alt+x', toggle: 'ctrl+alt+t' };
   const v1 = { schema: SPEAK_SETTINGS_SCHEMA, enabled: true, mode: 'summary', voice: 'es_ES', speed: 1.25, shortcuts };
-  assert.deepEqual(parseSpeakSettingsFile(JSON.stringify(v1)), { enabled: true, mode: 'summary', voice: 'es_ES', speed: 1.25, summaryModel: null, copySpeech: false, shortcuts: { ...shortcuts, cycleVoice: 'ctrl+alt+n', toggleCopy: 'ctrl+alt+c' } });
+  assert.deepEqual(parseSpeakSettingsFile(JSON.stringify(v1)), { enabled: true, mode: 'summary', voice: 'es_ES', speed: 1.25, summaryModel: null, copySpeech: false, macVoice: null, macFallback: true, shortcuts: { ...shortcuts, cycleVoice: 'ctrl+alt+n', toggleCopy: 'ctrl+alt+c' } });
 });
 
 test('unknown voice, reserved, duplicate and malformed cycleVoice stay rejected', () => {

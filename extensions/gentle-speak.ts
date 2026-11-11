@@ -77,6 +77,9 @@ const target = `${process.platform}-${process.arch}` as SpeakTarget;
 const worker = resolve(import.meta.dirname, '../scripts/speak-worker.cjs');
 const qwenWorker = resolve(import.meta.dirname, '../scripts/speak-qwen-worker.py');
 
+const IDLE_CHOICES: ReadonlyArray<{ label: string; minutes: number | null }> = [1, 2, 5, 10, 30, 60].map(minutes => ({ label: `${minutes} min`, minutes })).concat([{ label: 'Nunca', minutes: null as any }]);
+const idleMsOf = (minutes: number | null) => minutes === null ? null : minutes * 60_000;
+
 /** Speech is strictly parent-interactive; no native code is loaded on extension registration. */
 export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, dependencies: Partial<Dependencies> = {}): void {
   const deps = { ...defaults, ...dependencies };
@@ -93,7 +96,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   let current: Child | undefined;
   let cancelCurrent: (() => void) | undefined;
   let sequence = 0;
-  const qwen = createQwenSpeech({ tmpRoot: deps.qwenTmpRoot, spawnPython: python => deps.spawnQwen(python, qwenWorker), spawnAudio: () => deps.spawn(worker) });
+  const qwen = createQwenSpeech({ tmpRoot: deps.qwenTmpRoot, spawnPython: python => deps.spawnQwen(python, qwenWorker), spawnAudio: () => deps.spawn(worker), idleMs: idleMsOf(readSpeakSettings(settingsDir).qwenIdleMinutes) });
   const reported = new WeakSet<object>();
   // S9 single voice: one cross-process lock under the speak home, held for a whole playback.
   const voiceLock = createVoiceLock({ dir: home, pollMs: deps.lockPollMs });
@@ -676,7 +679,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       const settings = readSpeakSettings(settingsDir);
       const voices = voiceMenuEntries(VOICE_CATALOG, await voiceAvailability());
       if (stopped) return;
-      const choice = await ctx.ui.select('Speech settings', ['Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Mac voice', 'Toggle Mac fallback', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
+      const choice = await ctx.ui.select('Speech settings', ['Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Mac voice', 'Toggle Mac fallback', 'Liberar Qwen tras inactividad', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
       if (!choice || choice === 'Cancel' || stopped) return;
       if (choice === 'Stop playback') { stopAll(); return; }
       if (choice === 'Gentle Dot') { await dotMenu(ctx, voices); return; }
@@ -730,6 +733,12 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
         settings.macVoice = selected === 'Auto' ? null : selected;
       }
       else if (choice === 'Toggle Mac fallback') settings.macFallback = !settings.macFallback;
+      else if (choice === 'Liberar Qwen tras inactividad') {
+        const selected = await ctx.ui.select('Liberar Qwen tras inactividad', IDLE_CHOICES.map(entry => entry.label));
+        const picked = IDLE_CHOICES.find(entry => entry.label === selected);
+        if (!picked || stopped) return;
+        settings.qwenIdleMinutes = picked.minutes;
+      }
       else if (choice === 'Speed') {
         const input = await ctx.ui.input('Speed (0.5–2)', String(settings.speed));
         if (input === undefined || !input.trim()) return;
@@ -737,6 +746,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       }
       try {
         writeSpeakSettings(settings, settingsDir);
+        if (choice === 'Liberar Qwen tras inactividad') qwen.setIdleMs(idleMsOf(settings.qwenIdleMinutes)); // live: no session restart
         if (choice.startsWith('Voice: ') || choice === 'Mac voice' || choice === 'Speed' || choice.startsWith('Mode: ')) cancelSpeculation(); // the next stream starts fresh with the new settings
         if (choice === 'Toggle speak copied selection') {
           await afterCopyToggle(ctx, settings.copySpeech);

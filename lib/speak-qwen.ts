@@ -29,6 +29,9 @@ export const QWEN_READY_TIMEOUT_MS = 180_000;
  */
 export const QWEN_SYNTH_IDLE_TIMEOUT_MS = 120_000;
 
+/** Default idle release of the warm worker (5 minutes); the extension passes the `qwenIdleMinutes` setting. */
+export const QWEN_IDLE_MS = 5 * 60_000;
+
 export type QwenChild = Pick<ChildProcessWithoutNullStreams, 'stdin' | 'stdout' | 'stderr' | 'on' | 'kill'>;
 export interface QwenSpeechDeps {
   /** Starts `python -I <script>`; only called lazily, after the voice was verified installed. */
@@ -36,6 +39,8 @@ export interface QwenSpeechDeps {
   /** Starts the Node audio worker (scripts/speak-worker.cjs). */
   spawnAudio: () => QwenChild;
   tmpRoot?: string;
+  /** S13: close the warm Python worker after this many ms without activity; `null` never. Default {@link QWEN_IDLE_MS}. */
+  idleMs?: number | null;
 }
 export interface QwenSpeakRequest {
   python: string; text: string; ref: string; refText: string; speed: number; runtime: string;
@@ -100,6 +105,8 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
   let audio: QwenChild | undefined;
   let cancelCurrent: (() => void) | undefined;
   let busy = false;
+  let idleMs: number | null = deps.idleMs === undefined ? QWEN_IDLE_MS : deps.idleMs;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let requestId = 0, playId = 0;
   /** Prepared-WAV directories (one per finished or running `prepare`), kept apart from `tmp` so a `speak` never deletes them. */
   const prepDirs = new Set<string>();
@@ -109,7 +116,30 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
   const jobs = new WeakMap<QwenPrepareHandle, PrepareJob>();
 
   const removeTmp = () => { if (tmp) { try { rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ } tmp = undefined; } };
-  const killPython = () => { const old = python; python = undefined; try { old?.child.kill(); } catch { /* already gone */ } };
+  const killPython = () => { const old = python; python = undefined; clearTimeout(idleTimer); idleTimer = undefined; try { old?.child.kill(); } catch { /* already gone */ } };
+  /** Drops a worker (killing it) so its late exit never reaches the request that is replacing it. */
+  const dropWorker = (old: NonNullable<typeof python> | undefined) => { if (!old) return; old.handler = undefined; if (python === old) python = undefined; try { old.child.kill(); } catch { /* already gone */ } };
+  const inUse = () => busy || activePrepare !== undefined || prepareQueue.length > 0;
+  /** S13: (re)starts the idle countdown when the warm worker is idle; a speak, speakPrepared or prepare that runs or waits disarms it. */
+  function settleIdle() {
+    clearTimeout(idleTimer); idleTimer = undefined;
+    if (idleMs === null || !python || inUse()) return;
+    idleTimer = setTimeout(() => {
+      idleTimer = undefined;
+      const old = python;
+      if (!old || inUse()) return;
+      python = undefined; old.handler = undefined;
+      try { old.child.stdin.end?.(); } catch { /* already closed */ }
+      try { old.child.kill(); } catch { /* already gone */ }
+    }, idleMs);
+    idleTimer.unref?.();
+  }
+  /** Writes one line to the worker; a stdin that is already closed throws like a broken pipe so the callers can respawn. */
+  const writeLine = (state: NonNullable<typeof python>, payload: object) => {
+    const stdin: any = state.child.stdin;
+    if (stdin.destroyed || stdin.writable === false) throw new Error('Qwen worker stdin is closed');
+    state.child.stdin.write(JSON.stringify(payload) + '\n');
+  };
   const killAudio = () => { const old = audio; audio = undefined; try { old?.kill(); } catch { /* already gone */ } };
   const ensureTmp = () => {
     if (!tmp) { tmp = mkdtempSync(join(deps.tmpRoot ?? tmpdir(), 'gentle-speak-')); chmodSync(tmp, 0o700); }
@@ -120,9 +150,10 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
     const child = deps.spawnPython(path);
     const state: NonNullable<typeof python> = { child, ready: false };
     python = state;
-    const gone = () => { if (python === state) python = undefined; state.handler?.({ type: 'exit' }); };
+    const gone = () => { if (python === state) { python = undefined; settleIdle(); } state.handler?.({ type: 'exit' }); };
     child.on('error', gone);
     child.on('exit', gone);
+    (child.stdin as any).on?.('error', () => { try { child.kill(); } catch { /* already gone */ } gone(); }); // EPIPE on a dead worker: mark it gone, never an unhandled error
     child.stderr?.on?.('data', () => { /* logs stay on stderr; drained so the pipe never blocks */ });
     child.stdout.on('data', lineReader(line => {
       let message: any;
@@ -137,8 +168,9 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
   const dropPrepDir = (dir: string) => { prepDirs.delete(dir); try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } };
   /** A queued prepare starts only when no speak and no other prepare is running. */
   function startNext() {
-    if (busy || activePrepare) return;
+    if (busy || activePrepare) { settleIdle(); return; }
     prepareQueue.shift()?.start();
+    settleIdle();
   }
   /** A speak has priority over speculation: every running or queued prepare is cancelled (its files deleted). */
   function cancelPrepares(keep?: PrepareJob) {
@@ -156,7 +188,8 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
     removeTmp();
     if (hard) for (const dir of [...prepDirs]) dropPrepDir(dir);
   }
-  function dispose() { stop(true); }
+  function dispose() { stop(true); clearTimeout(idleTimer); idleTimer = undefined; }
+  function setIdleMs(ms: number | null) { idleMs = ms; settleIdle(); }
 
   function speak(request: QwenSpeakRequest): Promise<QwenOutcome> { return run(request, []); }
 
@@ -168,6 +201,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
   /** The shared utterance path: plays `initial` WAVs first, then synthesizes `request.text` unless it is empty (never for `speak`). */
   function run(request: QwenSpeakRequest & { inflight?: QwenPrepareHandle }, initial: readonly string[], inflight?: QwenPrepareHandle): Promise<QwenOutcome> {
     const adopted = inflight ? jobs.get(inflight) : undefined;
+    clearTimeout(idleTimer); idleTimer = undefined;
     cancelPrepares(adopted); // an adopted prepare keeps running: its parts are played as they arrive
     stop(false); // supersede the previous utterance; keep an idle model loaded
     const dir = ensureTmp();
@@ -231,11 +265,19 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
         try { ensureAudio().stdin.write(JSON.stringify({ schema: AUDIO_SCHEMA, type: 'play', id: pid, wav, speed: 1, runtime: request.runtime }) + '\n'); }
         catch { finish({ ok: false, message: 'Audio worker input failed.' }); }
       };
+      let retried = false, warm = false;
       const sendSynth = () => {
         armIdle();
         try {
-          worker.child.stdin.write(JSON.stringify({ schema: QWEN_SCHEMA, type: 'synth', id, text: request.text, ref: request.ref, refText: request.refText, outDir: dir, speed: request.speed }) + '\n');
-        } catch { finish({ ok: false, message: 'Qwen worker input failed.' }); }
+          writeLine(worker, { schema: QWEN_SCHEMA, type: 'synth', id, text: request.text, ref: request.ref, refText: request.refText, outDir: dir, speed: request.speed });
+        } catch {
+          // S13: a warm worker that died while idle (EPIPE): respawn once, before this request starts.
+          if (retried || !warm) { finish({ ok: false, message: 'Qwen worker input failed.' }); return; }
+          retried = true; disarmIdle();
+          dropWorker(worker);
+          try { worker = startPython(request.python); } catch { finish({ ok: false, message: 'Qwen worker could not start.' }); return; }
+          beginSynth();
+        }
       };
       function handle(message: any) {
         if (settled) return;
@@ -256,6 +298,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
         }
       }
       const beginSynth = () => {
+        warm = worker.ready && !retried;
         worker.handler = handle;
         if (worker.ready) sendSynth();
         else {
@@ -332,11 +375,19 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
           chmodSync(dir, 0o700); prepDirs.add(dir);
           worker = python ?? startPython(request.python);
         } catch { finish({ ok: false, message: 'Qwen worker could not start.' }); return; }
-        const outDir = dir, state = worker;
+        const outDir = dir;
+        let state = worker, retried = false, warm = false;
         const sendSynth = () => {
           armIdle();
-          try { state.child.stdin.write(JSON.stringify({ schema: QWEN_SCHEMA, type: 'synth', id, text: request.text, ref: request.ref, refText: request.refText, outDir, speed: request.speed }) + '\n'); }
-          catch { finish({ ok: false, message: 'Qwen worker input failed.' }); }
+          try { writeLine(state, { schema: QWEN_SCHEMA, type: 'synth', id, text: request.text, ref: request.ref, refText: request.refText, outDir, speed: request.speed }); }
+          catch {
+            // S13: a warm worker that died while idle (EPIPE): respawn once, before this prepare starts.
+            if (retried || !warm) { finish({ ok: false, message: 'Qwen worker input failed.' }); return; }
+            retried = true; clearTimeout(idleTimer);
+            dropWorker(state);
+            try { worker = state = startPython(request.python); } catch { finish({ ok: false, message: 'Qwen worker could not start.' }); return; }
+            begin();
+          }
         };
         const handle = (message: any) => {
           if (settled) return;
@@ -355,9 +406,13 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
             default: finish({ ok: false, message: 'Invalid Qwen worker response.' });
           }
         };
-        state.handler = handle;
-        if (state.ready) sendSynth();
-        else readyTimer = setTimeout(() => finish({ ok: false, message: 'Qwen worker did not become ready.' }), QWEN_READY_TIMEOUT_MS);
+        const begin = () => {
+          warm = state.ready && !retried;
+          state.handler = handle;
+          if (state.ready) sendSynth();
+          else readyTimer = setTimeout(() => finish({ ok: false, message: 'Qwen worker did not become ready.' }), QWEN_READY_TIMEOUT_MS);
+        };
+        begin();
       }
       if (request.signal?.aborted) { resolve({ ok: false, message: 'Speech cancelled.', cancelled: true }); return; }
       request.signal?.addEventListener('abort', job.cancel, { once: true });
@@ -376,5 +431,5 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
     }
   }
 
-  return { speak, stop, dispose, prepare, speakPrepared, discard };
+  return { speak, stop, dispose, prepare, speakPrepared, discard, setIdleMs };
 }

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The warm Qwen worker (about 2.6 GB per session) is now closed after `qwenIdleMinutes` of inactivity (default 5, `/speak` → `Liberar Qwen tras inactividad`, 1-60 or never) and respawns transparently on the next speech, also after an external kill; no fallback, no error (S13).
 - Qwen voices send each streamed part as soon as it is synthesized, so the first audio starts after about 1.5 s instead of waiting for a whole 250-character group.
 - Added a catalog of seven Qwen3-TTS reference voices (`qwen-*`, model `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16`), a sha256-verified installer into `~/.gentle-speak/voices/qwen3/`, and a rebindable `cycleVoice` key (default `ctrl+alt+n`). Existing settings files stay valid; Piper `es_MX`/`es_ES` and the default voice are unchanged. Engine routing and menus follow separately.
 - Qwen voices now speak: a persistent Python synth worker (`scripts/speak-qwen-worker.py`, schema `gentle.speak.qwen/v1`, mlx-audio, offline) streams sentence-group WAV chunks to a new `play` message of the Node audio worker. Piper behaviour and the existing `speak` message are unchanged; a Qwen voice that is not installed is refused with a clear error and nothing is spawned.

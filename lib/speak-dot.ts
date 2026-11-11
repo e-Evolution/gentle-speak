@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import * as nodeFs from 'node:fs';
-import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { realHome } from './speak-home.ts';
 
 // S12: Gentle Dot's engine home, its settings.json `packages`, and the connect/disconnect edits. Pure and injectable
 // (fs, env, home); nothing here reads or writes anything the caller did not name.
@@ -15,12 +15,12 @@ const expandHome = (path: string, home: string) => path === '~' ? home : path.st
 
 /** The agent dir this process runs under: `PI_CODING_AGENT_DIR` (pi-coding-agent `config.getAgentDir`), which gentle-shell also sets as `GENTLE_PI_AGENT_HOME`; else `~/.pi/agent`. */
 export function sessionAgentDir(io: DotIo = {}): string {
-  const env = io.env ?? process.env, home = io.home ?? homedir();
+  const env = io.env ?? process.env, home = io.home ?? realHome();
   return resolve(expandHome(env.PI_CODING_AGENT_DIR || env.GENTLE_PI_AGENT_HOME || join(home, '.pi', 'agent'), home));
 }
-/** Gentle Dot's engine home: `GENTLE_DOT_AGENT_HOME`, else `~/.gentle-dot/agent`. */
+/** Gentle Dot's engine home: `GENTLE_DOT_AGENT_HOME`, else `<real home>/.gentle-dot/agent` (the real home, not `$HOME`: Dot overrides it). */
 export function dotAgentHome(io: DotIo = {}): string {
-  const env = io.env ?? process.env, home = io.home ?? homedir();
+  const env = io.env ?? process.env, home = io.home ?? realHome();
   return resolve(expandHome(env.GENTLE_DOT_AGENT_HOME || join(home, '.gentle-dot', 'agent'), home));
 }
 /** True when this process is Gentle Dot's engine: `GENTLE_SPEAK_DOT=1`, or its agent dir is Dot's engine home. */
@@ -62,7 +62,7 @@ const isLocalPath = (source: string) => !/^(?:npm|git|https?|ssh|file|github|gh)
  * Falls back to `packageRoot` (the installed package itself) when the terminal settings carry no entry.
  */
 export function terminalSource(io: DotIo & { packageRoot: string }): PackageEntry {
-  const fs = io.fs ?? nodeFs, home = io.home ?? homedir(), dir = sessionAgentDir(io);
+  const fs = io.fs ?? nodeFs, home = io.home ?? realHome(), dir = sessionAgentDir(io);
   const reroot = (source: string) => isLocalPath(source) ? (isAbsolute(source) || source.startsWith('~') ? resolve(expandHome(source, home)) : resolve(dir, source)) : source;
   try {
     const json = JSON.parse(String(fs.readFileSync(join(dir, 'settings.json'), 'utf8')));

@@ -19,7 +19,7 @@ const VOICES = [{ name: 'Paulina', locale: 'es_MX' }, { name: 'Mónica', locale:
 const roots: string[] = [];
 test.afterEach(() => { for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true }); });
 
-interface Opts { voice?: string; patch?: Record<string, unknown>; say?: boolean; piper?: 'installed' | 'missing'; runtime?: 'installed' | 'missing'; qwen?: 'installed' | 'missing'; piperSpawnThrows?: boolean; qwenSpawnThrows?: boolean; focus?: () => string; mode?: string; header?: unknown; text?: string; voices?: typeof VOICES }
+interface Opts { voice?: string; patch?: Record<string, unknown>; say?: boolean; piper?: 'installed' | 'missing'; runtime?: 'installed' | 'missing'; qwen?: 'installed' | 'missing'; piperSpawnThrows?: boolean; qwenSpawnThrows?: boolean; focus?: () => string; mode?: string; header?: unknown; text?: string; voices?: typeof VOICES; listMac?: () => Promise<typeof VOICES>; voiceProbeMs?: number }
 function setup(o: Opts = {}) {
   const home = mkdtempSync(join(tmpdir(), 'speak-mac-')); roots.push(home);
   mkdirSync(join(home, 'voices', 'qwen3'), { recursive: true });
@@ -40,7 +40,7 @@ function setup(o: Opts = {}) {
     ui: { setStatus: (_k: string, t?: string) => statuses.push(t), notify: (t: string, l: string) => notes.push([t, l]), confirm: async () => false, select: async (_t: string, opts: string[]) => { offered.push(opts); return selections.shift(); }, input: async () => undefined, setWidget: (_k: string, f: any) => { if (typeof f === 'function') f({ getCopyOnSelect: () => true, hasActiveSelection: () => true, getScreenLines: () => [] }, {}); } } };
   const deps: any = {
     ...hermetic(home),
-    sayAvailable: () => o.say !== false, listMacVoices: async () => o.voices ?? VOICES,
+    sayAvailable: () => o.say !== false, listMacVoices: o.listMac ?? (async () => o.voices ?? VOICES), ...(o.voiceProbeMs ? { voiceProbeMs: o.voiceProbeMs } : {}),
     say: (req: any) => new Promise(resolve => {
       sayCalls.push({ ...req, lockHeld: existsSync(join(home, 'voice.lock')) });
       if (sayMode === 'ok') resolve({ ok: true, message: 'Speech completed.' });
@@ -453,4 +453,48 @@ test('/speak > selecting the Mac voice persists voice=mac when say is available;
   u.selections.push('Voice: Mac (mac) — not installed');
   await u.commands.get('speak').handler('', u.ctx);
   assert.equal(readSpeakSettings(u.home).voice, 'es_MX');
+});
+
+// ---- T33: T31 review advisories (L64) ----
+test('R3-empty-voice-list-cached: an empty voice list is not cached; the next attempt lists again and speaks', async () => {
+  let calls = 0;
+  const s = setup({ voice: 'mac', listMac: async () => (++calls === 1 ? [] : VOICES) }); s.setSay('ok');
+  const first = await s.tool();
+  assert.equal(first.isError, true); assert.match(first.content[0].text, /^The Mac voice is not available/);
+  assert.equal(s.sayCalls.length, 0);
+  const second = await s.tool();
+  assert.equal(second.isError, undefined); assert.equal(calls, 2, 'the empty result was not cached');
+  assert.equal(s.sayCalls[0].voice, 'Paulina');
+  await s.tool(); assert.equal(calls, 2, 'a non-empty list is still cached');
+});
+
+test('R3-qwen-error-suppressed-without-voice: Mac fallback cannot speak (no Spanish voice), so the original Qwen error reaches the user unchanged', async () => {
+  const s = setup({ voice: 'qwen-intima', qwen: 'missing', voices: [] });
+  const tool = await s.tool();
+  const original = tool.content[0].text;
+  assert.match(original, /^Qwen voice "Íntima" is not installed or is invalid\./); assert.equal(tool.isError, true);
+  s.notes.length = 0;
+  await s.settle(); await quiet();
+  assert.deepEqual(s.notes, [[original, 'error']], 'automatic speech reports the original error exactly once');
+  assert.equal(s.sayCalls.length, 0); assert.deepEqual(fallbackNotes(s), []);
+});
+
+test('R3: a failed Mac voice list (throws) also leaves the original Piper error untouched', async () => {
+  const s = setup({ voice: 'es_MX', piper: 'missing', listMac: async () => { throw new Error('say broke'); } });
+  const out = await s.tool();
+  assert.equal(out.content[0].text, 'Install and verify the voice and runtime with /speak first.'); assert.equal(out.isError, true);
+  await s.settle(); await quiet();
+  assert.deepEqual(s.notes.filter(([, l]) => l === 'error'), [['Install and verify the voice and runtime with /speak first.', 'error']]);
+});
+
+test('R4-001: a hanging voice-list probe is bounded; speech does not block and treats the list as unavailable for that attempt', async () => {
+  let calls = 0;
+  const s = setup({ voice: 'qwen-intima', qwen: 'missing', voiceProbeMs: 20, listMac: () => { calls++; return calls === 1 ? new Promise(() => {}) : Promise.resolve(VOICES); } }); s.setSay('ok');
+  const started = Date.now();
+  const out = await Promise.race([s.tool(), new Promise<never>((_, rej) => setTimeout(() => rej(new Error('speech blocked by the probe')), 2000))]);
+  assert.ok(Date.now() - started < 1500);
+  assert.equal(out.isError, true); assert.match(out.content[0].text, /^Qwen voice "Íntima" is not installed/);
+  assert.equal(s.sayCalls.length, 0);
+  const again = await s.tool(); // the timeout was not cached: the next attempt lists again and falls back
+  assert.equal(again.isError, undefined); assert.equal(calls, 2); assert.equal(s.sayCalls.length, 1);
 });

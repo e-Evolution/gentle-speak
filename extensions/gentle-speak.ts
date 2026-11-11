@@ -1,19 +1,19 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { spawn as spawnChild, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { join, resolve } from 'node:path';
-import { homedir } from 'node:os';
 import { readSpeakSettings, writeSpeakSettings } from '../lib/speak-settings.ts';
 import { filterSettledSpeech } from '../lib/speak-filter.ts';
-import { QWEN_PYTHON_FLAGS, VOICE_CATALOG } from '../lib/speak-voices.ts';
+import { VOICE_CATALOG } from '../lib/speak-voices.ts';
 import { SPEAK_STATUS_KEY, formatSpeakStatus, nextAvailableVoice, voiceMenuEntries } from '../lib/speak-status.ts';
 import { qwenVoicesStatus } from '../lib/speak-voices-install.ts';
 import { createCopiedSelectionWatcher, createOwnCopyGate, isSelectionTui, resolveTerminalBundleId } from '../lib/speak-clipboard.ts';
 import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix, readFrontmostBundleId, type FocusState, type HerdrExec } from '../lib/speak-focus.ts';
 import { MAC_VOICE_NAME, listSpanishSayVoices, pickMacVoice, sayAvailable, speakWithSay, type MacVoice } from '../lib/speak-say.ts';
+import { realHome } from '../lib/speak-home.ts';
 import { createVoiceLock } from '../lib/speak-voice-lock.ts';
 import { connectDot, detectDot, disconnectDot, isDotEngine, terminalSource, type DotFs } from '../lib/speak-dot.ts';
 import { createSpeculativePlanner } from '../lib/speak-speculative.ts';
-import { createQwenSpeech, playbackFailure, readQwenPython, type QwenChild, type QwenPrepareHandle } from '../lib/speak-qwen.ts';
+import { createQwenSpeech, playbackFailure, readQwenPython, spawnQwenPython, type QwenChild, type QwenPrepareHandle } from '../lib/speak-qwen.ts';
 import { SPEAK_MODELS, SPEAK_TARGETS, installSpeakModel, installSpeakRuntime, readSpeakModelStatus, readSpeakRuntimeStatus, type SpeakTarget } from '../lib/speak-install.ts';
 
 type Child = Pick<ChildProcessWithoutNullStreams, 'stdin' | 'stdout' | 'stderr' | 'on' | 'kill'>;
@@ -38,6 +38,8 @@ type Dependencies = {
   /** S11: the Mac voice. Defaults check macOS and `/usr/bin/say`; tests inject fakes so nothing ever speaks aloud. */
   sayAvailable: () => boolean;
   listMacVoices: () => Promise<MacVoice[]>;
+  /** Upper bound of the `say -v '?'` probe; on timeout the voice list is unavailable for that attempt. */
+  voiceProbeMs: number;
   say: typeof speakWithSay;
   /** S12: the user's home (tests); Gentle Dot's engine home and the terminal agent dir derive from it and `env`. */
   userHome?: string;
@@ -53,7 +55,7 @@ const defaults: Dependencies = {
   installModel: installSpeakModel, installRuntime: installSpeakRuntime,
   spawn: script => spawnChild(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] }),
   qwenStatus: qwenVoicesStatus,
-  spawnQwen: (python, script) => spawnChild(python, [...QWEN_PYTHON_FLAGS, script], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, HF_HUB_OFFLINE: '1', PYTHONIOENCODING: 'utf-8' } }),
+  spawnQwen: (python, script) => spawnQwenPython(python, script),
   resolveTerminal: async () => process.platform === 'darwin' ? resolveTerminalBundleId({ env: process.env, pid: process.pid }) : undefined,
   createWatcher: createCopiedSelectionWatcher,
   env: process.env,
@@ -62,6 +64,7 @@ const defaults: Dependencies = {
   lockPollMs: 100,
   sayAvailable: () => sayAvailable(),
   listMacVoices: () => listSpanishSayVoices(),
+  voiceProbeMs: 1500,
   say: speakWithSay,
 };
 const COPY_WIDGET_KEY = 'gentle-speak-copy';
@@ -71,8 +74,10 @@ const worker = resolve(import.meta.dirname, '../scripts/speak-worker.cjs');
 const qwenWorker = resolve(import.meta.dirname, '../scripts/speak-qwen-worker.py');
 
 /** Speech is strictly parent-interactive; no native code is loaded on extension registration. */
-export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.gentle-speak'), dependencies: Partial<Dependencies> = {}): void {
+export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, dependencies: Partial<Dependencies> = {}): void {
   const deps = { ...defaults, ...dependencies };
+  // Dot overrides $HOME: the default speak home hangs off the account's real home.
+  const home = speakHome ?? join(deps.userHome ?? realHome(), '.gentle-speak');
   let stopped = false;
   let current: Child | undefined;
   let cancelCurrent: (() => void) | undefined;
@@ -96,7 +101,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   const summaries = new Set<AbortController>();
   const parent = (ctx: ExtensionContext) => ctx.mode === 'tui' && ctx.sessionManager.getHeader()?.type === 'session' && !ctx.sessionManager.getHeader()?.parentSession;
   // S12: Gentle Dot's engine. The session runs under PI_CODING_AGENT_DIR (set by gentle-shell, read by pi-coding-agent's getAgentDir).
-  const dotIo = { env: deps.env, home: deps.userHome ?? homedir(), fs: deps.dotFs };
+  const dotIo = { env: deps.env, home: deps.userHome ?? realHome(), fs: deps.dotFs };
   const packageRoot = deps.packageRoot ?? resolve(import.meta.dirname, '..');
   /** The root RPC session of Gentle Dot's engine with `dotSpeech` on; never another RPC client, a child, print or JSON mode. */
   const dotSession = (ctx: ExtensionContext) => ctx.mode === 'rpc' && ctx.sessionManager.getHeader()?.type === 'session' && !ctx.sessionManager.getHeader()?.parentSession
@@ -109,11 +114,17 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     if (ctx.mode === 'tui') ctx.ui.notify(message, level);
     else { try { ctx.ui.notify(message, level); } catch { /* the client may not render it */ } }
   };
-  /** S11: installed Spanish `say` voices, listed once and cached; `fresh` re-lists (the voice picker). */
+  /** S11: installed Spanish `say` voices; only a non-empty list is cached (an empty or failed probe is retried), the probe is time-bounded, `fresh` re-lists (the voice picker). */
   let macVoices: MacVoice[] | undefined;
   const loadMacVoices = async (fresh = false): Promise<MacVoice[]> => {
-    if (fresh || !macVoices) { try { macVoices = await deps.listMacVoices(); } catch { macVoices = []; } }
-    return macVoices;
+    if (!fresh && macVoices?.length) return macVoices;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('voice probe timed out')), deps.voiceProbeMs); });
+      const list = await Promise.race([deps.listMacVoices(), timeout]);
+      macVoices = list.length ? list : undefined;
+      return list;
+    } catch { return []; } finally { clearTimeout(timer); }
   };
   /** The row names the Mac voice, which needs the voice list: prime it before an async refresh. */
   const refreshRowPrimed = async (ctx: ExtensionContext) => {

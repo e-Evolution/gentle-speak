@@ -1,7 +1,18 @@
 import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
-import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn as spawnChild, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { realHome } from './speak-home.ts';
+import { QWEN_PYTHON_FLAGS } from './speak-voices.ts';
+
+/**
+ * Starts the Qwen Python worker (`python -E -P <script>`). `HOME` is the account's real home: Gentle Dot overrides `$HOME`, and
+ * Python finds its user site-packages (where mlx-audio lives) through it. `-E` ignores PYTHON* vars, not `HOME`.
+ */
+export function spawnQwenPython(python: string, script: string, io: { spawn?: typeof spawnChild; env?: NodeJS.ProcessEnv; home?: string } = {}): ChildProcessWithoutNullStreams {
+  const run = io.spawn ?? spawnChild;
+  return run(python, [...QWEN_PYTHON_FLAGS, script], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...(io.env ?? process.env), HOME: io.home ?? realHome(), HF_HUB_OFFLINE: '1', PYTHONIOENCODING: 'utf-8' } });
+}
 
 /** Qwen3-TTS routing: a persistent Python synth worker feeds WAV chunks to the Node audio worker as `play`. */
 export const QWEN_SCHEMA = 'gentle.speak.qwen/v1';

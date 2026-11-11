@@ -32,8 +32,14 @@ export function isDotEngine(io: DotIo = {}): boolean {
 
 const entrySource = (entry: unknown): string | undefined => typeof entry === 'string' ? entry : entry && typeof entry === 'object' && typeof (entry as any).source === 'string' ? (entry as any).source : undefined;
 const GENTLE_SPEAK_SOURCE = /(?:^|[\/\\:])gentle-speak(?:@[^\/\\]*)?(?:\.git)?[\/\\]?$/;
+/**
+ * The git source forms Pi documents (docs/packages.md:13, :38, :39): `git:<host>/<owner>/<repo>[@ref]` and `https://<host>/<owner>/<repo>`; Pi documents no ssh, file or git@ form.
+ * Accepted here for the repository `gentle-speak` only, with an optional `.git` and `@ref` (`[A-Za-z0-9._/-]{1,100}`); no credentials, query or fragment.
+ */
+const GIT_SPEAK_SOURCE = /^(?:git:|https:\/\/)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/gentle-speak(?:\.git)?(?:@[A-Za-z0-9._/-]{1,100})?$/;
+export const isGitSpeakSource = (source: string): boolean => GIT_SPEAK_SOURCE.test(source);
 /** Whether a `packages` entry (string or `{ source }`) points at gentle-speak: npm, git or a local path whose last segment is `gentle-speak`. */
-export const isSpeakEntry = (entry: unknown): boolean => { const source = entrySource(entry); return source !== undefined && GENTLE_SPEAK_SOURCE.test(source.trim()); };
+export const isSpeakEntry = (entry: unknown): boolean => { const source = entrySource(entry)?.trim(); return source !== undefined && (GENTLE_SPEAK_SOURCE.test(source) || isGitSpeakSource(source)); };
 
 export type DotSettingsRead = { state: 'absent'; path: string } | { state: 'malformed'; path: string } | { state: 'ok'; path: string; json: Record<string, unknown>; packages: unknown[] };
 /** Reads Dot's settings.json. `malformed` covers invalid JSON, a non-object file and a `packages` that is not an array. */
@@ -77,10 +83,11 @@ export function terminalSource(io: DotIo & { packageRoot: string }): PackageEntr
 /** This package's name: the only package.json `name` a local source may hold (checked against the real package.json by the tests). */
 export const SPEAK_PACKAGE_NAME = 'gentle-speak';
 const NPM_SPEAK_SPEC = /^npm:gentle-speak(?:@[A-Za-z0-9._~^<>=*|-]+)?$/;
-/** R1: a local source must be absolute, an existing dir whose package.json `name` is this package; anything else must be a well-formed npm spec for this package. */
+/** R1: a local source must be absolute, an existing dir whose package.json `name` is this package; anything else must be a well-formed npm spec or a git source (`isGitSpeakSource`) for this package. */
 function validSource(source: string, io: DotIo): boolean {
   const fs = io.fs ?? nodeFs;
   if (/^npm:/i.test(source)) return NPM_SPEAK_SPEC.test(source);
+  if (/^(?:git:|https:)/i.test(source)) return isGitSpeakSource(source);
   if (!isLocalPath(source) || !isAbsolute(source)) return false;
   try { return JSON.parse(String(fs.readFileSync(join(source, 'package.json'), 'utf8')))?.name === SPEAK_PACKAGE_NAME; } catch { return false; }
 }

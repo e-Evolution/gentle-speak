@@ -53,7 +53,7 @@ test('R1-dot-package-source: only a well-formed npm spec for this package passes
   for (const spec of ['npm:gentle-speak', 'npm:gentle-speak@0.2.0', 'npm:gentle-speak@^1.0.0']) {
     const w = sourceWorld([spec]); assert.equal(resolveDotSource(w.io), spec);
   }
-  for (const spec of ['npm:evil/gentle-speak', 'npm:@evil/gentle-speak', 'npm:gentle-speak@', 'npm:gentle-speak@1 2', 'git:github.com/x/gentle-speak', 'https://x.test/gentle-speak']) {
+  for (const spec of ['npm:evil/gentle-speak', 'npm:@evil/gentle-speak', 'npm:gentle-speak@', 'npm:gentle-speak@1 2', 'https://user:pw@x.test/gentle-speak', 'ssh://git@x.test/x/gentle-speak.git']) {
     const w = sourceWorld([spec]); assert.equal(resolveDotSource(w.io), undefined, spec);
   }
 });

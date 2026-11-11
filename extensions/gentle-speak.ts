@@ -1,12 +1,15 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { spawn as spawnChild, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { readSpeakSettings, writeSpeakSettings, type SpeakMode } from '../lib/speak-settings.ts';
+import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { isAbsolute as isAbsolutePath, join, resolve } from 'node:path';
+import { DEFAULT_SPEAK_SETTINGS, readSpeakSettings, writeSpeakSettings, type SpeakMode } from '../lib/speak-settings.ts';
 import { filterSettledSpeech } from '../lib/speak-filter.ts';
-import { VOICE_CATALOG } from '../lib/speak-voices.ts';
+import { CUSTOM_VOICE_PREFIX, QWEN_DESIGN_MODEL_ID, VOICE_CATALOG, isCustomVoiceId } from '../lib/speak-voices.ts';
+import { CUSTOM_LABEL_MAX, CUSTOM_TRANSCRIPT_MAX, createCustomVoice, customCatalog, defaultPythonRun, deleteCustomVoice, listCustomVoices, readCustomVoice, runVoiceScript, slugifyVoiceId, type CustomVoice, type PythonRun } from '../lib/speak-custom-voices.ts';
 import { SPEAK_STATUS_KEY, formatSpeakStatus, nextAvailableVoice, voiceMenuEntries } from '../lib/speak-status.ts';
-import { qwenVoicesStatus } from '../lib/speak-voices-install.ts';
+import { describeDesignModelSize, designModelSize, designModelStatus, hfHomeOf, installDesignModel, qwenVoicesStatus } from '../lib/speak-voices-install.ts';
 import { createCopiedSelectionWatcher, createOwnCopyGate, isSelectionTui, resolveTerminalBundleId } from '../lib/speak-clipboard.ts';
 import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix, readFrontmostBundleId, type FocusState, type HerdrExec } from '../lib/speak-focus.ts';
 import { MAC_VOICE_NAME, listSpanishSayVoices, pickMacVoice, sayAvailable, speakWithSay, type MacVoice } from '../lib/speak-say.ts';
@@ -61,6 +64,14 @@ type Dependencies = {
    * (then that worker is the engine); an object overrides the service options (tests).
    */
   qwenService?: boolean | Partial<QwenServiceSpawnerOptions>;
+  /** S14: the Hugging Face home (tests); defaults to `HF_HOME` or `<real home>/.cache/huggingface`. */
+  hfHome?: string;
+  /** S14: whether the VoiceDesign model is in the Hugging Face cache, its size for the confirmation, and its explicit download (all faked in tests). */
+  designStatus: typeof designModelStatus;
+  designSize: () => Promise<number | undefined>;
+  installDesign: typeof installDesignModel;
+  /** S14: runs `scripts/speak-design-voice.py` (design or import); tests inject a fake runner. */
+  pythonRun: PythonRun;
 };
 const defaults: Dependencies = {
   modelStatus: readSpeakModelStatus, runtimeStatus: readSpeakRuntimeStatus,
@@ -78,6 +89,10 @@ const defaults: Dependencies = {
   listMacVoices: () => listSpanishSayVoices(),
   voiceProbeMs: 1500,
   say: speakWithSay,
+  designStatus: designModelStatus,
+  designSize: () => designModelSize(),
+  installDesign: installDesignModel,
+  pythonRun: defaultPythonRun,
 };
 const COPY_WIDGET_KEY = 'gentle-speak-copy';
 const schema = 'gentle.speak/v1';
@@ -85,6 +100,9 @@ const target = `${process.platform}-${process.arch}` as SpeakTarget;
 const worker = resolve(import.meta.dirname, '../scripts/speak-worker.cjs');
 const qwenWorker = resolve(import.meta.dirname, '../scripts/speak-qwen-worker.py');
 const qwenServiceScript = resolve(import.meta.dirname, '../scripts/speak-qwen-service.mjs');
+const designScript = resolve(import.meta.dirname, '../scripts/speak-design-voice.py');
+const DEFAULT_SAMPLE = 'Encontré el problema. Era una carrera en el worker de audio, algo tonto en realidad. Ya está arreglado.';
+const CONSENT_TEXT = 'Es mi voz o tengo consentimiento explícito de la persona';
 
 const IDLE_CHOICES: ReadonlyArray<{ label: string; minutes: number | null }> = [1, 2, 5, 10, 30, 60].map(minutes => ({ label: `${minutes} min`, minutes })).concat([{ label: 'Nunca', minutes: null as any }]);
 const IDLE_LABEL = 'Mantener Qwen tras cerrar la última sesión';
@@ -171,9 +189,39 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (!fresh && macVoices?.length) return macVoices;
     return probeMacVoices();
   };
+  /** S14: the verified custom voices (`custom:<id>`), refreshed from disk whenever the voice list is built and at speech time; invalid entries are reported once and never offered. */
+  let customVoices: Record<string, CustomVoice> = {};
+  const skippedNotified = new Set<string>();
+  async function refreshCustom(ctx?: ExtensionContext): Promise<Record<string, CustomVoice>> {
+    try {
+      const list = await listCustomVoices(home);
+      customVoices = customCatalog(list.voices);
+      for (const entry of list.skipped) {
+        const key = `${entry.id}:${entry.reason}`;
+        if (skippedNotified.has(key) || stopped || !ctx || !parent(ctx)) continue;
+        skippedNotified.add(key);
+        try { ctx.ui.notify(`Voz propia «${entry.id}» omitida: ${entry.reason}.`, 'warning'); } catch { /* cosmetic */ }
+      }
+    } catch { customVoices = {}; }
+    return customVoices;
+  }
+  const fullCatalog = (): Record<string, { label: string; engine: string }> => ({ ...VOICE_CATALOG, ...customVoices });
+  const voiceEngine = (id: string): string | undefined => isCustomVoiceId(id) ? 'qwen3' : VOICE_CATALOG[id]?.engine;
+  const labelOfVoice = (id: string): string => customVoices[id]?.label ?? VOICE_CATALOG[id]?.label ?? id;
+  /** The reference audio, transcript and interpreter of a Qwen voice, or why it is not usable. A custom voice is verified by sha256 here, at use. */
+  async function resolveQwenVoice(id: string, status: Awaited<ReturnType<typeof qwenVoicesStatus>> | undefined): Promise<{ python?: string; ref: string; refText: string; notInstalled: string }> {
+    if (isCustomVoiceId(id)) {
+      const bare = id.slice(CUSTOM_VOICE_PREFIX.length);
+      const custom = await readCustomVoice(home, bare);
+      return { python: custom && status?.manifest === 'valid' ? readQwenPython(home) : undefined, ref: custom?.ref ?? '', refText: custom?.transcript ?? '', notInstalled: `Custom voice "${bare}" is not installed or is invalid. Create or import it again with /speak, or choose another voice.` };
+    }
+    const voice = VOICE_CATALOG[id] as Extract<(typeof VOICE_CATALOG)[string], { engine: 'qwen3' }>;
+    return { python: status?.manifest === 'valid' && status.voices[id] === 'installed' ? readQwenPython(home) : undefined, ref: join(home, 'voices', 'qwen3', voice.file), refText: voice.transcript,
+      notInstalled: `Qwen voice "${voice.label}" is not installed or is invalid. Install the Qwen voices (requires macOS Apple Silicon with mlx-audio; see README, "Qwen voices"), or choose a Piper voice with /speak.` };
+  }
   /** The row names the Mac voice, which needs the voice list: prime it before an async refresh. */
   const refreshRowPrimed = async (ctx: ExtensionContext) => {
-    try { if (readSpeakSettings(settingsDir).voice === 'mac') await loadMacVoices(); } catch { /* cosmetic */ }
+    try { if (readSpeakSettings(settingsDir).voice === 'mac') await loadMacVoices(); if (isCustomVoiceId(readSpeakSettings(settingsDir).voice)) await refreshCustom(); } catch { /* cosmetic */ }
     refreshRow(ctx);
   };
   /** The SPEAK row is cosmetic: only the interactive parent TUI sets it, and a failure never affects speech. */
@@ -181,7 +229,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (stopped || !parent(ctx)) return;
     try {
       const settings = readSpeakSettings(settingsDir);
-      const label = VOICE_CATALOG[settings.voice]?.label ?? settings.voice;
+      const label = labelOfVoice(settings.voice);
       const voiceLabel = settings.voice === 'mac' ? `${label} · ${pickMacVoice(macVoices ?? [], settings.macVoice) ?? 'auto'}` : label;
       ctx.ui.setStatus(SPEAK_STATUS_KEY, formatSpeakStatus({ enabled: settings.enabled, voiceLabel, mode: settings.mode, summaryReady: settings.summaryModel !== null, copySpeech: settings.copySpeech, shortcuts: settings.shortcuts }));
     } catch { /* Status is cosmetic. */ }
@@ -234,13 +282,15 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     await syncCopy(ctx);
   }
   /** A Piper voice is available when its model is installed; a qwen3 voice when the manifest is valid and the voice installed. */
-  async function voiceAvailability(): Promise<Record<string, boolean>> {
+  async function voiceAvailability(ctx?: ExtensionContext): Promise<Record<string, boolean>> {
     const available: Record<string, boolean> = {};
+    await refreshCustom(ctx);
     let qwenStatus: Awaited<ReturnType<typeof qwenVoicesStatus>> | undefined;
     try { qwenStatus = await deps.qwenStatus(home); } catch { /* treated as unavailable */ }
-    for (const [id, voice] of Object.entries(VOICE_CATALOG)) {
+    for (const [id, voice] of Object.entries(fullCatalog())) {
       try {
-        available[id] = voice.engine === 'system' ? deps.sayAvailable()
+        available[id] = isCustomVoiceId(id) ? qwenStatus?.manifest === 'valid'
+          : voice.engine === 'system' ? deps.sayAvailable()
           : voice.engine === 'qwen3'
           ? qwenStatus?.manifest === 'valid' && qwenStatus.voices[id] === 'installed'
           : (await deps.modelStatus({ home, voice: id as keyof typeof SPEAK_MODELS })).state === 'installed';
@@ -284,12 +334,11 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   }
   /** Qwen3 voices: verified install first, then the lazy Python synth worker feeds the audio worker. */
   async function speakQwen(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, settings: ReturnType<typeof readSpeakSettings>, prepared?: Prepared) {
-    const voice = VOICE_CATALOG[settings.voice] as Extract<(typeof VOICE_CATALOG)[string], { engine: 'qwen3' }>;
     const status = await deps.qwenStatus(home);
-    const python = status.manifest === 'valid' && status.voices[settings.voice] === 'installed' ? readQwenPython(home) : undefined;
+    const { python, ref, refText, notInstalled } = await resolveQwenVoice(settings.voice, status);
     if (stopped || signal?.aborted || !speaker(ctx)) return result('Speech cancelled.', true);
     if (!python) {
-      const message = `Qwen voice "${voice.label}" is not installed or is invalid. Install the Qwen voices (requires macOS Apple Silicon with mlx-audio; see README, "Qwen voices"), or choose a Piper voice with /speak.`;
+      const message = notInstalled;
       // With the Mac fallback on, the fallback speaks instead and announces itself; otherwise today's error.
       if (canFallBack(settings, ctx, signal)) return result(message, true);
       notifySpeech(ctx, message, 'error');
@@ -305,7 +354,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       const onAbort = () => qwen.stop(false);
       held.addEventListener('abort', onAbort, { once: true });
       try {
-        const request = { python, ref: join(home, 'voices', 'qwen3', voice.file), refText: voice.transcript, speed: settings.speed, runtime: runtime.path, onWarning: (message: string) => { if (!stopped && speaker(ctx)) notifySpeech(ctx, message, 'warning'); } };
+        const request = { python, ref, refText, speed: settings.speed, runtime: runtime.path, onWarning: (message: string) => { if (!stopped && speaker(ctx)) notifySpeech(ctx, message, 'warning'); } };
         // Prepared audio only plays in the voice and speed it was synthesized with; anything else takes today's path.
         const usable = prepared && !prepared.taken && prepared.voice === settings.voice && prepared.speed === settings.speed;
         if (prepared && usable) prepared.taken = true; // the Qwen engine owns (and deletes) the files from here on
@@ -334,7 +383,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (!fallbackNotified) {
       fallbackNotified = true;
       const reason = /not installed|Install and verify/.test(failure) ? 'not installed' : /Unsupported audio/.test(failure) ? 'unsupported platform' : failure.replace(/\.$/, '').slice(0, 60);
-      try { ctx.ui.notify(`gentle-speak: ${VOICE_CATALOG[settings.voice]?.label ?? settings.voice} unavailable (${reason}); speaking with the Mac voice.`, 'warning'); } catch { /* cosmetic */ }
+      try { ctx.ui.notify(`gentle-speak: ${labelOfVoice(settings.voice)} unavailable (${reason}); speaking with the Mac voice.`, 'warning'); } catch { /* cosmetic */ }
     }
     return playMac(text, signal, settings, voice);
   }
@@ -360,7 +409,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   }
   async function speakEngine(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, settings: ReturnType<typeof readSpeakSettings>, prepared: Prepared | undefined) {
     if (!SPEAK_TARGETS.includes(target)) return result('Unsupported audio runtime platform.', true);
-    if (VOICE_CATALOG[settings.voice]?.engine === 'qwen3') return speakQwen(text, ctx, signal, settings, prepared);
+    if (voiceEngine(settings.voice) === 'qwen3') return speakQwen(text, ctx, signal, settings, prepared);
     const voice = settings.voice as keyof typeof SPEAK_MODELS;
     // Never transmit paths to the native child until BOTH installers validate the complete artifacts.
     const model = await deps.modelStatus({ home, voice });
@@ -489,17 +538,16 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     };
   };
   async function startSpeculation(settings: ReturnType<typeof readSpeakSettings>) {
-    const voice = VOICE_CATALOG[settings.voice] as Extract<(typeof VOICE_CATALOG)[string], { engine: 'qwen3' }>;
     const generation = speculationGeneration;
     speculationStarting = true;
     try {
       const status = await deps.qwenStatus(home);
-      const python = status.manifest === 'valid' && status.voices[settings.voice] === 'installed' ? readQwenPython(home) : undefined;
+      const { python, ref, refText } = await resolveQwenVoice(settings.voice, status);
       if (!python || stopped || generation !== speculationGeneration) return;
       const speed = settings.speed;
       const planner = createSpeculativePlanner({
         maxAheadChars: 500,
-        synthesize: (text, signal) => qwen.prepare({ python, text, ref: join(home, 'voices', 'qwen3', voice.file), refText: voice.transcript, speed, signal }),
+        synthesize: (text, signal) => qwen.prepare({ python, text, ref, refText, speed, signal }),
         discard: wavs => qwen.discard(wavs),
       });
       speculation = { voice: settings.voice, speed, planner };
@@ -512,7 +560,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     streamedText = text;
     let settings: ReturnType<typeof readSpeakSettings>;
     try { settings = readSpeakSettings(settingsDir); } catch { return; }
-    if (!settings.enabled || settings.mode === 'summary' || VOICE_CATALOG[settings.voice]?.engine !== 'qwen3' || !SPEAK_TARGETS.includes(target)) { if (speculation) disposeSpeculation(); return; }
+    if (!settings.enabled || settings.mode === 'summary' || voiceEngine(settings.voice) !== 'qwen3' || !SPEAK_TARGETS.includes(target)) { if (speculation) disposeSpeculation(); return; }
     if (speculation && (speculation.voice !== settings.voice || speculation.speed !== settings.speed)) disposeSpeculation();
     if (speculation) { speculation.planner.update(text); return; }
     if (!speculationStarting) await startSpeculation(settings);
@@ -587,7 +635,8 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   }
   /** Same rules for the terminal and Dot's voice pick: a Mac or Qwen voice that is not available is refused; a Piper voice not installed yet is selected with a notice. */
   async function confirmVoicePick(ctx: ExtensionContext, id: string): Promise<boolean> {
-    if ((await voiceAvailability())[id]) return !stopped;
+    if ((await voiceAvailability(ctx))[id]) return !stopped;
+    if (isCustomVoiceId(id)) { if (!stopped) ctx.ui.notify(`La voz propia "${id}" no está disponible o es inválida (¿faltan las voces Qwen?), así que no cambié nada.`, 'warning'); return false; }
     const voice = VOICE_CATALOG[id];
     if (voice.engine === 'system') { if (!stopped) ctx.ui.notify('The Mac voice is not available: it needs macOS with /usr/bin/say. Nothing changed.', 'warning'); return false; }
     if (voice.engine === 'qwen3') { if (!stopped) ctx.ui.notify(`Voice "${voice.label}" is not installed, so nothing changed. Install the Qwen voices first (see README, "Qwen voices").`, 'warning'); return false; }
@@ -674,7 +723,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     try { const settings = readSpeakSettings(settingsDir); settings.dotOffer = 'declined'; writeSpeakSettings(settings, settingsDir); } catch { /* asked again next time */ }
   }
   pi.on('session_start', async (_event, ctx) => {
-    await refreshRowPrimed(ctx); await syncCopy(ctx);
+    await refreshCustom(ctx); await refreshRowPrimed(ctx); await syncCopy(ctx);
     const generation = ++offerGeneration;
     if (offerTimer) clearTimeout(offerTimer);
     offerTimer = setTimeout(() => { offerTimer = undefined; offerDot(ctx, generation).catch(() => { /* the offer is a convenience; it never breaks anything */ }); }, 0);
@@ -684,7 +733,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (parent(ctx)) { try { ctx.ui.setStatus(SPEAK_STATUS_KEY, undefined); } catch { /* Status is cosmetic. */ } }
     stopCopy(ctx);
     offerGeneration++; if (offerTimer) { clearTimeout(offerTimer); offerTimer = undefined; }
-    stopped = true; for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); deferral.dispose(); if (pendingItem && !pendingItem.started) dropPrepared(pendingItem); pendingItem = undefined; disposeSpeculation(); stop(); voiceLock.close(); qwen.dispose(); (spawnPython as Partial<QwenServiceSpawner>).close?.(); // close(): rejects a pending acquire, releases a held lock once, refuses later acquires
+    stopped = true; for (const controller of voiceJobs) controller.abort(); voiceJobs.clear(); for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); deferral.dispose(); if (pendingItem && !pendingItem.started) dropPrepared(pendingItem); pendingItem = undefined; disposeSpeculation(); stop(); voiceLock.close(); qwen.dispose(); (spawnPython as Partial<QwenServiceSpawner>).close?.(); // close(): rejects a pending acquire, releases a held lock once, refuses later acquires
   });
   pi.registerTool({
     name: 'speak', label: 'Speak', description: 'Speak a short message in the parent interactive TUI after local voice installation.',
@@ -696,17 +745,129 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       return (await deliver(text, ctx, signal, false)) ?? result('Speech deferred until this pane has focus.');
     },
   });
+  // ---- S14 (T42): own voices. Terminal TUI parent only; nothing here downloads or runs unless the human confirms it. ----
+  const voiceJobs = new Set<AbortController>();
+  const bareLabel = (label: string) => label.replace(/^Propia · /, '');
+  const realUserHome = () => deps.userHome ?? realHome();
+  /** The Python of the Qwen install (recorded by the installer): custom voices need the same interpreter and the Base model. */
+  function customPython(ctx: ExtensionContext): string | undefined {
+    const python = readQwenPython(home);
+    if (!python) ctx.ui.notify('Primero instalá las voces Qwen (hace falta su Python con mlx-audio; ver README, "Qwen voices"); no cambié nada.', 'warning');
+    return python;
+  }
+  async function takenIds(): Promise<Set<string>> {
+    const list = await listCustomVoices(home);
+    return new Set([...list.voices.map(voice => voice.id.slice(CUSTOM_VOICE_PREFIX.length)), ...list.skipped.map(entry => entry.id)]);
+  }
+  /** Runs `scripts/speak-design-voice.py` in a private scratch dir, stores the result atomically as a custom voice, and reports it. Runs in the background: the command returns at once. */
+  function runVoiceJob(ctx: ExtensionContext, job: { python: string; mode: 'design' | 'import'; args: string[]; label: string; transcript: string; description?: string; source: 'designed' | 'recorded'; done: string; failed: string }) {
+    const controller = new AbortController();
+    voiceJobs.add(controller);
+    const live = () => !stopped && !controller.signal.aborted;
+    void (async () => {
+      let stage: string | undefined;
+      try {
+        stage = mkdtempSync(join(deps.qwenTmpRoot ?? tmpdir(), 'gentle-speak-voice-'));
+        const outcome = await runVoiceScript({ python: job.python, script: designScript, args: [job.mode, ...job.args, '--out', stage], run: deps.pythonRun, env: qwenPythonEnv(process.env, deps.userHome), signal: controller.signal });
+        if (!live()) return;
+        if (!outcome.ok) { ctx.ui.notify(`${job.failed}: ${outcome.message}.`, 'error'); return; }
+        ctx.ui.notify('Guardando la voz…', 'info');
+        const wav = await readFile(join(stage, 'reference.wav'));
+        const id = slugifyVoiceId(job.label, await takenIds());
+        await createCustomVoice({ home, id, label: job.label, transcript: job.transcript, source: job.source, language: 'es', description: job.description, wav });
+        await refreshCustom(ctx);
+        if (live()) { ctx.ui.notify(`${job.done}: ${job.label}`, 'info'); await refreshRowPrimed(ctx); }
+      } catch (error) { if (live()) ctx.ui.notify(`${job.failed}: ${String((error as Error)?.message ?? 'error').replace(/\S*[\/\\]\S*/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)}.`, 'error'); }
+      finally { voiceJobs.delete(controller); if (stage) { try { rmSync(stage, { recursive: true, force: true }); } catch { /* best effort */ } } }
+    })();
+  }
+  /** «Crear voz propia…»: the VoiceDesign model is a separate, explicit, confirmed download (never automatic). */
+  async function designFlow(ctx: ExtensionContext) {
+    const python = customPython(ctx);
+    if (!python) return;
+    const hf = deps.hfHome ?? hfHomeOf(process.env, realUserHome());
+    let state: 'installed' | 'missing';
+    try { state = await deps.designStatus(hf); } catch { state = 'missing'; }
+    if (stopped) return;
+    if (state !== 'installed') {
+      const size = describeDesignModelSize(await deps.designSize().catch(() => undefined));
+      const yes = await ctx.ui.confirm('Descargar el modelo VoiceDesign', `Diseñar una voz necesita el modelo ${QWEN_DESIGN_MODEL_ID} (${size}), que se descarga de Hugging Face a tu caché. Solo se usa para diseñar; hablar sigue usando el modelo Base. ¿Descargarlo ahora?`);
+      if (!yes || stopped) { if (!stopped) ctx.ui.notify('No descargué nada y no creé ninguna voz.', 'info'); return; }
+      const controller = new AbortController();
+      installs.add(controller);
+      try {
+        ctx.ui.notify('Descargando el modelo VoiceDesign… puede tardar varios minutos.', 'info');
+        await deps.installDesign({ python, hfHome: hf, home: realUserHome(), confirmed: true, signal: controller.signal });
+      } catch { if (!stopped) ctx.ui.notify('No pude descargar el modelo VoiceDesign; no se creó ninguna voz.', 'error'); return; }
+      finally { controller.abort(); installs.delete(controller); }
+      if (stopped) return;
+    }
+    const description = (await ctx.ui.input('Describí la voz (p. ej. «femenina, adulta, cálida, acento mexicano»)', ''))?.trim();
+    if (description === undefined || stopped) return;
+    if (description.length < 10 || description.length > 600) { ctx.ui.notify('La descripción debe tener entre 10 y 600 caracteres; nada cambió.', 'warning'); return; }
+    const label = (await ctx.ui.input(`Nombre de la voz (hasta ${CUSTOM_LABEL_MAX} caracteres)`, ''))?.trim();
+    if (label === undefined || stopped) return;
+    if (!label || label.length > CUSTOM_LABEL_MAX || /[\p{Cc}]/u.test(label)) { ctx.ui.notify(`El nombre debe tener entre 1 y ${CUSTOM_LABEL_MAX} caracteres; nada cambió.`, 'warning'); return; }
+    const typed = await ctx.ui.input('Frase de muestra (40-400 caracteres; vacío usa la sugerida)', DEFAULT_SAMPLE);
+    if (typed === undefined || stopped) return;
+    const sample = typed.trim() || DEFAULT_SAMPLE;
+    if (sample.length < 40 || sample.length > 400 || sample.length > CUSTOM_TRANSCRIPT_MAX || /[\p{Cc}]/u.test(sample)) { ctx.ui.notify('La frase de muestra debe tener entre 40 y 400 caracteres; nada cambió.', 'warning'); return; }
+    ctx.ui.notify('Privacidad: la voz se diseña solo con tu texto (sin audio de nadie), se guarda en tu equipo en voices/custom/ y nunca se sube.', 'info');
+    ctx.ui.notify(`Diseñando la voz «${label}»… carga el modelo y puede tardar un minuto; te aviso al terminar.`, 'info');
+    runVoiceJob(ctx, { python, mode: 'design', args: ['--description', description, '--sample', sample, '--language', 'es'], label, transcript: sample, description, source: 'designed', done: 'Voz creada', failed: 'No pude crear la voz' });
+  }
+  /** «Importar mi grabación…»: explicit consent first; the script validates the WAV (PCM, 3-30 s, size-bounded) and never echoes its path. */
+  async function importFlow(ctx: ExtensionContext) {
+    const python = customPython(ctx);
+    if (!python) return;
+    const yes = await ctx.ui.confirm('Importar mi grabación', `Vas a usar una grabación para clonar una voz que se guarda solo en tu equipo. Confirmá: «${CONSENT_TEXT}». ¿Lo confirmás?`);
+    if (!yes || stopped) { if (!stopped) ctx.ui.notify('Sin consentimiento no importé nada.', 'info'); return; }
+    const typedPath = (await ctx.ui.input('Ruta del WAV (3-30 s, tu voz)', ''))?.trim().replace(/^(["'])(.*)\1$/, '$2');
+    if (typedPath === undefined || stopped) return;
+    const wav = typedPath.startsWith('~/') ? join(realUserHome(), typedPath.slice(2)) : typedPath;
+    if (!wav || !isAbsolutePath(wav)) { ctx.ui.notify('La ruta debe ser absoluta (o empezar con ~/); nada cambió.', 'warning'); return; }
+    const transcript = (await ctx.ui.input(`Transcripción exacta de lo que dices en la grabación (1-${CUSTOM_TRANSCRIPT_MAX} caracteres)`, ''))?.trim();
+    if (transcript === undefined || stopped) return;
+    if (!transcript || transcript.length > CUSTOM_TRANSCRIPT_MAX || /[\p{Cc}]/u.test(transcript)) { ctx.ui.notify(`La transcripción debe tener entre 1 y ${CUSTOM_TRANSCRIPT_MAX} caracteres; nada cambió.`, 'warning'); return; }
+    const label = (await ctx.ui.input(`Nombre de la voz (hasta ${CUSTOM_LABEL_MAX} caracteres)`, ''))?.trim();
+    if (label === undefined || stopped) return;
+    if (!label || label.length > CUSTOM_LABEL_MAX || /[\p{Cc}]/u.test(label)) { ctx.ui.notify(`El nombre debe tener entre 1 y ${CUSTOM_LABEL_MAX} caracteres; nada cambió.`, 'warning'); return; }
+    ctx.ui.notify(`Importando la grabación como «${label}»… (queda solo en tu equipo)`, 'info');
+    runVoiceJob(ctx, { python, mode: 'import', args: ['--wav', wav, '--transcript', transcript], label, transcript, source: 'recorded', done: 'Voz importada', failed: 'No pude importar la voz' });
+  }
+  /** «Borrar voz propia…»: confirmed; deleting the selected voice returns to the default voice. */
+  async function deleteFlow(ctx: ExtensionContext) {
+    const voices = Object.values(await refreshCustom(ctx));
+    if (!voices.length) { ctx.ui.notify('No hay voces propias para borrar.', 'info'); return; }
+    const picked = await ctx.ui.select('Borrar voz propia', voices.map(voice => `${voice.label} (${voice.id})`));
+    const voice = voices.find(entry => `${entry.label} (${entry.id})` === picked);
+    if (!voice || stopped) return;
+    if (!(await ctx.ui.confirm('Borrar voz propia', `¿Borrar «${voice.label}»? No se puede deshacer.`)) || stopped) return;
+    try {
+      await deleteCustomVoice(home, voice.id.slice(CUSTOM_VOICE_PREFIX.length));
+      const settings = readSpeakSettings(settingsDir);
+      if (settings.voice === voice.id) { settings.voice = DEFAULT_SPEAK_SETTINGS.voice; writeSpeakSettings(settings, settingsDir); cancelSpeculation(); }
+      await refreshCustom(ctx);
+      if (stopped) return;
+      ctx.ui.notify(`Voz borrada: ${bareLabel(voice.label)}`, 'info');
+      await refreshRowPrimed(ctx);
+    } catch { if (!stopped) ctx.ui.notify('No pude borrar la voz; nada cambió.', 'error'); }
+  }
   pi.registerCommand('speak', {
     description: 'Configure speech and explicitly install local voice and runtime (parent TUI only)',
     async handler(_args, ctx) {
       if (stopped || !parent(ctx)) return;
       const settings = readSpeakSettings(settingsDir);
-      const voices = voiceMenuEntries(VOICE_CATALOG, await voiceAvailability());
+      const availability = await voiceAvailability(ctx); // refreshes the custom voices first
+      const voices = voiceMenuEntries(fullCatalog(), availability);
       if (stopped) return;
-      const choice = await ctx.ui.select('Speech settings', ['Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Mac voice', 'Toggle Mac fallback', IDLE_LABEL, ...(qwenServiceOn ? ['Detener servicio Qwen'] : []), 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
+      const choice = await ctx.ui.select('Speech settings', ['Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Crear voz propia…', 'Importar mi grabación…', 'Borrar voz propia…', 'Mac voice', 'Toggle Mac fallback', IDLE_LABEL, ...(qwenServiceOn ? ['Detener servicio Qwen'] : []), 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
       if (!choice || choice === 'Cancel' || stopped) return;
       if (choice === 'Stop playback') { stopAll(); return; }
       if (choice === 'Gentle Dot') { await dotMenu(ctx, voices); return; }
+      if (choice === 'Crear voz propia…') { await designFlow(ctx); return; }
+      if (choice === 'Importar mi grabación…') { await importFlow(ctx); return; }
+      if (choice === 'Borrar voz propia…') { await deleteFlow(ctx); return; }
       if (choice === 'Install voice and runtime') {
         if (!SPEAK_TARGETS.includes(target)) { ctx.ui.notify('Unsupported audio runtime platform.', 'error'); return; }
         const controller = new AbortController();
@@ -805,13 +966,14 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   pi.registerShortcut(shortcuts.cycleVoice, { description: 'Cycle to the next installed voice', handler: async ctx => {
     if (!parent(ctx) || stopped) return;
     const settings = readSpeakSettings(settingsDir);
-    const next = nextAvailableVoice(Object.keys(VOICE_CATALOG), settings.voice, await voiceAvailability());
+    const available = await voiceAvailability(ctx);
+    const next = nextAvailableVoice(Object.keys(fullCatalog()), settings.voice, available);
     if (stopped) return;
     if (!next) { ctx.ui.notify('No other voice is installed; nothing changed.', 'info'); return; }
     settings.voice = next;
     try { writeSpeakSettings(settings, settingsDir); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return; }
     cancelSpeculation();
-    ctx.ui.notify(`Voice: ${VOICE_CATALOG[next].label}`, 'info');
+    ctx.ui.notify(`Voice: ${labelOfVoice(next)}`, 'info');
     await refreshRowPrimed(ctx);
   } });
   pi.registerShortcut(shortcuts.toggleCopy, { description: 'Toggle speak copied selection', handler: async ctx => {

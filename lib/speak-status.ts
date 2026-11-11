@@ -1,4 +1,3 @@
-import type { CatalogVoice } from './speak-voices.ts';
 import type { SpeakMode } from './speak-settings.ts';
 
 /** Key of the `ctx.ui.setStatus` row; Gentle Shell renders it inside its INTEGRATIONS section. */
@@ -42,6 +41,6 @@ export function nextAvailableVoice(order: readonly string[], current: string, av
 }
 
 /** `/speak` menu entries for every catalog voice, in catalog order. */
-export function voiceMenuEntries(catalog: Readonly<Record<string, CatalogVoice>>, available: Readonly<Record<string, boolean>>): Array<{ id: string; text: string }> {
+export function voiceMenuEntries(catalog: Readonly<Record<string, { label: string }>>, available: Readonly<Record<string, boolean>>): Array<{ id: string; text: string }> {
   return Object.entries(catalog).map(([id, voice]) => ({ id, text: `Voice: ${voice.label} (${id}) — ${available[id] ? 'installed' : 'not installed'}` }));
 }

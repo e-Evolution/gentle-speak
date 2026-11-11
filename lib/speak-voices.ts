@@ -1,5 +1,11 @@
 /** Voice catalog data: Piper (sherpa-onnx) locales and Qwen3-TTS reference-audio voices (S6). */
 export const QWEN_MODEL_ID = 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16';
+/** S14: the VoiceDesign model, used only to design a voice from text (a separate, explicit, confirmed download); speech keeps cloning with the Base model. */
+export const QWEN_DESIGN_MODEL_ID = 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16';
+/** S14: a custom voice is selected as `custom:<id>`; the id is also its directory name under `<sharedHome>/voices/custom/`. */
+export const CUSTOM_VOICE_PREFIX = 'custom:';
+export const CUSTOM_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export const isCustomVoiceId = (value: unknown): value is string => typeof value === 'string' && value.startsWith(CUSTOM_VOICE_PREFIX) && CUSTOM_ID_PATTERN.test(value.slice(CUSTOM_VOICE_PREFIX.length));
 /**
  * Interpreter flags for every Qwen python call: the installer's check and the
  * synth worker must agree, or a check can pass while the worker fails.

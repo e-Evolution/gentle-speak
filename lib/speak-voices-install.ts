@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { QWEN_MODEL_ID, QWEN_PYTHON_FLAGS, QWEN_VOICES, type QwenVoice } from './speak-voices.ts';
+import { QWEN_DESIGN_MODEL_ID, QWEN_MODEL_ID, QWEN_PYTHON_FLAGS, QWEN_VOICES, type QwenVoice } from './speak-voices.ts';
+import { qwenPythonEnv } from './speak-qwen.ts';
 
 export const QWEN_VOICES_SCHEMA = 'gentle-speak.qwen-voices/v1';
 export type QwenCatalog = Readonly<Record<string, QwenVoice>>;
@@ -71,4 +72,61 @@ export async function installQwenVoices({ sourceDir, home, python, catalog = QWE
   const voices = Object.fromEntries(Object.entries(catalog).map(([id, v]) => [id, { file: v.file, sha256: v.sha256, bytes: v.bytes, transcript: v.transcript }]));
   await publish('manifest.json', `${JSON.stringify({ schema: QWEN_VOICES_SCHEMA, python, model: QWEN_MODEL_ID, voices }, null, 2)}\n`);
   return { path: dir, installed: pending.map(p => p.id) };
+}
+
+// ---- S14 (T42): the VoiceDesign model, a separate, explicit, confirmed download (never automatic; used only to design a voice) ----------
+export type DesignModelState = 'installed' | 'missing';
+/** Measured 2026-11-11 on the local Hugging Face cache snapshot of the repo (`du -skL`: 4 414 288 KiB); used only when the API cannot be asked. */
+export const QWEN_DESIGN_APPROX_BYTES = 4_414_288 * 1024;
+const DESIGN_REPO_DIR = `models--${QWEN_DESIGN_MODEL_ID.replace('/', '--')}`;
+
+/** `<HF_HOME>`: a user-set `HF_HOME`, else `<real home>/.cache/huggingface`; the same rule as the Qwen child's environment. */
+export const hfHomeOf = (env: NodeJS.ProcessEnv, home: string): string => qwenPythonEnv(env, home).HF_HOME as string;
+
+/** `installed` only when a cached snapshot has config.json, a speech_tokenizer dir and at least one non-empty safetensors file that resolves (a dangling link is an interrupted download). */
+export async function designModelStatus(hfHome: string): Promise<DesignModelState> {
+  const snapshots = join(hfHome, 'hub', DESIGN_REPO_DIR, 'snapshots');
+  let names: string[];
+  try { names = await readdir(snapshots); } catch { return 'missing'; }
+  for (const name of names) {
+    const dir = join(snapshots, name);
+    try {
+      if (!(await stat(join(dir, 'config.json'))).isFile() || !(await stat(join(dir, 'speech_tokenizer'))).isDirectory()) continue;
+      for (const file of await readdir(dir)) if (file.endsWith('.safetensors') && (await stat(join(dir, file)).catch(() => undefined))?.size) return 'installed';
+    } catch { /* incomplete snapshot */ }
+  }
+  return 'missing';
+}
+
+/** Total bytes of the repo from the public Hugging Face API (metadata only, nothing is downloaded); undefined when it cannot be read. */
+export async function designModelSize(fetchImpl: typeof fetch = globalThis.fetch, timeoutMs = 5000): Promise<number | undefined> {
+  try {
+    const response = await fetchImpl(`https://huggingface.co/api/models/${QWEN_DESIGN_MODEL_ID}?blobs=true`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!response.ok) return undefined;
+    const body: any = await response.json();
+    const total = (Array.isArray(body?.siblings) ? body.siblings : []).reduce((sum: number, file: any) => sum + (typeof file?.size === 'number' && file.size > 0 ? file.size : 0), 0);
+    return total > 0 ? total : undefined;
+  } catch { return undefined; }
+}
+
+/** The size as shown in the confirmation, always with its source. */
+export function describeDesignModelSize(bytes: number | undefined): string {
+  return bytes === undefined
+    ? `aprox. ${(QWEN_DESIGN_APPROX_BYTES / 1e9).toFixed(1)} GB (medido en la caché local de Hugging Face el 2026-11-11; no pude consultar la API)`
+    : `${(bytes / 1e9).toFixed(1)} GB (según la API de Hugging Face)`;
+}
+
+export type DesignRun = (command: string, args: string[], options: { env: NodeJS.ProcessEnv; signal?: AbortSignal }) => Promise<{ code: number }>;
+const defaultDesignRun: DesignRun = (command, args, { env, signal }) => new Promise(resolve => {
+  execFile(command, args, { env, signal, timeout: 60 * 60_000, maxBuffer: 1024 * 1024 }, error => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0 }));
+});
+
+/** Downloads the VoiceDesign model into the Hugging Face cache with the worker's interpreter; the one online step (`HF_HUB_OFFLINE` unset). Requires `confirmed: true`. */
+export async function installDesignModel({ python, hfHome, home, confirmed, signal, run = defaultDesignRun }: { python: string; hfHome: string; home: string; confirmed: boolean; signal?: AbortSignal; run?: DesignRun }): Promise<void> {
+  if (confirmed !== true) throw new Error('Explicit caller confirmation is required.');
+  const env = { ...qwenPythonEnv(process.env, home), HF_HOME: hfHome };
+  delete env.HF_HUB_OFFLINE;
+  const code = `from huggingface_hub import snapshot_download; snapshot_download(${JSON.stringify(QWEN_DESIGN_MODEL_ID)})`;
+  if ((await run(python, [...QWEN_PYTHON_FLAGS, '-c', code], { env, signal })).code !== 0) throw new Error('Download failed: the VoiceDesign model could not be fetched');
+  if (await designModelStatus(hfHome) !== 'installed') throw new Error('Download did not complete: the VoiceDesign model is not installed; could not verify it');
 }

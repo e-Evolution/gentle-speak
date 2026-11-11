@@ -11,7 +11,7 @@ import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPre
 import { MAC_VOICE_NAME, listSpanishSayVoices, pickMacVoice, sayAvailable, speakWithSay, type MacVoice } from '../lib/speak-say.ts';
 import { realHome, settingsHome, sharedHome } from '../lib/speak-home.ts';
 import { createVoiceLock } from '../lib/speak-voice-lock.ts';
-import { connectDot, detectDot, disconnectDot, isDotEngine, readDotSpeak, seedDotSettings, terminalSource, writeDotSpeak, type DotFs } from '../lib/speak-dot.ts';
+import { connectDot, detectDot, disconnectDot, isDotEngine, readDotSpeak, seedDotSettings, resolveDotSource, writeDotSpeak, type DotFs } from '../lib/speak-dot.ts';
 import { createSpeculativePlanner } from '../lib/speak-speculative.ts';
 import { createQwenSpeech, playbackFailure, readQwenPython, spawnQwenPython, type QwenChild, type QwenPrepareHandle } from '../lib/speak-qwen.ts';
 import { SPEAK_MODELS, SPEAK_TARGETS, installSpeakModel, installSpeakRuntime, readSpeakModelStatus, readSpeakRuntimeStatus, type SpeakTarget } from '../lib/speak-install.ts';
@@ -83,7 +83,12 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   // T34: two homes. `home` is shared (runtime, models, voices, manifests, voice lock) and hangs off the account's real home, because Dot overrides $HOME.
   // `settingsDir` holds speak-settings.json and follows the process $HOME (Dot's own home inside Dot); in a terminal both are the same directory.
   const home = speakHome ?? (deps.userHome ? join(deps.userHome, '.gentle-speak') : sharedHome());
-  const settingsDir = deps.settingsHome ?? (speakHome ?? (deps.processHome ? join(deps.processHome, '.gentle-speak') : settingsHome()));
+  // R3-002: a process home that differs from the account home (Gentle Dot) wins over an injected `speakHome`, which only stands for the shared home there;
+  // with only `userHome` injected nothing falls back to the real `$HOME`.
+  const perApp = deps.processHome !== undefined && deps.userHome !== undefined && resolve(deps.processHome) !== resolve(deps.userHome);
+  const settingsDir = deps.settingsHome
+    ?? (perApp ? join(deps.processHome as string, '.gentle-speak')
+      : speakHome ?? (deps.processHome ? join(deps.processHome, '.gentle-speak') : deps.userHome ? join(deps.userHome, '.gentle-speak') : settingsHome()));
   let stopped = false;
   let current: Child | undefined;
   let cancelCurrent: (() => void) | undefined;
@@ -122,15 +127,22 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   };
   /** S11: installed Spanish `say` voices; only a non-empty list is cached (an empty or failed probe is retried), the probe is time-bounded, `fresh` re-lists (the voice picker). */
   let macVoices: MacVoice[] | undefined;
+  let macProbe: Promise<MacVoice[]> | undefined;
+  /** One probe at a time: callers that arrive while it runs share it. A hung `listMacVoices` is abandoned after `voiceProbeMs`, and its late answer is ignored. */
+  const probeMacVoices = (): Promise<MacVoice[]> => {
+    if (macProbe) return macProbe;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('voice probe timed out')), deps.voiceProbeMs); });
+    const probe: Promise<MacVoice[]> = Promise.race([Promise.resolve().then(() => deps.listMacVoices()), timeout])
+      // An empty or failed probe never wipes the last good list: the cache keeps it and the caller still gets it.
+      .then(list => { if (list.length) macVoices = list; return list.length ? list : macVoices ?? []; }, () => macVoices ?? [])
+      .finally(() => { clearTimeout(timer); if (macProbe === probe) macProbe = undefined; });
+    macProbe = probe;
+    return probe;
+  };
   const loadMacVoices = async (fresh = false): Promise<MacVoice[]> => {
     if (!fresh && macVoices?.length) return macVoices;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('voice probe timed out')), deps.voiceProbeMs); });
-      const list = await Promise.race([deps.listMacVoices(), timeout]);
-      macVoices = list.length ? list : undefined;
-      return list;
-    } catch { return []; } finally { clearTimeout(timer); }
+    return probeMacVoices();
   };
   /** The row names the Mac voice, which needs the voice list: prime it before an async refresh. */
   const refreshRowPrimed = async (ctx: ExtensionContext) => {
@@ -562,7 +574,9 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (found.state === 'malformed') { ctx.ui.notify(MALFORMED_DOT, 'warning'); return false; }
     const base = dotSpeakBase(ctx);
     if (!base) return false;
-    const done = connectDot(terminalSource({ ...dotIo, packageRoot }), dotIo);
+    const source = resolveDotSource({ ...dotIo, packageRoot });
+    if (!source) { ctx.ui.notify('No pude determinar un paquete gentle-speak válido (ruta absoluta existente de este paquete, o npm:gentle-speak) para Gentle Dot; no toqué su settings.json.', 'warning'); return false; }
+    const done = connectDot(source, dotIo);
     if (!done.ok) { ctx.ui.notify('No pude actualizar el settings.json de Gentle Dot; nada cambió.', 'error'); return false; }
     base.enabled = true; // an existing file keeps everything else; a seeded one has copySpeech false
     if (!saveDotSpeak(ctx, base)) return false;
@@ -580,12 +594,15 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     const choice = await ctx.ui.select(line, [line, 'Conectar Gentle Dot', 'Desconectar Gentle Dot', 'Hablar en Dot', 'Voz de Dot', 'Modo de Dot', 'Volver']);
     if (!choice || stopped || choice === 'Volver' || choice === line) { if (choice === line) ctx.ui.notify(`${line}.`, 'info'); return; }
     if (choice === 'Conectar Gentle Dot') { connectDotNow(ctx); await refreshRowPrimed(ctx); return; }
-    if (dot.state === 'absent') { ctx.ui.notify(`No encontré Gentle Dot (${dot.path}).`, 'warning'); return; }
+    // R3-001: the state shown above is a snapshot from before the human chose; everything below acts on a fresh read, never on it.
+    const now = detectDot(dotIo);
+    if (now.state === 'absent') { ctx.ui.notify(`No encontré Gentle Dot (${now.path}).`, 'warning'); return; }
     if (choice === 'Desconectar Gentle Dot') {
-      if (speakRead.state === 'malformed') { ctx.ui.notify(MALFORMED_DOT_SPEAK, 'warning'); return; }
+      const current = readDotSpeak(dotIo);
+      if (current.state === 'malformed') { ctx.ui.notify(MALFORMED_DOT_SPEAK, 'warning'); return; }
       const done = disconnectDot(dotIo);
       if (!done.ok) { ctx.ui.notify(done.reason === 'malformed' ? MALFORMED_DOT : 'No pude actualizar el settings.json de Gentle Dot; nada cambió.', done.reason === 'io' ? 'error' : 'warning'); return; }
-      if (dotSettings) { dotSettings.enabled = false; if (!saveDotSpeak(ctx, dotSettings)) return; }
+      if (current.state === 'ok') { current.settings.enabled = false; if (!saveDotSpeak(ctx, current.settings)) return; }
       ctx.ui.notify('Gentle Dot desconectado: ya no habla ahí. Reinicialo para aplicar.', 'info');
       return;
     }

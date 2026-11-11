@@ -7,7 +7,7 @@ import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_FILE, parseSpeakSettingsFile, se
 // S12: Gentle Dot's engine home, its settings.json `packages`, and the connect/disconnect edits. Pure and injectable
 // (fs, env, home); nothing here reads or writes anything the caller did not name.
 
-export type DotFs = Pick<typeof nodeFs, 'readFileSync' | 'writeFileSync' | 'renameSync' | 'copyFileSync' | 'existsSync' | 'unlinkSync' | 'mkdirSync'>;
+export type DotFs = Pick<typeof nodeFs, 'readFileSync' | 'writeFileSync' | 'renameSync' | 'copyFileSync' | 'existsSync' | 'unlinkSync' | 'mkdirSync'> & Partial<Pick<typeof nodeFs, 'readdirSync' | 'chmodSync'>>;
 export interface DotIo { fs?: DotFs; env?: Record<string, string | undefined>; home?: string }
 export type PackageEntry = string | { source: string; [key: string]: unknown };
 
@@ -74,6 +74,25 @@ export function terminalSource(io: DotIo & { packageRoot: string }): PackageEntr
   return resolve(io.packageRoot);
 }
 
+/** This package's name: the only package.json `name` a local source may hold (checked against the real package.json by the tests). */
+export const SPEAK_PACKAGE_NAME = 'gentle-speak';
+const NPM_SPEAK_SPEC = /^npm:gentle-speak(?:@[A-Za-z0-9._~^<>=*|-]+)?$/;
+/** R1: a local source must be absolute, an existing dir whose package.json `name` is this package; anything else must be a well-formed npm spec for this package. */
+function validSource(source: string, io: DotIo): boolean {
+  const fs = io.fs ?? nodeFs;
+  if (/^npm:/i.test(source)) return NPM_SPEAK_SPEC.test(source);
+  if (!isLocalPath(source) || !isAbsolute(source)) return false;
+  try { return JSON.parse(String(fs.readFileSync(join(source, 'package.json'), 'utf8')))?.name === SPEAK_PACKAGE_NAME; } catch { return false; }
+}
+/**
+ * The entry `connectDot` may write: `terminalSource`, but only when it is exactly a usable source (see `validSource`); undefined otherwise,
+ * so the caller refuses with a notice instead of writing an arbitrary, relative or different-package path into Dot's settings.json.
+ */
+export function resolveDotSource(io: DotIo & { packageRoot: string }): PackageEntry | undefined {
+  const entry = terminalSource(io), source = entrySource(entry);
+  return source !== undefined && validSource(source, io) ? entry : undefined;
+}
+
 export type DotChange = { ok: true; changed: boolean; backup?: string } | { ok: false; reason: 'absent' | 'malformed' | 'io' };
 
 /** Copies settings.json next to itself as `settings.json.gentle-speak-backup-<timestamp>`; never overwrites an earlier backup. */
@@ -137,10 +156,22 @@ export const seedDotSettings = (terminal: SpeakSettings): SpeakSettings => ({
   ...structuredClone(DEFAULT_SPEAK_SETTINGS), enabled: false, copySpeech: false, voice: terminal.voice, mode: terminal.mode, speed: terminal.speed,
   summaryModel: terminal.summaryModel ? { ...terminal.summaryModel } : null, macVoice: terminal.macVoice, macFallback: terminal.macFallback,
 });
+/**
+ * `mkdir`'s mode only applies to a directory it creates: tighten `<dotHome>/.gentle-speak` to 0700 when it is ours (we just created it, or it
+ * holds nothing but our settings file and its temp files). Never another directory (Dot's own home) and never one that holds foreign files.
+ */
+function secureOwnDir(dir: string, existed: boolean, fs: DotFs) {
+  try {
+    const ours = !existed || (fs.readdirSync?.(dir) ?? ['?']).every(name => name === SPEAK_SETTINGS_FILE || (name.startsWith(`${SPEAK_SETTINGS_FILE}.`) && name.endsWith('.tmp')));
+    if (ours) fs.chmodSync?.(dir, 0o700);
+  } catch { /* best effort: the settings file itself is 0600 */ }
+}
 /** Validates with the settings schema, then temp file plus rename (mode 0600) in a 0700 directory. Throws on invalid settings or I/O failure. */
 export function writeDotSpeak(settings: SpeakSettings, io: DotIo = {}): string {
   const fs = io.fs ?? nodeFs, path = dotSpeakFile(io), text = serializeSpeakSettings(settings), temporary = `${path}.${randomUUID()}.tmp`;
-  fs.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const dir = dirname(path), existed = fs.existsSync(dir);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  secureOwnDir(dir, existed, fs);
   try {
     fs.writeFileSync(temporary, text, { flag: 'wx', mode: 0o600 });
     fs.renameSync(temporary, path);

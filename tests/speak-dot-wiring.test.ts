@@ -25,6 +25,8 @@ function world(o: Opts = {}) {
   for (const d of [speakHome, dot, shell]) mkdirSync(d, { recursive: true });
   writeFileSync(join(speakHome, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'all', ...o.speak }));
   if (o.dotSettings !== null) writeFileSync(join(dot, 'settings.json'), o.dotSettings ?? JSON.stringify({ theme: 'dot', packages: ['npm:pi-btw'] }, null, 2) + '\n');
+  // R1: Dot's package source must be a real gentle-speak package dir, so the terminal's relative entry points at one.
+  mkdirSync(join(userHome, 'dev', 'gentle-speak'), { recursive: true }); writeFileSync(join(userHome, 'dev', 'gentle-speak', 'package.json'), JSON.stringify({ name: 'gentle-speak' }));
   writeFileSync(join(shell, 'settings.json'), JSON.stringify({ packages: o.terminalPackages ?? ['npm:pi-btw', '../../dev/gentle-speak'] }));
   // The process env decides the session's agent dir: Dot's engine home, the terminal's, or an unrelated one.
   const env: Record<string, string | undefined> = o.as === 'dot' ? { PI_CODING_AGENT_DIR: dot, GENTLE_DOT_AGENT_HOME: dot } : o.as === 'other' ? { PI_CODING_AGENT_DIR: join(base, 'other-agent') } : typeof o.as === 'object' ? { PI_CODING_AGENT_DIR: join(base, 'other-agent'), ...o.as } : { PI_CODING_AGENT_DIR: shell };

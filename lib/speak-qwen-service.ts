@@ -13,16 +13,35 @@ export const qwenServiceVersion = (): string => `${PACKAGE_VERSION}+p${QWEN_SERV
 export interface QwenServicePaths { dir: string; socket: string; pid: string; lock: string; log: string; restart: string }
 export const qwenServicePaths = (home: string): QwenServicePaths => ({ dir: home, socket: join(home, 'qwen.sock'), pid: join(home, 'qwen-service.pid'), lock: join(home, 'qwen-service.lock'), log: join(home, 'qwen-service.log'), restart: join(home, 'qwen-service.restart') });
 
+/** Semver 2.0 precedence of two prerelease strings (`''` = a release, which outranks any prerelease): numeric identifiers numerically, others lexically, numeric before alphanumeric, fewer fields first. */
+function comparePrerelease(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a === '') return 1;
+  if (b === '') return -1;
+  const left = a.split('.'), right = b.split('.');
+  for (let i = 0; i < Math.min(left.length, right.length); i++) {
+    const x = left[i]!, y = right[i]!;
+    if (x === y) continue;
+    const xn = /^\d+$/.test(x), yn = /^\d+$/.test(y);
+    if (xn && yn) return Number(x) > Number(y) ? 1 : -1;
+    if (xn !== yn) return xn ? -1 : 1;
+    return x > y ? 1 : -1;
+  }
+  return left.length === right.length ? 0 : left.length > right.length ? 1 : -1;
+}
+
 /**
- * Orders two handshake versions (`<major>.<minor>.<patch>+p<rev>`): 1 when `a` is newer than `b`, -1 when older, 0 when equal, `undefined` when either
- * does not parse (then nothing can be said about who is newer). The package version decides first, then the protocol revision.
+ * Orders two handshake versions (`<major>.<minor>.<patch>[-<prerelease>]+p<rev>`): 1 when `a` is newer than `b`, -1 when older, 0 when equal, `undefined` when either
+ * does not parse (then nothing can be said about who is newer). The package version decides first (semver precedence: `1.0.0-beta` is older than `1.0.0`), then the protocol revision.
  */
 export function compareQwenServiceVersions(a: string, b: string): number | undefined {
-  const parse = (v: string) => { const m = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?\+p(\d+)$/.exec(v); return m ? [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])] : undefined; };
+  const parse = (v: string) => { const m = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?\+p(\d+)$/.exec(v); return m ? { core: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] ?? '', rev: Number(m[5]) } : undefined; };
   const left = parse(a), right = parse(b);
   if (!left || !right) return undefined;
-  for (let i = 0; i < 4; i++) if (left[i] !== right[i]) return left[i]! > right[i]! ? 1 : -1;
-  return 0;
+  for (let i = 0; i < 3; i++) if (left.core[i] !== right.core[i]) return left.core[i]! > right.core[i]! ? 1 : -1;
+  const pre = comparePrerelease(left.pre, right.pre);
+  if (pre !== 0) return pre;
+  return left.rev === right.rev ? 0 : left.rev > right.rev ? 1 : -1;
 }
 const protocolRev = (version: string): string | undefined => /\+p(\d+)$/.exec(version)?.[1];
 
@@ -42,7 +61,7 @@ export interface QwenServiceOptions {
   script: string;
   /** scripts/speak-qwen-service.mjs */
   serviceScript: string;
-  /** S13: ms of inactivity after which the service closes its Python worker; `null` never. */
+  /** S13 (L83): the grace in ms after the LAST client disconnects, after which the service unloads Python and exits; `null` never. Read at service start. */
   idleMs: number | null;
   /** Environment of the started service (and so of its Python): {@link qwenPythonEnv}. */
   env?: NodeJS.ProcessEnv;
@@ -51,7 +70,7 @@ export interface QwenServiceOptions {
   version?: string;
   /** Bound for the whole connect-or-start. Default 20 s. */
   timeoutMs?: number;
-  /** Tests: the service exits this long after its last client left. */
+  /** Tests: overrides the grace (the service exits this long after its last client left). */
   exitIdleMs?: number;
   /** Tests: the `ps` executable and its bound (ms). */
   psPath?: string;

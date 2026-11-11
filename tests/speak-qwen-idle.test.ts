@@ -211,10 +211,10 @@ test('the idle timer never keeps the process alive (unref)', async () => {
 
 // ---- settings ----
 const withHome = (fn: (home: string) => void) => { const home = mkdtempSync(join(tmpdir(), 'speak-idle-set-')); try { fn(home); } finally { rmSync(home, { recursive: true, force: true }); } };
-test('qwenIdleMinutes defaults to 5, old files load with it, null and 1-60 are valid, anything else rejects the file', () => withHome(home => {
-  assert.equal((DEFAULT_SPEAK_SETTINGS as any).qwenIdleMinutes, 5);
+test('qwenIdleMinutes defaults to 10, old files load with it, null and 1-60 are valid, anything else rejects the file', () => withHome(home => {
+  assert.equal((DEFAULT_SPEAK_SETTINGS as any).qwenIdleMinutes, 10);
   const { qwenIdleMinutes: _q, ...old } = DEFAULT_SPEAK_SETTINGS as any;
-  assert.equal(parseSpeakSettingsFile(JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...old }))?.qwenIdleMinutes, 5);
+  assert.equal(parseSpeakSettingsFile(JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...old }))?.qwenIdleMinutes, 10);
   for (const good of [1, 2, 5, 60, null]) {
     writeSpeakSettings({ ...DEFAULT_SPEAK_SETTINGS, qwenIdleMinutes: good } as any, home);
     assert.equal(readSpeakSettings(home).qwenIdleMinutes, good);
@@ -245,18 +245,18 @@ function extensionHarness(minutes: number | null | undefined) {
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand: (n: string, c: any) => commands.set(n, c), registerShortcut() {}, registerTool: (t: any) => tools.set(t.name, t) } as any, home, { focusCheck: async () => 'focused', sayAvailable: () => false, ...deps } as any);
   return { home, commands, events, tools, pythons, offered, selections, ctx, notes, close: () => rmSync(home, { recursive: true, force: true }) };
 }
-test('/speak offers "Liberar Qwen tras inactividad" and persists the chosen minutes', async () => {
+test('/speak offers "Mantener Qwen tras cerrar la última sesión" and persists the chosen minutes', async () => {
   const h = extensionHarness(5);
   try {
-    h.selections.push('Liberar Qwen tras inactividad', '10 min');
+    h.selections.push('Mantener Qwen tras cerrar la última sesión', '10 min');
     await h.commands.get('speak').handler('', h.ctx);
-    assert.ok(h.offered[0].includes('Liberar Qwen tras inactividad'));
+    assert.ok(h.offered[0].includes('Mantener Qwen tras cerrar la última sesión'));
     assert.deepEqual(h.offered[1], ['1 min', '2 min', '5 min', '10 min', '30 min', '60 min', 'Nunca']);
     assert.equal(readSpeakSettings(h.home).qwenIdleMinutes, 10);
-    h.selections.push('Liberar Qwen tras inactividad', 'Nunca');
+    h.selections.push('Mantener Qwen tras cerrar la última sesión', 'Nunca');
     await h.commands.get('speak').handler('', h.ctx);
     assert.equal(readSpeakSettings(h.home).qwenIdleMinutes, null);
-    h.selections.push('Liberar Qwen tras inactividad', undefined as any);
+    h.selections.push('Mantener Qwen tras cerrar la última sesión', undefined as any);
     await h.commands.get('speak').handler('', h.ctx);
     assert.equal(readSpeakSettings(h.home).qwenIdleMinutes, null, 'cancelling changes nothing');
   } finally { h.close(); }
@@ -278,7 +278,7 @@ test('the extension passes the setting to the worker and a change applies live, 
     };
     await run();
     assert.ok(delays.includes(60_000), 'one minute became 60000 ms');
-    h.selections.push('Liberar Qwen tras inactividad', '30 min');
+    h.selections.push('Mantener Qwen tras cerrar la última sesión', '30 min');
     await h.commands.get('speak').handler('', h.ctx);
     delays.length = 0;
     const count = h.pythons.length;

@@ -13,7 +13,7 @@ import { MAC_VOICE_NAME, listSpanishSayVoices, pickMacVoice, sayAvailable, speak
 import { realHome, settingsHome, sharedHome } from '../lib/speak-home.ts';
 import { createVoiceLock } from '../lib/speak-voice-lock.ts';
 import { connectDot, detectDot, disconnectDot, isDotEngine, readDotSpeak, seedDotSettings, resolveDotSource, writeDotSpeak, type DotFs } from '../lib/speak-dot.ts';
-import { createQwenServiceSpawner, type QwenServiceSpawnerOptions } from '../lib/speak-qwen-client.ts';
+import { createQwenServiceSpawner, type QwenServiceSpawner, type QwenServiceSpawnerOptions } from '../lib/speak-qwen-client.ts';
 import { qwenServicePaths, stopQwenService } from '../lib/speak-qwen-service.ts';
 import { createSpeculativePlanner } from '../lib/speak-speculative.ts';
 import { createQwenSpeech, playbackFailure, qwenPythonEnv, readQwenPython, spawnQwenPython, type QwenChild, type QwenPrepareHandle } from '../lib/speak-qwen.ts';
@@ -87,6 +87,7 @@ const qwenWorker = resolve(import.meta.dirname, '../scripts/speak-qwen-worker.py
 const qwenServiceScript = resolve(import.meta.dirname, '../scripts/speak-qwen-service.mjs');
 
 const IDLE_CHOICES: ReadonlyArray<{ label: string; minutes: number | null }> = [1, 2, 5, 10, 30, 60].map(minutes => ({ label: `${minutes} min`, minutes })).concat([{ label: 'Nunca', minutes: null as any }]);
+const IDLE_LABEL = 'Mantener Qwen tras cerrar la última sesión';
 const idleMsOf = (minutes: number | null) => minutes === null ? null : minutes * 60_000;
 
 /** Speech is strictly parent-interactive; no native code is loaded on extension registration. */
@@ -683,7 +684,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (parent(ctx)) { try { ctx.ui.setStatus(SPEAK_STATUS_KEY, undefined); } catch { /* Status is cosmetic. */ } }
     stopCopy(ctx);
     offerGeneration++; if (offerTimer) { clearTimeout(offerTimer); offerTimer = undefined; }
-    stopped = true; for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); deferral.dispose(); if (pendingItem && !pendingItem.started) dropPrepared(pendingItem); pendingItem = undefined; disposeSpeculation(); stop(); voiceLock.close(); qwen.dispose(); // close(): rejects a pending acquire, releases a held lock once, refuses later acquires
+    stopped = true; for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); deferral.dispose(); if (pendingItem && !pendingItem.started) dropPrepared(pendingItem); pendingItem = undefined; disposeSpeculation(); stop(); voiceLock.close(); qwen.dispose(); (spawnPython as Partial<QwenServiceSpawner>).close?.(); // close(): rejects a pending acquire, releases a held lock once, refuses later acquires
   });
   pi.registerTool({
     name: 'speak', label: 'Speak', description: 'Speak a short message in the parent interactive TUI after local voice installation.',
@@ -702,7 +703,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       const settings = readSpeakSettings(settingsDir);
       const voices = voiceMenuEntries(VOICE_CATALOG, await voiceAvailability());
       if (stopped) return;
-      const choice = await ctx.ui.select('Speech settings', ['Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Mac voice', 'Toggle Mac fallback', 'Liberar Qwen tras inactividad', ...(qwenServiceOn ? ['Detener servicio Qwen'] : []), 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
+      const choice = await ctx.ui.select('Speech settings', ['Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Mac voice', 'Toggle Mac fallback', IDLE_LABEL, ...(qwenServiceOn ? ['Detener servicio Qwen'] : []), 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
       if (!choice || choice === 'Cancel' || stopped) return;
       if (choice === 'Stop playback') { stopAll(); return; }
       if (choice === 'Gentle Dot') { await dotMenu(ctx, voices); return; }
@@ -761,8 +762,8 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
         if (!stopped) ctx.ui.notify(was ? 'Qwen service stopped; the next Qwen speech starts it again.' : 'The Qwen service was not running.', 'info');
         return;
       }
-      else if (choice === 'Liberar Qwen tras inactividad') {
-        const selected = await ctx.ui.select('Liberar Qwen tras inactividad', IDLE_CHOICES.map(entry => entry.label));
+      else if (choice === IDLE_LABEL) {
+        const selected = await ctx.ui.select(IDLE_LABEL, IDLE_CHOICES.map(entry => entry.label));
         const picked = IDLE_CHOICES.find(entry => entry.label === selected);
         if (!picked || stopped) return;
         settings.qwenIdleMinutes = picked.minutes;
@@ -774,7 +775,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       }
       try {
         writeSpeakSettings(settings, settingsDir);
-        if (choice === 'Liberar Qwen tras inactividad') qwen.setIdleMs(idleMsOf(settings.qwenIdleMinutes)); // live: no session restart
+        if (choice === IDLE_LABEL) qwen.setIdleMs(idleMsOf(settings.qwenIdleMinutes)); // live: no session restart
         if (choice.startsWith('Voice: ') || choice === 'Mac voice' || choice === 'Speed' || choice.startsWith('Mode: ')) cancelSpeculation(); // the next stream starts fresh with the new settings
         if (choice === 'Toggle speak copied selection') {
           await afterCopyToggle(ctx, settings.copySpeech);

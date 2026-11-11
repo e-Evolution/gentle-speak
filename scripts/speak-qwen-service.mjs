@@ -9,9 +9,10 @@
 // Request ids belong to one connection: the service maps them to its own ids for the Python worker, so clients never see each other's traffic.
 // The service never executes anything it is sent: it validates every field and only ever runs the one worker it was started with.
 //
-// Idle (S13, L77): ONE timeout, `--idle-ms` (the user's qwenIdleMinutes). After that long with no request from anyone the Python worker closes, and
-// the service itself exits once it is that idle AND no client is connected. `--idle-ms never` never closes either. `--exit-idle-ms <n>` (tests)
-// overrides only the exit delay; there is no separate 30 minute default. Neither fires mid-request.
+// Lifetime (S13, L83): the model stays loaded while at least one client is connected, even with no requests (there is no per-request idle close).
+// When the LAST client disconnects a grace countdown of `--idle-ms` (the user's qwenIdleMinutes; `never` = no countdown) starts from that moment, not
+// from the last request. When it expires the Python worker is unloaded and the service exits, removing the socket and pid. A new connection during the
+// grace cancels it. `--exit-idle-ms <n>` (tests) overrides only the grace length. A countdown never fires mid-request.
 //
 // Usage: node speak-qwen-service.mjs --home <dir> --python <exe> --script <worker.py> --version <v> [--idle-ms <n|never>] [--exit-idle-ms <n|never>]
 import net from 'node:net';
@@ -33,8 +34,9 @@ const args = (() => {
 })();
 const home = args.home, python = args.python, script = args.script, version = args.version;
 const number = (value, fallback) => (value === 'never' ? null : Number.isFinite(Number(value)) && value !== undefined && value !== '' ? Number(value) : fallback);
-const idleMs = number(args['idle-ms'], 5 * 60_000);
-const exitIdleMs = args['exit-idle-ms'] === undefined ? idleMs : number(args['exit-idle-ms'], idleMs);
+const idleMs = number(args['idle-ms'], 10 * 60_000);
+/** The grace after the last client left (`null` never). */
+const graceMs = args['exit-idle-ms'] === undefined ? idleMs : number(args['exit-idle-ms'], idleMs);
 const log = (...parts) => process.stderr.write(`${new Date().toISOString()} [qwen-service ${process.pid}] ${parts.join(' ')}\n`);
 
 if (!home || !path.isAbsolute(home) || !python || !script || !version) { log('usage: --home <abs dir> --python <exe> --script <worker.py> --version <v>'); process.exit(2); }
@@ -81,7 +83,9 @@ const connections = new Set();
 /** @type {Array<Job>} */ const queue = [];
 /** @type {Job | undefined} */ let running;
 /** @type {{ child: import('node:child_process').ChildProcess, ready: boolean, readyTimer?: NodeJS.Timeout } | undefined} */ let worker;
-let lastActivity = Date.now(), nextInternalId = 1, draining = false, server, pythonTimer, exitTimer, jobTimer, heartbeat;
+/** When the last client left (or the service started with none): the grace is counted from here. `undefined` while a client is connected. */
+let graceStart = Date.now();
+let nextInternalId = 1, draining = false, server, exitTimer, jobTimer, heartbeat;
 /** @typedef {{ conn: Connection, id: number, priority: 'speak'|'prepare', request: any, internalId: number, cancelled: boolean }} Job */
 /** @typedef {{ socket: net.Socket, jobs: Map<number, Job>, closed: boolean, send: (message: object) => void }} Connection */
 
@@ -107,7 +111,7 @@ function sendRunning() {
 }
 function armJobTimer() { clearTimeout(jobTimer); jobTimer = setTimeout(() => { log('synthesis timed out'); killWorker(); failRunning('Qwen worker timed out.'); }, SYNTH_IDLE_TIMEOUT_MS); }
 function finishRunning() {
-  clearTimeout(jobTimer); lastActivity = Date.now();
+  clearTimeout(jobTimer);
   const job = running; running = undefined;
   if (job) job.conn.jobs.delete(job.id);
   pump();
@@ -163,16 +167,20 @@ function onWorkerLine(state, line) {
   if (message.type === 'error') { if (!job.cancelled) job.conn.send({ type: 'error', id: job.id, message: typeof message.message === 'string' ? message.message.slice(0, 200) : 'synthesis failed' }); finishRunning(); }
 }
 
-// ---- idle close (S13) ---------------------------------------------------------------------------------------------------------------------
-/** Re-arms both countdowns from the current state: the worker closes after `idleMs` without work; the whole service exits after `exitIdleMs` with no client. */
+// ---- lifetime (S13, L83) ------------------------------------------------------------------------------------------------------------------
+/** Re-arms the grace countdown from the current state: it runs only while no client is connected, and ends with the Python unloaded and the service gone. */
 function settle() {
-  clearTimeout(pythonTimer); clearTimeout(exitTimer); pythonTimer = exitTimer = undefined;
-  const left = ms => Math.max(0, lastActivity + ms - Date.now());
+  clearTimeout(exitTimer); exitTimer = undefined;
   const busy = running !== undefined || queue.length > 0;
   if (draining) { if (!busy) finalize(); return; }
-  if (busy) return;
-  if (worker && idleMs !== null) { pythonTimer = setTimeout(() => { if (!running && queue.length === 0 && Date.now() - lastActivity >= idleMs - 5) { log('idle: closing the Qwen worker'); killWorker(); settle(); } else settle(); }, left(idleMs)); pythonTimer.unref?.(); }
-  if (connections.size === 0 && exitIdleMs !== null) { exitTimer = setTimeout(() => { if (!running && queue.length === 0 && connections.size === 0 && Date.now() - lastActivity >= exitIdleMs - 5) { log('idle: no clients, exiting'); shutdown(true); } else settle(); }, left(exitIdleMs)); }
+  if (connections.size > 0) { graceStart = undefined; return; }
+  graceStart ??= Date.now();
+  if (busy || graceMs === null) return;
+  exitTimer = setTimeout(() => {
+    exitTimer = undefined;
+    if (!running && queue.length === 0 && connections.size === 0 && graceStart !== undefined && Date.now() - graceStart >= graceMs - 5) { log('grace over: no clients, unloading Qwen and exiting'); shutdown(true); }
+    else settle();
+  }, Math.max(0, graceStart + graceMs - Date.now()));
 }
 
 function shutdown(now) {
@@ -195,7 +203,7 @@ function finalize() {
 function onConnection(socket) {
   /** @type {Connection} */
   const conn = { socket, jobs: new Map(), closed: false, send(message) { if (!conn.closed && !socket.destroyed) socket.write(JSON.stringify({ schema: SCHEMA, ...message }) + '\n'); } };
-  connections.add(conn); lastActivity = Date.now();
+  connections.add(conn); graceStart = undefined;
   settle();
   socket.setEncoding('utf8');
   socket.on('error', () => { /* handled by close */ });
@@ -238,7 +246,6 @@ function onRequest(conn, line) {
   if (conn.jobs.size >= MAX_JOBS_PER_CONNECTION) { conn.send({ type: 'error', id, message: 'too many pending requests' }); return; }
   const reason = invalidSynth(message);
   if (reason) { conn.send({ type: 'error', id, message: `invalid request: ${reason}` }); return; }
-  lastActivity = Date.now();
   const job = { conn, id, priority: message.priority, request: message, internalId: nextInternalId++, cancelled: false };
   conn.jobs.set(id, job); queue.push(job);
   pump();
@@ -265,7 +272,7 @@ async function main() {
     fs.writeFileSync(pidPath, String(process.pid), { mode: 0o600 });
     heartbeat = setInterval(() => { for (const job of queue) job.conn.send({ type: 'queued', id: job.id }); }, HEARTBEAT_MS);
     heartbeat.unref();
-    log(`listening on ${socketPath} (version ${version}, idle ${idleMs}, exit idle ${exitIdleMs})`);
+    log(`listening on ${socketPath} (version ${version}, grace ${graceMs})`);
     settle();
   });
 }

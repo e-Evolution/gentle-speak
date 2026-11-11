@@ -159,7 +159,7 @@ test('stale socket: a service killed hard leaves socket and pid; the next client
   } finally { await fx.close(); }
 });
 
-test('idle close: the Python worker closes after idleMs; with no clients the service exits and removes socket and pid', async () => {
+test('lifetime: the Python stays loaded while a client is connected; once the last one leaves the grace unloads it and the service exits, removing socket and pid', async () => {
   const fx = qwenFixture();
   try {
     const c = await client(fx, { idleMs: 150, exitIdleMs: 500 });
@@ -168,13 +168,15 @@ test('idle close: the Python worker closes after idleMs; with no clients the ser
     await c.waitFor(m => m.some(x => x.type === 'done'));
     const [py] = fx.workerPids();
     assert.equal(fx.isAlive(py), true);
-    await until(() => !fx.isAlive(py), 'python closed by idle');
+    await new Promise(r => setTimeout(r, 700)); // four times idleMs, 1.4 times the grace
+    assert.equal(fx.isAlive(py), true, 'python stays loaded while a client is connected');
     assert.equal(fx.isAlive(service), true, 'the service stays while a client is connected');
     c.send(synth(fx, 2, 'otra', fx.outDir()));
-    await c.waitFor(m => m.some(x => x.id === 2 && x.type === 'done'), 'respawned on demand');
-    assert.equal(fx.workerPids().length, 2);
+    await c.waitFor(m => m.some(x => x.id === 2 && x.type === 'done'), 'served without a reload');
+    assert.equal(fx.workerPids().length, 1);
     c.socket.destroy();
     await until(() => !fx.isAlive(service), 'service exit with no clients', 8000);
+    assert.equal(fx.isAlive(py), false);
     assert.equal(existsSync(fx.paths.socket), false);
     assert.equal(existsSync(fx.paths.pid), false);
   } finally { await fx.close(); }

@@ -77,7 +77,7 @@ test('R3-exit-idle: with no --exit-idle-ms the service exits idleMs after the la
   } finally { await fx.close(); }
 });
 
-test('R3-exit-idle: a request restarts the countdown, and a connected client keeps the service up', async () => {
+test('R3-exit-idle: a connected client keeps the service up however long it is idle, and the grace starts when it leaves', async () => {
   const fx = qwenFixture();
   try {
     const c = await client(fx, { idleMs: 600, exitIdleMs: undefined });
@@ -179,15 +179,18 @@ test('R4-ps: the pid check does not block the event loop and runs at most once p
   const sleeper = spawn('sleep', ['30'], { stdio: 'ignore' });
   try {
     const psLog = join(fx.root, 'ps.log'), fakePs = join(fx.root, 'fake-ps');
-    writeFileSync(fakePs, `#!/bin/sh\necho x >> "${psLog}"\nsleep 0.4\necho "node qwen-service.mjs"\n`); chmodSync(fakePs, 0o755);
+    writeFileSync(fakePs, `#!/bin/sh\necho s >> "${psLog}"\nsleep 0.4\necho e >> "${psLog}"\necho "node qwen-service.mjs"\n`); chmodSync(fakePs, 0o755);
     writeFileSync(fx.paths.pid, String(sleeper.pid)); // a live pid that `ps` (fake) says is the service, with no socket: the loop waits and probes
-    let last = Date.now(), maxGap = 0;
-    const ticker = setInterval(() => { const now = Date.now(); maxGap = Math.max(maxGap, now - last); last = now; }, 20);
+    // R3-timing-assertions (T40): no wall-clock stall bound. Progress is what counts: the ticker must keep advancing WHILE a `ps` is in flight
+    // (it sleeps 0.4 s; a blocked loop would see about 0 ticks in that window, a free one about 20; the floor of 3 holds on a loaded machine).
+    let ticksDuringPs = 0;
+    const inFlight = () => { try { const marks = readFileSync(psLog, 'utf8').split('\n').filter(Boolean); return marks.filter(m => m === 's').length > marks.filter(m => m === 'e').length; } catch { return false; } };
+    const ticker = setInterval(() => { if (inFlight()) ticksDuringPs++; }, 20);
     const started = Date.now();
     try { await assert.rejects(connectQwenService(fx.options({ psPath: fakePs, timeoutMs: 1300 })), /did not answer in time/); } finally { clearInterval(ticker); }
     assert.ok(Date.now() - started >= 1200);
-    assert.ok(maxGap < 250, `event loop stalled for ${maxGap} ms during the ps probe`);
-    const calls = readFileSync(psLog, 'utf8').split('\n').filter(Boolean).length;
+    assert.ok(ticksDuringPs >= 3, `the event loop advanced only ${ticksDuringPs} ticks while ps was running`);
+    const calls = readFileSync(psLog, 'utf8').split('\n').filter(m => m === 's').length;
     assert.ok(calls >= 1 && calls <= 4, `ps ran ${calls} times in about 1.3 s of 450 ms attempts`);
   } finally { sleeper.kill(); await fx.close(); }
 });
@@ -220,7 +223,7 @@ test('preserve: a recycled pid (live, not the service) in the pid file is stale:
   } finally { sleeper.kill(); await fx.close(); }
 });
 
-test('preserve: two sessions share one Python, speak outranks prepare, idle closes the Python and the next request respawns it', async () => {
+test('preserve: two sessions share one Python, speak outranks prepare, and the Python stays loaded while the sessions are connected (no idle close, T40)', async () => {
   const fx = qwenFixture();
   try {
     const a = await client(fx, { idleMs: 300 }), b = await client(fx, { idleMs: 300 }); const dir = fx.outDir();
@@ -230,8 +233,9 @@ test('preserve: two sessions share one Python, speak outranks prepare, idle clos
     assert.deepEqual(fx.read('order.log'), ['slow uno', 'speak b', 'prepare dos']);
     assert.equal(fx.workerPids().length, 1);
     const [py] = fx.workerPids();
-    await until(() => !fx.isAlive(py), 'python idle close', 5000);
+    await sleep(900); // three times the old idle
+    assert.equal(fx.isAlive(py), true, 'still loaded: both sessions are connected');
     b.send(synth(fx, 2, 'otra', dir)); await b.waitFor(m => m.some(x => x.id === 2 && x.type === 'done'));
-    assert.equal(fx.workerPids().length, 2);
+    assert.equal(fx.workerPids().length, 1, 'served by the same Python');
   } finally { await fx.close(); }
 });

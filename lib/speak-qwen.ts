@@ -33,12 +33,14 @@ export const QWEN_READY_TIMEOUT_MS = 180_000;
  */
 export const QWEN_SYNTH_IDLE_TIMEOUT_MS = 120_000;
 
-/** Default idle release of the warm worker (5 minutes); the extension passes the `qwenIdleMinutes` setting. */
-export const QWEN_IDLE_MS = 5 * 60_000;
+/** Default idle release of a local (per-session) warm worker (10 minutes, like `qwenIdleMinutes`); the extension passes the setting. */
+export const QWEN_IDLE_MS = 10 * 60_000;
 
 export type QwenChild = Pick<ChildProcessWithoutNullStreams, 'stdin' | 'stdout' | 'stderr' | 'on' | 'kill'> & {
   /** T38: a service connection understands a `priority` ('speak' | 'prepare') on `synth` and `cancelRequest`; a plain worker does not. */
   hints?: boolean;
+  /** T40 (S13, L83): a view over the shared service's presence connection. The T37 per-session idle close never applies to it (the service owns the model and its grace); a local worker leaves this unset. */
+  readonly persistent?: boolean;
   /** T38: tells the shared service to drop a request (queued: never runs; running: its output is discarded). */
   cancelRequest?: (id: number) => void;
 };
@@ -132,7 +134,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
   /** S13: (re)starts the idle countdown when the warm worker is idle; a speak, speakPrepared or prepare that runs or waits disarms it. */
   function settleIdle() {
     clearTimeout(idleTimer); idleTimer = undefined;
-    if (idleMs === null || !python || inUse()) return;
+    if (idleMs === null || !python || inUse() || python.child.persistent) return;
     idleTimer = setTimeout(() => {
       idleTimer = undefined;
       const old = python;

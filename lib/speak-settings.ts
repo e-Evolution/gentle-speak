@@ -39,7 +39,7 @@ export const DEFAULT_SPEAK_SETTINGS: SpeakSettings = {
   macFallback: true,
   dotSpeech: false,
   dotOffer: null,
-  qwenIdleMinutes: 5,
+  qwenIdleMinutes: 10,
   shortcuts: { speakLast: 'ctrl+alt+v', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m', cycleVoice: 'ctrl+alt+n', toggleCopy: 'ctrl+alt+c' },
 };
 
@@ -77,7 +77,7 @@ function validate(value: unknown): SpeakSettings | undefined {
   const copyDefault = TOGGLE_COPY_DEFAULTS.find(key => ![...bound, cycle].includes(key));
   const shortcuts = [...bound, cycle, value.shortcuts.toggleCopy ?? (!Object.hasOwn(value.shortcuts, 'toggleCopy') ? copyDefault : undefined)];
   if (shortcuts.some(key => typeof key !== 'string' || !/^(?:(?:ctrl|alt|shift)\+)+(?:[a-z0-9]|[.,;\/])$/.test(key) || reserved.has(key)) || new Set(shortcuts).size !== shortcuts.length) return undefined;
-  return { enabled: value.enabled, mode: value.mode as SpeakMode, voice: value.voice, speed: value.speed, summaryModel: model as SpeakSettings['summaryModel'], copySpeech: value.copySpeech === true, macVoice: (value.macVoice as string | null | undefined) ?? null, macFallback: value.macFallback !== false, dotSpeech: value.dotSpeech === true, dotOffer: (value.dotOffer as 'declined' | null | undefined) ?? null, qwenIdleMinutes: Object.hasOwn(value, 'qwenIdleMinutes') ? value.qwenIdleMinutes as number | null : 5,
+  return { enabled: value.enabled, mode: value.mode as SpeakMode, voice: value.voice, speed: value.speed, summaryModel: model as SpeakSettings['summaryModel'], copySpeech: value.copySpeech === true, macVoice: (value.macVoice as string | null | undefined) ?? null, macFallback: value.macFallback !== false, dotSpeech: value.dotSpeech === true, dotOffer: (value.dotOffer as 'declined' | null | undefined) ?? null, qwenIdleMinutes: Object.hasOwn(value, 'qwenIdleMinutes') ? value.qwenIdleMinutes as number | null : 10,
     shortcuts: { speakLast: shortcuts[0] as string, stop: shortcuts[1] as string, toggle: shortcuts[2] as string, cycleVoice: shortcuts[3] as string, toggleCopy: shortcuts[4] as string } };
 }
 

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- One shared local Qwen service (`scripts/speak-qwen-service.mjs`, unix socket `~/.gentle-speak/qwen.sock`, 0600 in a 0700 dir) now serves every terminal session and Gentle Dot with a single Python worker, loading the model once; it starts on demand, prioritizes the voice-lock holder over speculation, owns the S13 idle close, restarts after a package update or a stale socket, falls back to a per-session worker when it cannot run, and `/speak` → `Detener servicio Qwen` stops it (T38, S13).
 - The warm Qwen worker (about 2.6 GB per session) is now closed after `qwenIdleMinutes` of inactivity (default 5, `/speak` → `Liberar Qwen tras inactividad`, 1-60 or never) and respawns transparently on the next speech, also after an external kill; no fallback, no error (S13).
 - Qwen voices send each streamed part as soon as it is synthesized, so the first audio starts after about 1.5 s instead of waiting for a whole 250-character group.
 - Added a catalog of seven Qwen3-TTS reference voices (`qwen-*`, model `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16`), a sha256-verified installer into `~/.gentle-speak/voices/qwen3/`, and a rebindable `cycleVoice` key (default `ctrl+alt+n`). Existing settings files stay valid; Piper `es_MX`/`es_ES` and the default voice are unchanged. Engine routing and menus follow separately.

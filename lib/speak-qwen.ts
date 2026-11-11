@@ -13,8 +13,12 @@ import { QWEN_PYTHON_FLAGS } from './speak-voices.ts';
  */
 export function spawnQwenPython(python: string, script: string, io: { spawn?: typeof spawnChild; env?: NodeJS.ProcessEnv; home?: string } = {}): ChildProcessWithoutNullStreams {
   const run = io.spawn ?? spawnChild;
-  const env = io.env ?? process.env, home = io.home ?? realHome();
-  return run(python, [...QWEN_PYTHON_FLAGS, script], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...env, HOME: home, HF_HOME: env.HF_HOME || join(home, '.cache', 'huggingface'), HF_HUB_OFFLINE: '1', PYTHONIOENCODING: 'utf-8' } });
+  return run(python, [...QWEN_PYTHON_FLAGS, script], { stdio: ['pipe', 'pipe', 'pipe'], env: qwenPythonEnv(io.env ?? process.env, io.home ?? realHome()) });
+}
+
+/** The environment of every Qwen Python process (T38: the shared service inherits exactly this one from the client that starts it). */
+export function qwenPythonEnv(env: NodeJS.ProcessEnv = process.env, home: string = realHome()): NodeJS.ProcessEnv {
+  return { ...env, HOME: home, HF_HOME: env.HF_HOME || join(home, '.cache', 'huggingface'), HF_HUB_OFFLINE: '1', PYTHONIOENCODING: 'utf-8' };
 }
 
 /** Qwen3-TTS routing: a persistent Python synth worker feeds WAV chunks to the Node audio worker as `play`. */
@@ -32,7 +36,12 @@ export const QWEN_SYNTH_IDLE_TIMEOUT_MS = 120_000;
 /** Default idle release of the warm worker (5 minutes); the extension passes the `qwenIdleMinutes` setting. */
 export const QWEN_IDLE_MS = 5 * 60_000;
 
-export type QwenChild = Pick<ChildProcessWithoutNullStreams, 'stdin' | 'stdout' | 'stderr' | 'on' | 'kill'>;
+export type QwenChild = Pick<ChildProcessWithoutNullStreams, 'stdin' | 'stdout' | 'stderr' | 'on' | 'kill'> & {
+  /** T38: a service connection understands a `priority` ('speak' | 'prepare') on `synth` and `cancelRequest`; a plain worker does not. */
+  hints?: boolean;
+  /** T38: tells the shared service to drop a request (queued: never runs; running: its output is discarded). */
+  cancelRequest?: (id: number) => void;
+};
 export interface QwenSpeechDeps {
   /** Starts `python -I <script>`; only called lazily, after the voice was verified installed. */
   spawnPython: (python: string) => QwenChild;
@@ -135,11 +144,13 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
     idleTimer.unref?.();
   }
   /** Writes one line to the worker; a stdin that is already closed throws like a broken pipe so the callers can respawn. */
-  const writeLine = (state: NonNullable<typeof python>, payload: object) => {
+  const writeLine = (state: NonNullable<typeof python>, payload: object, priority?: 'speak' | 'prepare') => {
     const stdin: any = state.child.stdin;
     if (stdin.destroyed || stdin.writable === false) throw new Error('Qwen worker stdin is closed');
-    state.child.stdin.write(JSON.stringify(payload) + '\n');
+    state.child.stdin.write(JSON.stringify(priority && state.child.hints ? { ...payload, priority } : payload) + '\n');
   };
+  /** T38: a request that will not be consumed is dropped at the shared service too (best effort; a plain worker has nothing to cancel). */
+  const cancelRemote = (state: NonNullable<typeof python> | undefined, id: number) => { try { state?.child.cancelRequest?.(id); } catch { /* connection already gone */ } };
   const killAudio = () => { const old = audio; audio = undefined; try { old?.kill(); } catch { /* already gone */ } };
   const ensureTmp = () => {
     if (!tmp) { tmp = mkdtempSync(join(deps.tmpRoot ?? tmpdir(), 'gentle-speak-')); chmodSync(tmp, 0o700); }
@@ -222,6 +233,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
         settled = true;
         clearTimeout(idleTimer);
         clearTimeout(readyTimer);
+        if (sent && !synthDone && worker) cancelRemote(worker, id);
         if (worker) worker.handler = undefined;
         unsubscribe?.();
         if (inflight && !inflightDone) inflight.cancel(); // an unfinished adopted prepare dies with its utterance
@@ -265,11 +277,12 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
         try { ensureAudio().stdin.write(JSON.stringify({ schema: AUDIO_SCHEMA, type: 'play', id: pid, wav, speed: 1, runtime: request.runtime }) + '\n'); }
         catch { finish({ ok: false, message: 'Audio worker input failed.' }); }
       };
-      let retried = false, warm = false;
+      let retried = false, warm = false, sent = false;
       const sendSynth = () => {
         armIdle();
         try {
-          writeLine(worker, { schema: QWEN_SCHEMA, type: 'synth', id, text: request.text, ref: request.ref, refText: request.refText, outDir: dir, speed: request.speed });
+          writeLine(worker, { schema: QWEN_SCHEMA, type: 'synth', id, text: request.text, ref: request.ref, refText: request.refText, outDir: dir, speed: request.speed }, 'speak');
+          sent = true;
         } catch {
           // S13: a warm worker that died while idle (EPIPE): respawn once, before this request starts.
           if (retried || !warm) { finish({ ok: false, message: 'Qwen worker input failed.' }); return; }
@@ -338,7 +351,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
     const promise = new Promise<QwenPrepareOutcome>(resolve => {
       let settled = false, nextSeq = 0, dir: string | undefined;
       let readyTimer: ReturnType<typeof setTimeout> | undefined, idleTimer: ReturnType<typeof setTimeout> | undefined;
-      let worker: NonNullable<typeof python> | undefined;
+      let worker: NonNullable<typeof python> | undefined, remoteId: number | undefined;
       const wavs: string[] = [];
       const listeners = new Set<(wav: string) => void>();
       const job: PrepareJob = { start, cancel: () => finish({ ok: false, message: 'Speech cancelled.', cancelled: true }) };
@@ -354,6 +367,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
         listeners.clear();
         clearTimeout(idleTimer); clearTimeout(readyTimer);
         request.signal?.removeEventListener('abort', job.cancel);
+        if (!outcome.ok && remoteId !== undefined) cancelRemote(worker, remoteId);
         if (worker) worker.handler = undefined;
         const queued = prepareQueue.indexOf(job); if (queued >= 0) prepareQueue.splice(queued, 1);
         if (!outcome.ok) {
@@ -379,7 +393,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
         let state = worker, retried = false, warm = false;
         const sendSynth = () => {
           armIdle();
-          try { writeLine(state, { schema: QWEN_SCHEMA, type: 'synth', id, text: request.text, ref: request.ref, refText: request.refText, outDir, speed: request.speed }); }
+          try { writeLine(state, { schema: QWEN_SCHEMA, type: 'synth', id, text: request.text, ref: request.ref, refText: request.refText, outDir, speed: request.speed }, 'prepare'); remoteId = id; }
           catch {
             // S13: a warm worker that died while idle (EPIPE): respawn once, before this prepare starts.
             if (retried || !warm) { finish({ ok: false, message: 'Qwen worker input failed.' }); return; }

@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { spawn as spawnChild, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { readSpeakSettings, writeSpeakSettings, type SpeakMode } from '../lib/speak-settings.ts';
 import { filterSettledSpeech } from '../lib/speak-filter.ts';
@@ -12,8 +13,10 @@ import { MAC_VOICE_NAME, listSpanishSayVoices, pickMacVoice, sayAvailable, speak
 import { realHome, settingsHome, sharedHome } from '../lib/speak-home.ts';
 import { createVoiceLock } from '../lib/speak-voice-lock.ts';
 import { connectDot, detectDot, disconnectDot, isDotEngine, readDotSpeak, seedDotSettings, resolveDotSource, writeDotSpeak, type DotFs } from '../lib/speak-dot.ts';
+import { createQwenServiceSpawner, type QwenServiceSpawnerOptions } from '../lib/speak-qwen-client.ts';
+import { qwenServicePaths, stopQwenService } from '../lib/speak-qwen-service.ts';
 import { createSpeculativePlanner } from '../lib/speak-speculative.ts';
-import { createQwenSpeech, playbackFailure, readQwenPython, spawnQwenPython, type QwenChild, type QwenPrepareHandle } from '../lib/speak-qwen.ts';
+import { createQwenSpeech, playbackFailure, qwenPythonEnv, readQwenPython, spawnQwenPython, type QwenChild, type QwenPrepareHandle } from '../lib/speak-qwen.ts';
 import { SPEAK_MODELS, SPEAK_TARGETS, installSpeakModel, installSpeakRuntime, readSpeakModelStatus, readSpeakRuntimeStatus, type SpeakTarget } from '../lib/speak-install.ts';
 
 type Child = Pick<ChildProcessWithoutNullStreams, 'stdin' | 'stdout' | 'stderr' | 'on' | 'kill'>;
@@ -53,6 +56,11 @@ type Dependencies = {
   settingsHome?: string;
   /** Scratch root of the Qwen engine (tests); defaults to the system temp dir. */
   qwenTmpRoot?: string;
+  /**
+   * T38: use the shared Qwen service (one Python for every session and Gentle Dot). Default on, except when a test injects its own `spawnQwen`
+   * (then that worker is the engine); an object overrides the service options (tests).
+   */
+  qwenService?: boolean | Partial<QwenServiceSpawnerOptions>;
 };
 const defaults: Dependencies = {
   modelStatus: readSpeakModelStatus, runtimeStatus: readSpeakRuntimeStatus,
@@ -76,6 +84,7 @@ const schema = 'gentle.speak/v1';
 const target = `${process.platform}-${process.arch}` as SpeakTarget;
 const worker = resolve(import.meta.dirname, '../scripts/speak-worker.cjs');
 const qwenWorker = resolve(import.meta.dirname, '../scripts/speak-qwen-worker.py');
+const qwenServiceScript = resolve(import.meta.dirname, '../scripts/speak-qwen-service.mjs');
 
 const IDLE_CHOICES: ReadonlyArray<{ label: string; minutes: number | null }> = [1, 2, 5, 10, 30, 60].map(minutes => ({ label: `${minutes} min`, minutes })).concat([{ label: 'Nunca', minutes: null as any }]);
 const idleMsOf = (minutes: number | null) => minutes === null ? null : minutes * 60_000;
@@ -96,7 +105,21 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   let current: Child | undefined;
   let cancelCurrent: (() => void) | undefined;
   let sequence = 0;
-  const qwen = createQwenSpeech({ tmpRoot: deps.qwenTmpRoot, spawnPython: python => deps.spawnQwen(python, qwenWorker), spawnAudio: () => deps.spawn(worker), idleMs: idleMsOf(readSpeakSettings(settingsDir).qwenIdleMinutes) });
+  // T38: one shared Qwen service for every session and Dot; a session falls back to its own worker (T37) when the service cannot run.
+  const serviceSetting = deps.qwenService ?? !dependencies.spawnQwen;
+  const qwenServiceOn = serviceSetting !== false;
+  const logFallback = (reason: string) => { try { appendFileSync(qwenServicePaths(home).log, `${new Date().toISOString()} [session ${process.pid}] Qwen service unavailable, using a per-session worker: ${reason}\n`, { mode: 0o600 }); } catch { /* the log is best effort */ } };
+  const spawnPython = qwenServiceOn
+    ? createQwenServiceSpawner({
+      home, script: qwenWorker, serviceScript: qwenServiceScript,
+      idleMs: () => idleMsOf(readSpeakSettings(settingsDir).qwenIdleMinutes),
+      env: qwenPythonEnv(process.env, deps.userHome),
+      spawnLocal: python => deps.spawnQwen(python, qwenWorker),
+      onFallback: logFallback,
+      ...(typeof serviceSetting === 'object' ? serviceSetting : {}),
+    })
+    : (python: string) => deps.spawnQwen(python, qwenWorker);
+  const qwen = createQwenSpeech({ tmpRoot: deps.qwenTmpRoot, spawnPython, spawnAudio: () => deps.spawn(worker), idleMs: idleMsOf(readSpeakSettings(settingsDir).qwenIdleMinutes) });
   const reported = new WeakSet<object>();
   // S9 single voice: one cross-process lock under the speak home, held for a whole playback.
   const voiceLock = createVoiceLock({ dir: home, pollMs: deps.lockPollMs });
@@ -679,7 +702,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       const settings = readSpeakSettings(settingsDir);
       const voices = voiceMenuEntries(VOICE_CATALOG, await voiceAvailability());
       if (stopped) return;
-      const choice = await ctx.ui.select('Speech settings', ['Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Mac voice', 'Toggle Mac fallback', 'Liberar Qwen tras inactividad', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
+      const choice = await ctx.ui.select('Speech settings', ['Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Mac voice', 'Toggle Mac fallback', 'Liberar Qwen tras inactividad', ...(qwenServiceOn ? ['Detener servicio Qwen'] : []), 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
       if (!choice || choice === 'Cancel' || stopped) return;
       if (choice === 'Stop playback') { stopAll(); return; }
       if (choice === 'Gentle Dot') { await dotMenu(ctx, voices); return; }
@@ -733,6 +756,11 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
         settings.macVoice = selected === 'Auto' ? null : selected;
       }
       else if (choice === 'Toggle Mac fallback') settings.macFallback = !settings.macFallback;
+      else if (choice === 'Detener servicio Qwen') {
+        const was = await stopQwenService(home).catch(() => false);
+        if (!stopped) ctx.ui.notify(was ? 'Qwen service stopped; the next Qwen speech starts it again.' : 'The Qwen service was not running.', 'info');
+        return;
+      }
       else if (choice === 'Liberar Qwen tras inactividad') {
         const selected = await ctx.ui.select('Liberar Qwen tras inactividad', IDLE_CHOICES.map(entry => entry.label));
         const picked = IDLE_CHOICES.find(entry => entry.label === selected);

@@ -60,7 +60,12 @@ Requires macOS on Apple Silicon and a Python with `mlx-audio` (and its dependenc
 
 #### Memory (Qwen voices)
 
-Each Gentle Shell session (and Gentle Dot) keeps its own warm Qwen worker, about 2.6 GB each. After `qwenIdleMinutes` without speech (default 5; `/speak` → `Liberar Qwen tras inactividad`: 1, 2, 5, 10, 30, 60 min or `Nunca`) the worker is closed; the next utterance starts a fresh one (a few seconds of model load). It never closes mid-utterance, a worker killed from outside is replaced the same way, and it never triggers the Mac fallback. The setting applies live in the session where you change it; other running sessions pick it up on restart.
+Every Gentle Shell session and Gentle Dot share **one** local Qwen service, so the model (about 2.6 GB) is loaded once, not once per session. The first session that needs it starts it, detached, and later sessions connect to it. It owns the only Python worker and listens on a private unix socket, `~/.gentle-speak/qwen.sock` (mode 0600 in a 0700 directory owned by you; it accepts only its own protocol and validates every request). It runs one synthesis at a time: the session that holds the voice lock goes before speculative synthesis, and a queued speculation can be cancelled.
+
+- **Idle.** After `qwenIdleMinutes` without requests from any session (default 5; `/speak` → `Liberar Qwen tras inactividad`: 1, 2, 5, 10, 30, 60 min or `Nunca`) the service closes its Python worker; the next utterance reloads it (a few seconds). The service itself exits after 30 minutes with no session connected, or the same value if it is longer. It never closes mid-request. The value is read when the service starts, so a change applies the next time it starts (use `Detener servicio Qwen` to apply it now).
+- **Recovery.** A killed service or a stale socket is detected and replaced by the next session; after an update of this package the outdated service is asked to exit and is replaced. If the service cannot run, the session falls back to its own per-session worker (one note in the log, never an error).
+- **Log.** `~/.gentle-speak/qwen-service.log` (rotated at 512 KB when the service starts).
+- **Stop it.** `/speak` → `Detener servicio Qwen`, or `kill $(cat ~/.gentle-speak/qwen-service.pid)`. The next Qwen speech starts it again.
 
 #### Speaks faster (Qwen voices)
 

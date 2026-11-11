@@ -461,7 +461,7 @@ test('the watcher starts only when copySpeech is on in the interactive parent', 
     await off.events.get('session_start')!({ reason: 'startup' }, off.ctx);
     await off.settle();
     assert.equal(off.watchers.length, 0);
-    assert.deepEqual(off.widgets, []);
+    assert.deepEqual(off.widgets.filter(([key]) => key === 'gentle-speak-copy'), [], 'no copy widget (the T46 focus widget is separate)');
   } finally { off.close(); }
   for (const other of [copyHarness({ mode: 'rpc' }), copyHarness({ mode: 'print' }), copyHarness({ mode: 'json' }), copyHarness({ header: { type: 'session', parentSession: '/p.jsonl' } })]) {
     try {

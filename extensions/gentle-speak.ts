@@ -11,6 +11,7 @@ import { CUSTOM_LABEL_MAX, CUSTOM_TRANSCRIPT_MAX, createCustomVoice, customCatal
 import { SPEAK_STATUS_KEY, formatSpeakStatus, nextAvailableVoice, voiceMenuEntries } from '../lib/speak-status.ts';
 import { describeDesignModelSize, designModelSize, designModelStatus, hfHomeOf, installDesignModel, migrateLegacyQwenVoices, resolveQwenPython, type LegacyQwenVoice } from '../lib/speak-voices-install.ts';
 import { createCopiedSelectionWatcher, createOwnCopyGate, isSelectionTui, resolveTerminalBundleId } from '../lib/speak-clipboard.ts';
+import { createTerminalFocusTracker, type TerminalFocusTracker } from '../lib/speak-terminal-focus.ts';
 import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix, readFrontmostBundleId, type FocusState, type HerdrExec } from '../lib/speak-focus.ts';
 import { MAC_VOICE_NAME, listSpanishSayVoices, pickMacVoice, sayAvailable, speakWithSay, type MacVoice } from '../lib/speak-say.ts';
 import { realHome, settingsHome, sharedHome } from '../lib/speak-home.ts';
@@ -41,6 +42,8 @@ type Dependencies = {
   /** Bundle id of the frontmost app, or undefined when it cannot be read. */
   readFrontmost: () => Promise<string | undefined>;
   focusPollMs: number;
+  /** `process.platform`; only macOS has the frontmost-app check. */
+  platform?: string;
   lockPollMs: number;
   /** S11: the Mac voice. Defaults check macOS and `/usr/bin/say`; tests inject fakes so nothing ever speaks aloud. */
   sayAvailable: () => boolean;
@@ -95,6 +98,7 @@ const defaults: Dependencies = {
   pythonRun: defaultPythonRun,
 };
 const COPY_WIDGET_KEY = 'gentle-speak-copy';
+const FOCUS_WIDGET_KEY = 'gentle-speak-focus';
 const schema = 'gentle.speak/v1';
 const target = `${process.platform}-${process.arch}` as SpeakTarget;
 const worker = resolve(import.meta.dirname, '../scripts/speak-worker.cjs');
@@ -152,7 +156,10 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     const front = await deps.readFrontmost();
     return front === undefined ? undefined : front === terminal;
   };
-  const focusCheck = deps.focusCheck ?? createFocusCheck({ probeHerdr: () => probeHerdrFocus({ env: deps.env, exec: deps.herdrExec, timeoutMs: 700 }), isTerminalFrontmost, timeoutMs: 700 });
+  // T46: the terminal's own focus reports (see speak-terminal-focus.ts); undefined until a parent TUI session attaches one.
+  let focusTracker: TerminalFocusTracker | undefined;
+  const terminalFocus = { state: () => focusTracker?.state() ?? 'unknown' as FocusState, hasEvents: () => focusTracker?.hasEvents() ?? false };
+  const focusCheck = deps.focusCheck ?? createFocusCheck({ terminal: terminalFocus, platform: deps.platform ?? process.platform, probeHerdr: () => probeHerdrFocus({ env: deps.env, exec: deps.herdrExec, timeoutMs: 700 }), isTerminalFrontmost, timeoutMs: 700 });
   const installs = new Set<AbortController>();
   const summaries = new Set<AbortController>();
   const parent = (ctx: ExtensionContext) => ctx.mode === 'tui' && ctx.sessionManager.getHeader()?.type === 'session' && !ctx.sessionManager.getHeader()?.parentSession;
@@ -237,6 +244,28 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       const voiceLabel = settings.voice === 'mac' ? `${label} · ${pickMacVoice(macVoices ?? [], settings.macVoice) ?? 'auto'}` : label;
       ctx.ui.setStatus(SPEAK_STATUS_KEY, formatSpeakStatus({ enabled: settings.enabled, voiceLabel, mode: settings.mode, summaryReady: settings.summaryModel !== null, copySpeech: settings.copySpeech, shortcuts: settings.shortcuts }));
     } catch { /* Status is cosmetic. */ }
+  };
+  /**
+   * T46: terminal focus events, parent fullscreen TUI only. The widget renders no lines; its factory is how the extension reaches the live TUI instance.
+   * A TUI without `handleViewportInput` (or not fullscreen) is left untouched and focus keeps coming from Herdr, the frontmost app or `unknown`.
+   */
+  let focusWidgetSet = false;
+  const stopFocus = (ctx?: ExtensionContext) => {
+    try { focusTracker?.dispose(); } catch { /* already restored */ }
+    focusTracker = undefined;
+    if (ctx && focusWidgetSet && parent(ctx)) { try { (ctx.ui as any).setWidget?.(FOCUS_WIDGET_KEY, undefined); } catch { /* cosmetic */ } }
+    focusWidgetSet = false;
+  };
+  const syncFocus = (ctx: ExtensionContext) => {
+    stopFocus(ctx);
+    if (stopped || !parent(ctx)) return;
+    let tui: unknown;
+    focusWidgetSet = true;
+    try { (ctx.ui as any).setWidget(FOCUS_WIDGET_KEY, (instance: unknown) => { tui = instance; return { render: () => [] as string[], invalidate: () => {} }; }, { placement: 'belowEditor' }); } catch { tui = undefined; }
+    const tracker = createTerminalFocusTracker(tui, { log: message => { try { appendFileSync(join(home, 'focus.log'), `${new Date().toISOString()} ${message}\n`, { mode: 0o600 }); } catch { /* the log is best effort */ } } });
+    if (!tracker.attached) { tracker.dispose(); stopFocus(ctx); return; }
+    tracker.onChange(state => { if (state === 'focused') void deferral.wake().catch(() => undefined); });
+    focusTracker = tracker;
   };
   /** Copied-selection speech (S8): opt-in, interactive parent only, fail closed. Clipboard text is never logged. */
   let copyWatcher: { stop(): void } | undefined;
@@ -737,7 +766,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   }
   pi.on('session_start', async (_event, ctx) => {
     await migrateQwen(ctx);
-    await refreshCustom(ctx); await refreshRowPrimed(ctx); await syncCopy(ctx);
+    await refreshCustom(ctx); await refreshRowPrimed(ctx); syncFocus(ctx); await syncCopy(ctx);
     const generation = ++offerGeneration;
     if (offerTimer) clearTimeout(offerTimer);
     offerTimer = setTimeout(() => { offerTimer = undefined; offerDot(ctx, generation).catch(() => { /* the offer is a convenience; it never breaks anything */ }); }, 0);
@@ -745,7 +774,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   });
   pi.on('session_shutdown', (_event, ctx) => {
     if (parent(ctx)) { try { ctx.ui.setStatus(SPEAK_STATUS_KEY, undefined); } catch { /* Status is cosmetic. */ } }
-    stopCopy(ctx);
+    stopCopy(ctx); stopFocus(ctx);
     offerGeneration++; if (offerTimer) { clearTimeout(offerTimer); offerTimer = undefined; }
     stopped = true; for (const controller of voiceJobs) controller.abort(); voiceJobs.clear(); for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); deferral.dispose(); if (pendingItem && !pendingItem.started) dropPrepared(pendingItem); pendingItem = undefined; disposeSpeculation(); stop(); voiceLock.close(); qwen.dispose(); (spawnPython as Partial<QwenServiceSpawner>).close?.(); // close(): rejects a pending acquire, releases a held lock once, refuses later acquires
   });

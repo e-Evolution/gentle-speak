@@ -71,6 +71,10 @@ export interface FocusCheckOptions {
   isTerminalFrontmost: () => Promise<boolean | undefined>;
   /** Bound for each probe; a probe that does not settle in time counts as unknown. Default 700 ms. */
   timeoutMs?: number;
+  /** T46: the terminal's own focus reports. Once a real focus event arrived, its state decides alone; typing-implied focus is the last resort. */
+  terminal?: { state(): FocusState; hasEvents(): boolean };
+  /** `process.platform` of the session. Only macOS has the frontmost check; elsewhere a known Herdr answer stands alone (L91). Default `darwin` (the pre-T46 behavior). */
+  platform?: string;
 }
 
 /** Settles with `fallback` when `make()` throws, rejects or does not settle within `ms`. */
@@ -85,20 +89,25 @@ function bounded<T>(make: () => Promise<T>, ms: number, fallback: T): Promise<T>
 }
 
 /**
- * Focused only when the terminal is frontmost and Herdr says focused; unknown follows an unknown Herdr or an
- * unidentifiable frontmost app. Both probes run at once, each bounded by `timeoutMs`; a prompt `unfocused` from Herdr
- * decides alone.
+ * Order (S9, S16): terminal focus events when any arrived (authoritative); else Herdr; else, on macOS, the frontmost app refines a focused Herdr;
+ * else typing-implied focus; else unknown. Focused only when the terminal is frontmost and Herdr says focused on macOS; unknown follows an unknown
+ * Herdr or an unidentifiable frontmost app. Both probes run at once, each bounded by `timeoutMs`; a prompt `unfocused` from Herdr decides alone.
+ * Off macOS the frontmost probe never runs and a known Herdr answer is used as is.
  */
 export function createFocusCheck(opts: FocusCheckOptions): () => Promise<FocusState> {
   const ms = opts.timeoutMs ?? 700;
+  const mac = (opts.platform ?? 'darwin') === 'darwin';
+  const typed = (): FocusState => { try { return opts.terminal?.state() === 'focused' ? 'focused' : 'unknown'; } catch { return 'unknown'; } };
   return async () => {
+    try { if (opts.terminal?.hasEvents()) return opts.terminal.state(); } catch { /* fall through to the other sources */ }
     const herdrP = bounded(opts.probeHerdr, ms, 'unknown' as FocusState);
-    const frontP = bounded(opts.isTerminalFrontmost, ms, undefined as boolean | undefined);
+    const frontP = mac ? bounded(opts.isTerminalFrontmost, ms, undefined as boolean | undefined) : undefined;
     const herdr = await herdrP;
-    if (herdr === 'unknown') return 'unknown';
+    if (herdr === 'unknown') return typed();
     if (herdr === 'unfocused') return 'unfocused';
+    if (!frontP) return 'focused';
     const front = await frontP;
-    return front === undefined ? 'unknown' : front ? 'focused' : 'unfocused';
+    return front === undefined ? typed() : front ? 'focused' : 'unfocused';
   };
 }
 
@@ -118,6 +127,8 @@ export interface LatestOnlyDeferralOptions<T> {
 export interface LatestOnlyDeferral<T> {
   offer(item: T): Promise<void>;
   clear(): void;
+  /** Re-checks the pending item now (a focus event arrived); no-op when nothing is pending. The poll stays as the fallback. */
+  wake(): Promise<void>;
   dispose(): void;
 }
 
@@ -125,6 +136,7 @@ export function createLatestOnlyDeferral<T>(opts: LatestOnlyDeferralOptions<T>):
   let pending: { item: T } | undefined;
   let timer: NodeJS.Timeout | undefined;
   let busy = false;
+  let rerun = false;
   let disposed = false;
 
   const stop = () => { if (timer) { clearInterval(timer); timer = undefined; } };
@@ -140,7 +152,7 @@ export function createLatestOnlyDeferral<T>(opts: LatestOnlyDeferralOptions<T>):
   const tick = async () => {
     if (busy || !pending) return;
     busy = true;
-    try { await settle(pending); } finally { busy = false; }
+    try { await settle(pending); } finally { busy = false; if (rerun) { rerun = false; void tick(); } }
   };
 
   return {
@@ -153,6 +165,11 @@ export function createLatestOnlyDeferral<T>(opts: LatestOnlyDeferralOptions<T>):
         timer = setInterval(() => { void tick(); }, opts.pollMs);
         timer.unref?.();
       }
+    },
+    async wake() {
+      if (disposed || !pending) return;
+      if (busy) { rerun = true; return; }
+      await tick();
     },
     clear() { pending = undefined; stop(); },
     dispose() { disposed = true; pending = undefined; stop(); },

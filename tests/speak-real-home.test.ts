@@ -49,8 +49,24 @@ test('Python worker env: HOME is the real home (user site-packages), flags and o
   spawnQwenPython('/py/python3', '/s/worker.py', { spawn: fake, env: { HOME: '/fake/home', PATH: '/bin', KEEP: '1' }, home: '/real/user' });
   assert.equal(calls[0].file, '/py/python3');
   assert.deepEqual(calls[0].args, [...QWEN_PYTHON_FLAGS, '/s/worker.py']); assert.ok(calls[0].args.includes('-E') && calls[0].args.includes('-P'));
-  assert.deepEqual(calls[0].options.env, { HOME: '/real/user', PATH: '/bin', KEEP: '1', HF_HUB_OFFLINE: '1', PYTHONIOENCODING: 'utf-8' });
+  assert.deepEqual(calls[0].options.env, { HOME: '/real/user', PATH: '/bin', KEEP: '1', HF_HOME: '/real/user/.cache/huggingface', HF_HUB_OFFLINE: '1', PYTHONIOENCODING: 'utf-8' });
   assert.deepEqual(calls[0].options.stdio, ['pipe', 'pipe', 'pipe']);
+});
+
+// L72: Gentle Dot sets XDG_CACHE_HOME under its own home; without HF_HOME, huggingface_hub looked there and missed the model cache.
+test('Python worker env: HF_HOME pins the real Hugging Face cache even when XDG_CACHE_HOME points elsewhere', () => {
+  const calls: Array<{ options: any }> = [];
+  const fake = ((_file: string, _args: string[], options: any) => { calls.push({ options }); return new EventEmitter(); }) as any;
+  spawnQwenPython('/py/python3', '/s/worker.py', { spawn: fake, env: { HOME: '/dot/home', XDG_CACHE_HOME: '/dot/home/.cache' }, home: '/real/user' });
+  assert.equal(calls[0].options.env.HF_HOME, '/real/user/.cache/huggingface');
+  assert.equal(calls[0].options.env.XDG_CACHE_HOME, '/dot/home/.cache');
+});
+
+test('Python worker env: a user-set HF_HOME is kept', () => {
+  const calls: Array<{ options: any }> = [];
+  const fake = ((_file: string, _args: string[], options: any) => { calls.push({ options }); return new EventEmitter(); }) as any;
+  spawnQwenPython('/py/python3', '/s/worker.py', { spawn: fake, env: { HF_HOME: '/custom/hf', XDG_CACHE_HOME: '/dot/home/.cache' }, home: '/real/user' });
+  assert.equal(calls[0].options.env.HF_HOME, '/custom/hf');
 });
 
 function dotRpc(real: string, fakeHome: string) {

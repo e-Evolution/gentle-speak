@@ -8,10 +8,13 @@ import { QWEN_PYTHON_FLAGS } from './speak-voices.ts';
 /**
  * Starts the Qwen Python worker (`python -E -P <script>`). `HOME` is the account's real home: Gentle Dot overrides `$HOME`, and
  * Python finds its user site-packages (where mlx-audio lives) through it. `-E` ignores PYTHON* vars, not `HOME`.
+ * `HF_HOME` pins the real Hugging Face cache: Gentle Dot also sets `XDG_CACHE_HOME` under its own home, which huggingface_hub
+ * prefers over `HOME`, so offline model loads missed the cache (L72). A user-set `HF_HOME` is kept.
  */
 export function spawnQwenPython(python: string, script: string, io: { spawn?: typeof spawnChild; env?: NodeJS.ProcessEnv; home?: string } = {}): ChildProcessWithoutNullStreams {
   const run = io.spawn ?? spawnChild;
-  return run(python, [...QWEN_PYTHON_FLAGS, script], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...(io.env ?? process.env), HOME: io.home ?? realHome(), HF_HUB_OFFLINE: '1', PYTHONIOENCODING: 'utf-8' } });
+  const env = io.env ?? process.env, home = io.home ?? realHome();
+  return run(python, [...QWEN_PYTHON_FLAGS, script], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...env, HOME: home, HF_HOME: env.HF_HOME || join(home, '.cache', 'huggingface'), HF_HUB_OFFLINE: '1', PYTHONIOENCODING: 'utf-8' } });
 }
 
 /** Qwen3-TTS routing: a persistent Python synth worker feeds WAV chunks to the Node audio worker as `play`. */

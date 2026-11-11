@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import * as nodeFs from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { realHome } from './speak-home.ts';
+import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_FILE, parseSpeakSettingsFile, serializeSpeakSettings, type SpeakSettings } from './speak-settings.ts';
 
 // S12: Gentle Dot's engine home, its settings.json `packages`, and the connect/disconnect edits. Pure and injectable
 // (fs, env, home); nothing here reads or writes anything the caller did not name.
 
-export type DotFs = Pick<typeof nodeFs, 'readFileSync' | 'writeFileSync' | 'renameSync' | 'copyFileSync' | 'existsSync' | 'unlinkSync'>;
+export type DotFs = Pick<typeof nodeFs, 'readFileSync' | 'writeFileSync' | 'renameSync' | 'copyFileSync' | 'existsSync' | 'unlinkSync' | 'mkdirSync'>;
 export interface DotIo { fs?: DotFs; env?: Record<string, string | undefined>; home?: string }
 export type PackageEntry = string | { source: string; [key: string]: unknown };
 
@@ -112,3 +113,37 @@ export const connectDot = (source: PackageEntry, io: DotIo & { now?: () => Date 
 /** Removes only gentle-speak entries from Dot's `packages` after a backup; a no-op when it is not there. */
 export const disconnectDot = (io: DotIo & { now?: () => Date } = {}): DotChange =>
   change(dotAgentHome(io), io, packages => packages.some(isSpeakEntry) ? packages.filter(entry => !isSpeakEntry(entry)) : undefined);
+
+/** Dot's HOME: `GENTLE_DOT_HOME`, else `dirname(<Dot agent home>)/home` (gentle-dot's daemon sets `HOME = join(dataDir, "home")`). */
+export function dotHome(io: DotIo = {}): string {
+  const env = io.env ?? process.env, home = io.home ?? realHome();
+  return env.GENTLE_DOT_HOME ? resolve(expandHome(env.GENTLE_DOT_HOME, home)) : join(dirname(dotAgentHome(io)), 'home');
+}
+/** Dot's own speak settings file: `<dotHome>/.gentle-speak/speak-settings.json`. */
+export const dotSpeakFile = (io: DotIo = {}): string => join(dotHome(io), '.gentle-speak', SPEAK_SETTINGS_FILE);
+
+export type DotSpeakRead = { state: 'absent' | 'malformed'; path: string } | { state: 'ok'; path: string; settings: SpeakSettings };
+/** Reads Dot's speak settings. `malformed` is any existing file that does not pass the settings schema; it is never overwritten. */
+export function readDotSpeak(io: DotIo = {}): DotSpeakRead {
+  const fs = io.fs ?? nodeFs, path = dotSpeakFile(io);
+  if (!fs.existsSync(path)) return { state: 'absent', path };
+  try {
+    const settings = parseSpeakSettingsFile(String(fs.readFileSync(path, 'utf8')));
+    return settings ? { state: 'ok', path, settings } : { state: 'malformed', path };
+  } catch { return { state: 'malformed', path }; }
+}
+/** What Dot starts with: the terminal's voice, mode, speed, summary model and Mac preferences; `enabled` off, `copySpeech` off, no Dot offer. */
+export const seedDotSettings = (terminal: SpeakSettings): SpeakSettings => ({
+  ...structuredClone(DEFAULT_SPEAK_SETTINGS), enabled: false, copySpeech: false, voice: terminal.voice, mode: terminal.mode, speed: terminal.speed,
+  summaryModel: terminal.summaryModel ? { ...terminal.summaryModel } : null, macVoice: terminal.macVoice, macFallback: terminal.macFallback,
+});
+/** Validates with the settings schema, then temp file plus rename (mode 0600) in a 0700 directory. Throws on invalid settings or I/O failure. */
+export function writeDotSpeak(settings: SpeakSettings, io: DotIo = {}): string {
+  const fs = io.fs ?? nodeFs, path = dotSpeakFile(io), text = serializeSpeakSettings(settings), temporary = `${path}.${randomUUID()}.tmp`;
+  fs.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  try {
+    fs.writeFileSync(temporary, text, { flag: 'wx', mode: 0o600 });
+    fs.renameSync(temporary, path);
+  } finally { try { fs.unlinkSync(temporary); } catch { /* the rename consumed it */ } }
+  return path;
+}

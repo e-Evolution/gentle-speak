@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { spawn as spawnChild, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { join, resolve } from 'node:path';
-import { readSpeakSettings, writeSpeakSettings } from '../lib/speak-settings.ts';
+import { readSpeakSettings, writeSpeakSettings, type SpeakMode } from '../lib/speak-settings.ts';
 import { filterSettledSpeech } from '../lib/speak-filter.ts';
 import { VOICE_CATALOG } from '../lib/speak-voices.ts';
 import { SPEAK_STATUS_KEY, formatSpeakStatus, nextAvailableVoice, voiceMenuEntries } from '../lib/speak-status.ts';
@@ -9,9 +9,9 @@ import { qwenVoicesStatus } from '../lib/speak-voices-install.ts';
 import { createCopiedSelectionWatcher, createOwnCopyGate, isSelectionTui, resolveTerminalBundleId } from '../lib/speak-clipboard.ts';
 import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix, readFrontmostBundleId, type FocusState, type HerdrExec } from '../lib/speak-focus.ts';
 import { MAC_VOICE_NAME, listSpanishSayVoices, pickMacVoice, sayAvailable, speakWithSay, type MacVoice } from '../lib/speak-say.ts';
-import { realHome } from '../lib/speak-home.ts';
+import { realHome, settingsHome, sharedHome } from '../lib/speak-home.ts';
 import { createVoiceLock } from '../lib/speak-voice-lock.ts';
-import { connectDot, detectDot, disconnectDot, isDotEngine, terminalSource, type DotFs } from '../lib/speak-dot.ts';
+import { connectDot, detectDot, disconnectDot, isDotEngine, readDotSpeak, seedDotSettings, terminalSource, writeDotSpeak, type DotFs } from '../lib/speak-dot.ts';
 import { createSpeculativePlanner } from '../lib/speak-speculative.ts';
 import { createQwenSpeech, playbackFailure, readQwenPython, spawnQwenPython, type QwenChild, type QwenPrepareHandle } from '../lib/speak-qwen.ts';
 import { SPEAK_MODELS, SPEAK_TARGETS, installSpeakModel, installSpeakRuntime, readSpeakModelStatus, readSpeakRuntimeStatus, type SpeakTarget } from '../lib/speak-install.ts';
@@ -47,6 +47,10 @@ type Dependencies = {
   dotFs?: DotFs;
   /** S12: the installed package root, used as the Dot package source when the terminal settings carry no entry. */
   packageRoot?: string;
+  /** T34: the process HOME (tests); `<it>/.gentle-speak` holds `speak-settings.json`. Defaults to `os.homedir()`, which honors `$HOME` (Dot's own home inside Dot). */
+  processHome?: string;
+  /** T34: overrides the settings directory outright (tests). */
+  settingsHome?: string;
   /** Scratch root of the Qwen engine (tests); defaults to the system temp dir. */
   qwenTmpRoot?: string;
 };
@@ -76,8 +80,10 @@ const qwenWorker = resolve(import.meta.dirname, '../scripts/speak-qwen-worker.py
 /** Speech is strictly parent-interactive; no native code is loaded on extension registration. */
 export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, dependencies: Partial<Dependencies> = {}): void {
   const deps = { ...defaults, ...dependencies };
-  // Dot overrides $HOME: the default speak home hangs off the account's real home.
-  const home = speakHome ?? join(deps.userHome ?? realHome(), '.gentle-speak');
+  // T34: two homes. `home` is shared (runtime, models, voices, manifests, voice lock) and hangs off the account's real home, because Dot overrides $HOME.
+  // `settingsDir` holds speak-settings.json and follows the process $HOME (Dot's own home inside Dot); in a terminal both are the same directory.
+  const home = speakHome ?? (deps.userHome ? join(deps.userHome, '.gentle-speak') : sharedHome());
+  const settingsDir = deps.settingsHome ?? (speakHome ?? (deps.processHome ? join(deps.processHome, '.gentle-speak') : settingsHome()));
   let stopped = false;
   let current: Child | undefined;
   let cancelCurrent: (() => void) | undefined;
@@ -103,9 +109,9 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   // S12: Gentle Dot's engine. The session runs under PI_CODING_AGENT_DIR (set by gentle-shell, read by pi-coding-agent's getAgentDir).
   const dotIo = { env: deps.env, home: deps.userHome ?? realHome(), fs: deps.dotFs };
   const packageRoot = deps.packageRoot ?? resolve(import.meta.dirname, '..');
-  /** The root RPC session of Gentle Dot's engine with `dotSpeech` on; never another RPC client, a child, print or JSON mode. */
+  /** The root RPC session of Gentle Dot's engine whose OWN settings have `enabled` (the terminal's `dotSpeech` is ignored); never another RPC client, a child, print or JSON mode. */
   const dotSession = (ctx: ExtensionContext) => ctx.mode === 'rpc' && ctx.sessionManager.getHeader()?.type === 'session' && !ctx.sessionManager.getHeader()?.parentSession
-    && isDotEngine(dotIo) && readSpeakSettings(home).dotSpeech;
+    && isDotEngine(dotIo) && readSpeakSettings(settingsDir).enabled;
   /** Who may speak: the terminal parent, or Dot's root RPC session. UI-bound features keep using `parent`. */
   const speaker = (ctx: ExtensionContext) => parent(ctx) || dotSession(ctx);
   const dotText = (text: string) => text ? `Dot: ${text}`.slice(0, 4000) : text;
@@ -128,14 +134,14 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   };
   /** The row names the Mac voice, which needs the voice list: prime it before an async refresh. */
   const refreshRowPrimed = async (ctx: ExtensionContext) => {
-    try { if (readSpeakSettings(home).voice === 'mac') await loadMacVoices(); } catch { /* cosmetic */ }
+    try { if (readSpeakSettings(settingsDir).voice === 'mac') await loadMacVoices(); } catch { /* cosmetic */ }
     refreshRow(ctx);
   };
   /** The SPEAK row is cosmetic: only the interactive parent TUI sets it, and a failure never affects speech. */
   const refreshRow = (ctx: ExtensionContext) => {
     if (stopped || !parent(ctx)) return;
     try {
-      const settings = readSpeakSettings(home);
+      const settings = readSpeakSettings(settingsDir);
       const label = VOICE_CATALOG[settings.voice]?.label ?? settings.voice;
       const voiceLabel = settings.voice === 'mac' ? `${label} · ${pickMacVoice(macVoices ?? [], settings.macVoice) ?? 'auto'}` : label;
       ctx.ui.setStatus(SPEAK_STATUS_KEY, formatSpeakStatus({ enabled: settings.enabled, voiceLabel, mode: settings.mode, summaryReady: settings.summaryModel !== null, copySpeech: settings.copySpeech, shortcuts: settings.shortcuts }));
@@ -162,7 +168,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   };
   async function syncCopy(ctx: ExtensionContext) {
     stopCopy(ctx);
-    if (stopped || !parent(ctx) || !readSpeakSettings(home).copySpeech) return;
+    if (stopped || !parent(ctx) || !readSpeakSettings(settingsDir).copySpeech) return;
     const generation = copyGeneration;
     // The widget renders no lines; its factory is only how an extension reaches the live TUI instance.
     copyWidgetSet = true;
@@ -277,7 +283,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   async function speakNow(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, prepared: Prepared | undefined) {
     if (stopped || !speaker(ctx)) return result('Speech requires an interactive parent TUI session.', true);
     if (!text.trim() || text.length > 4000 || /[\x00-\x1f]/.test(text)) return result('Invalid speech text.', true);
-    const settings = readSpeakSettings(home);
+    const settings = readSpeakSettings(settingsDir);
     // S11: the Mac voice needs no Piper/Qwen runtime and no node-cpal, and never speculates.
     if (VOICE_CATALOG[settings.voice]?.engine === 'system') return speakMac(text, ctx, signal, settings);
     const outcome = await speakEngine(text, ctx, signal, settings, prepared);
@@ -466,7 +472,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (dotSession(ctx)) text = dotText(text); // the audio prepared ahead must carry the same `Dot: ` prefix it will be spoken with
     streamedText = text;
     let settings: ReturnType<typeof readSpeakSettings>;
-    try { settings = readSpeakSettings(home); } catch { return; }
+    try { settings = readSpeakSettings(settingsDir); } catch { return; }
     if (!settings.enabled || settings.mode === 'summary' || VOICE_CATALOG[settings.voice]?.engine !== 'qwen3' || !SPEAK_TARGETS.includes(target)) { if (speculation) disposeSpeculation(); return; }
     if (speculation && (speculation.voice !== settings.voice || speculation.speed !== settings.speed)) disposeSpeculation();
     if (speculation) { speculation.planner.update(text); return; }
@@ -498,7 +504,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   pi.on('agent_settled', async (event, ctx) => {
     if (stopped) return;
     if (event.aborted || !speaker(ctx)) { cancelSpeculation(); return; }
-    const settings = readSpeakSettings(home);
+    const settings = readSpeakSettings(settingsDir);
     if (!settings.enabled) { cancelSpeculation(); return; }
     const messages = ctx.sessionManager.getBranch().filter(entry => entry.type === 'message').map(entry => entry.message);
     // Summarize only sanitized final assistant prose, never a transcript, tool output, code, or diffs.
@@ -527,17 +533,79 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     } catch { /* Model failure is silent; never fall back to unsummarized speech. */ }
     finally { summaries.delete(controller); controller.abort(); }
   });
-  /** S12: the Dot connection (shared by the one-time offer and `/speak` → Conectar Gentle Dot): package entry first, then `dotSpeech`. */
+  const MALFORMED_DOT = 'El settings.json de Gentle Dot está mal formado; no lo toqué.';
+  const MALFORMED_DOT_SPEAK = 'El speak-settings.json de Gentle Dot está mal formado; no lo toqué.';
+  const NOT_SAVED = 'Invalid speech settings; nothing was saved.';
+  /** T34: Dot's own speak settings, validated. Refuses (with a notice) an existing file that is malformed; an absent one is seeded from the terminal's. */
+  function dotSpeakBase(ctx: ExtensionContext): ReturnType<typeof readSpeakSettings> | undefined {
+    const read = readDotSpeak(dotIo);
+    if (read.state === 'malformed') { ctx.ui.notify(MALFORMED_DOT_SPEAK, 'warning'); return undefined; }
+    return read.state === 'ok' ? read.settings : seedDotSettings(readSpeakSettings(settingsDir));
+  }
+  /** Writes Dot's speak settings atomically (same schema); false with a notice on failure. */
+  function saveDotSpeak(ctx: ExtensionContext, settings: ReturnType<typeof readSpeakSettings>): boolean {
+    try { writeDotSpeak(settings, dotIo); return true; } catch { ctx.ui.notify(NOT_SAVED, 'error'); return false; }
+  }
+  /** Same rules for the terminal and Dot's voice pick: a Mac or Qwen voice that is not available is refused; a Piper voice not installed yet is selected with a notice. */
+  async function confirmVoicePick(ctx: ExtensionContext, id: string): Promise<boolean> {
+    if ((await voiceAvailability())[id]) return !stopped;
+    const voice = VOICE_CATALOG[id];
+    if (voice.engine === 'system') { if (!stopped) ctx.ui.notify('The Mac voice is not available: it needs macOS with /usr/bin/say. Nothing changed.', 'warning'); return false; }
+    if (voice.engine === 'qwen3') { if (!stopped) ctx.ui.notify(`Voice "${voice.label}" is not installed, so nothing changed. Install the Qwen voices first (see README, "Qwen voices").`, 'warning'); return false; }
+    if (!stopped) ctx.ui.notify(`Voice "${voice.label}" is selected but not installed yet. Run /speak → Install voice and runtime to download it.`, 'warning');
+    return !stopped;
+  }
+  /** S12 + T34: the Dot connection (shared by the one-time offer and `/speak` → Gentle Dot → Conectar): Dot's own speak settings are checked first, then the package entry, then `enabled`. */
   function connectDotNow(ctx: ExtensionContext): boolean {
     const found = detectDot(dotIo);
     if (found.state === 'absent') { ctx.ui.notify(`No encontré Gentle Dot (${found.path}).`, 'warning'); return false; }
-    if (found.state === 'malformed') { ctx.ui.notify('El settings.json de Gentle Dot está mal formado; no lo toqué.', 'warning'); return false; }
+    if (found.state === 'malformed') { ctx.ui.notify(MALFORMED_DOT, 'warning'); return false; }
+    const base = dotSpeakBase(ctx);
+    if (!base) return false;
     const done = connectDot(terminalSource({ ...dotIo, packageRoot }), dotIo);
     if (!done.ok) { ctx.ui.notify('No pude actualizar el settings.json de Gentle Dot; nada cambió.', 'error'); return false; }
-    try { const settings = readSpeakSettings(home); settings.dotSpeech = true; writeSpeakSettings(settings, home); }
-    catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return false; }
+    base.enabled = true; // an existing file keeps everything else; a seeded one has copySpeech false
+    if (!saveDotSpeak(ctx, base)) return false;
     ctx.ui.notify('Gentle Dot conectado: silenciá la voz propia de Dot y reinicialo.', 'info');
     return true;
+  }
+  /** T34: `/speak` → Gentle Dot. State line, then Conectar/Desconectar and Dot's own enabled, voice and mode. */
+  async function dotMenu(ctx: ExtensionContext, voices: Array<{ id: string; text: string }>) {
+    const dot = detectDot(dotIo), speakRead = readDotSpeak(dotIo);
+    const dotSettings = speakRead.state === 'ok' ? speakRead.settings : undefined;
+    const state = dot.state === 'absent' ? 'no encontrado'
+      : dot.state === 'malformed' || speakRead.state === 'malformed' ? 'mal formado'
+      : `${dot.connected ? 'conectado' : 'no conectado'} · habla: ${dotSettings?.enabled ? 'sí' : 'no'} · voz ${dotSettings?.voice ?? 'sin configurar'} · modo ${dotSettings?.mode ?? 'sin configurar'}`;
+    const line = `Gentle Dot: ${state}`;
+    const choice = await ctx.ui.select(line, [line, 'Conectar Gentle Dot', 'Desconectar Gentle Dot', 'Hablar en Dot', 'Voz de Dot', 'Modo de Dot', 'Volver']);
+    if (!choice || stopped || choice === 'Volver' || choice === line) { if (choice === line) ctx.ui.notify(`${line}.`, 'info'); return; }
+    if (choice === 'Conectar Gentle Dot') { connectDotNow(ctx); await refreshRowPrimed(ctx); return; }
+    if (dot.state === 'absent') { ctx.ui.notify(`No encontré Gentle Dot (${dot.path}).`, 'warning'); return; }
+    if (choice === 'Desconectar Gentle Dot') {
+      if (speakRead.state === 'malformed') { ctx.ui.notify(MALFORMED_DOT_SPEAK, 'warning'); return; }
+      const done = disconnectDot(dotIo);
+      if (!done.ok) { ctx.ui.notify(done.reason === 'malformed' ? MALFORMED_DOT : 'No pude actualizar el settings.json de Gentle Dot; nada cambió.', done.reason === 'io' ? 'error' : 'warning'); return; }
+      if (dotSettings) { dotSettings.enabled = false; if (!saveDotSpeak(ctx, dotSettings)) return; }
+      ctx.ui.notify('Gentle Dot desconectado: ya no habla ahí. Reinicialo para aplicar.', 'info');
+      return;
+    }
+    const settings = dotSpeakBase(ctx);
+    if (!settings) return;
+    if (choice === 'Hablar en Dot') {
+      settings.enabled = !settings.enabled;
+      if (saveDotSpeak(ctx, settings)) ctx.ui.notify(settings.enabled ? 'Hablar en Dot: sí.' : 'Hablar en Dot: no.', 'info');
+    } else if (choice === 'Modo de Dot') {
+      const mode = await ctx.ui.select('Modo de Dot', ['all', 'questions-and-results', 'summary']);
+      if (!mode || stopped || !['all', 'questions-and-results', 'summary'].includes(mode)) return;
+      settings.mode = mode as SpeakMode;
+      if (saveDotSpeak(ctx, settings)) ctx.ui.notify(`Modo de Dot: ${mode}.`, 'info');
+    } else if (choice === 'Voz de Dot') {
+      const text = await ctx.ui.select('Voz de Dot', voices.map(entry => entry.text));
+      const picked = voices.find(entry => entry.text === text);
+      if (!picked || stopped || !(await confirmVoicePick(ctx, picked.id))) return;
+      settings.voice = picked.id;
+      if (saveDotSpeak(ctx, settings)) ctx.ui.notify(`Voz de Dot: ${picked.id}.`, 'info');
+    }
   }
   /**
    * S12: asked once, in the terminal TUI parent only; never inside Dot's own engine, a child, or an RPC/print session.
@@ -548,7 +616,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   let offerTimer: ReturnType<typeof setTimeout> | undefined;
   async function offerDot(ctx: ExtensionContext, generation: number) {
     const live = () => !stopped && generation === offerGeneration;
-    if (!live() || offerShown || !parent(ctx) || isDotEngine(dotIo) || readSpeakSettings(home).dotOffer === 'declined') return;
+    if (!live() || offerShown || !parent(ctx) || isDotEngine(dotIo) || readSpeakSettings(settingsDir).dotOffer === 'declined') return;
     const found = detectDot(dotIo);
     if (found.state === 'absent' || (found.state === 'ready' && found.connected)) return;
     if (found.state === 'malformed') {
@@ -559,7 +627,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     const yes = await ctx.ui.confirm('Gentle Dot', 'Encontré Gentle Dot. ¿Querés que también hable ahí?');
     if (!live()) return; // reloaded or shut down while the human decided: nothing is written
     if (yes) { connectDotNow(ctx); return; }
-    try { const settings = readSpeakSettings(home); settings.dotOffer = 'declined'; writeSpeakSettings(settings, home); } catch { /* asked again next time */ }
+    try { const settings = readSpeakSettings(settingsDir); settings.dotOffer = 'declined'; writeSpeakSettings(settings, settingsDir); } catch { /* asked again next time */ }
   }
   pi.on('session_start', async (_event, ctx) => {
     await refreshRowPrimed(ctx); await syncCopy(ctx);
@@ -588,29 +656,13 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     description: 'Configure speech and explicitly install local voice and runtime (parent TUI only)',
     async handler(_args, ctx) {
       if (stopped || !parent(ctx)) return;
-      const settings = readSpeakSettings(home);
+      const settings = readSpeakSettings(settingsDir);
       const voices = voiceMenuEntries(VOICE_CATALOG, await voiceAvailability());
       if (stopped) return;
-      const dot = detectDot(dotIo);
-      const dotState = dot.state === 'absent' ? 'no encontrado' : dot.state === 'malformed' ? 'settings.json mal formado' : `${dot.connected ? 'conectado' : 'no conectado'} · habla: ${settings.dotSpeech ? 'sí' : 'no'}`;
-      const choice = await ctx.ui.select('Speech settings', [`Gentle Dot: ${dotState}`, 'Conectar Gentle Dot', 'Desconectar Gentle Dot', 'Hablar en Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Mac voice', 'Toggle Mac fallback', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
+      const choice = await ctx.ui.select('Speech settings', ['Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Mac voice', 'Toggle Mac fallback', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
       if (!choice || choice === 'Cancel' || stopped) return;
       if (choice === 'Stop playback') { stopAll(); return; }
-      if (choice === `Gentle Dot: ${dotState}`) { ctx.ui.notify(`Gentle Dot: ${dotState}.`, 'info'); return; }
-      if (choice === 'Conectar Gentle Dot') { connectDotNow(ctx); await refreshRowPrimed(ctx); return; }
-      if (choice === 'Desconectar Gentle Dot') {
-        const done = disconnectDot(dotIo);
-        if (!done.ok) { ctx.ui.notify(done.reason === 'absent' ? `No encontré Gentle Dot (${dot.path}).` : done.reason === 'malformed' ? 'El settings.json de Gentle Dot está mal formado; no lo toqué.' : 'No pude actualizar el settings.json de Gentle Dot; nada cambió.', done.reason === 'io' ? 'error' : 'warning'); return; }
-        settings.dotSpeech = false;
-        try { writeSpeakSettings(settings, home); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return; }
-        ctx.ui.notify('Gentle Dot desconectado: ya no habla ahí. Reinicialo para aplicar.', 'info');
-        return;
-      }
-      if (choice === 'Hablar en Gentle Dot') {
-        settings.dotSpeech = !settings.dotSpeech;
-        try { writeSpeakSettings(settings, home); ctx.ui.notify(settings.dotSpeech ? 'Hablar en Gentle Dot: sí.' : 'Hablar en Gentle Dot: no.', 'info'); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); }
-        return;
-      }
+      if (choice === 'Gentle Dot') { await dotMenu(ctx, voices); return; }
       if (choice === 'Install voice and runtime') {
         if (!SPEAK_TARGETS.includes(target)) { ctx.ui.notify('Unsupported audio runtime platform.', 'error'); return; }
         const controller = new AbortController();
@@ -649,21 +701,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       else if (choice.startsWith('Voice: ')) {
         const picked = voices.find(entry => entry.text === choice);
         if (!picked) return;
-        if (!(await voiceAvailability())[picked.id]) {
-          const voice = VOICE_CATALOG[picked.id];
-          // Qwen voices have no in-menu installer, so switching would only fail.
-          // Piper voices keep the previous behavior: select first, then
-          // "Install voice and runtime" installs the selected voice.
-          if (voice.engine === 'system') {
-            if (!stopped) ctx.ui.notify('The Mac voice is not available: it needs macOS with /usr/bin/say. Nothing changed.', 'warning');
-            return;
-          }
-          if (voice.engine === 'qwen3') {
-            if (!stopped) ctx.ui.notify(`Voice "${voice.label}" is not installed, so nothing changed. Install the Qwen voices first (see README, "Qwen voices").`, 'warning');
-            return;
-          }
-          if (!stopped) ctx.ui.notify(`Voice "${voice.label}" is selected but not installed yet. Run /speak → Install voice and runtime to download it.`, 'warning');
-        }
+        if (!(await confirmVoicePick(ctx, picked.id))) return;
         settings.voice = picked.id;
       }
       else if (choice === 'Mac voice') {
@@ -681,7 +719,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
         settings.speed = Number(input);
       }
       try {
-        writeSpeakSettings(settings, home);
+        writeSpeakSettings(settings, settingsDir);
         if (choice.startsWith('Voice: ') || choice === 'Mac voice' || choice === 'Speed' || choice.startsWith('Mode: ')) cancelSpeculation(); // the next stream starts fresh with the new settings
         if (choice === 'Toggle speak copied selection') {
           await afterCopyToggle(ctx, settings.copySpeech);
@@ -692,7 +730,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); }
     },
   });
-  const shortcuts = readSpeakSettings(home).shortcuts;
+  const shortcuts = readSpeakSettings(settingsDir).shortcuts;
   pi.registerShortcut(shortcuts.speakLast, { description: 'Speak last assistant message', handler: async ctx => {
     if (!parent(ctx) || stopped) return;
     const messages = ctx.sessionManager.getBranch().filter(entry => entry.type === 'message').map(entry => entry.message);
@@ -702,29 +740,29 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   pi.registerShortcut(shortcuts.stop, { description: 'Stop speech', handler: async ctx => { if (parent(ctx)) stopAll(); } });
   pi.registerShortcut(shortcuts.toggle, { description: 'Toggle automatic speech', handler: async ctx => {
     if (!parent(ctx) || stopped) return;
-    const settings = readSpeakSettings(home);
+    const settings = readSpeakSettings(settingsDir);
     settings.enabled = !settings.enabled;
-    writeSpeakSettings(settings, home);
+    writeSpeakSettings(settings, settingsDir);
     if (!settings.enabled) { clearPending(); cancelSpeculation(); }
     refreshRow(ctx);
   } });
   pi.registerShortcut(shortcuts.cycleVoice, { description: 'Cycle to the next installed voice', handler: async ctx => {
     if (!parent(ctx) || stopped) return;
-    const settings = readSpeakSettings(home);
+    const settings = readSpeakSettings(settingsDir);
     const next = nextAvailableVoice(Object.keys(VOICE_CATALOG), settings.voice, await voiceAvailability());
     if (stopped) return;
     if (!next) { ctx.ui.notify('No other voice is installed; nothing changed.', 'info'); return; }
     settings.voice = next;
-    try { writeSpeakSettings(settings, home); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return; }
+    try { writeSpeakSettings(settings, settingsDir); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return; }
     cancelSpeculation();
     ctx.ui.notify(`Voice: ${VOICE_CATALOG[next].label}`, 'info');
     await refreshRowPrimed(ctx);
   } });
   pi.registerShortcut(shortcuts.toggleCopy, { description: 'Toggle speak copied selection', handler: async ctx => {
     if (!parent(ctx) || stopped) return;
-    const settings = readSpeakSettings(home);
+    const settings = readSpeakSettings(settingsDir);
     settings.copySpeech = !settings.copySpeech;
-    try { writeSpeakSettings(settings, home); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return; }
+    try { writeSpeakSettings(settings, settingsDir); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return; }
     await afterCopyToggle(ctx, settings.copySpeech);
   } });
 }

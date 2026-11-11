@@ -295,8 +295,9 @@ test('the /speak menu lists every catalog voice with label, id and install state
     assert.equal(voices[4], 'Voice: Coqueta (qwen-coqueta) — not installed');
     assert.equal(voices[3], 'Voice: Brisa (qwen-brisa) — installed');
     assert.equal(voices.some(option => option === 'Voice: es_MX' || option === 'Voice: es_ES'), false);
-    assert.deepEqual(offered.slice(0, 4), ['Gentle Dot: no encontrado', 'Conectar Gentle Dot', 'Desconectar Gentle Dot', 'Hablar en Gentle Dot']);
-    assert.deepEqual(offered.slice(4).filter(option => !option.startsWith('Voice: ')), ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel'].flatMap(entry => entry === 'Speed' ? ['Mac voice', 'Toggle Mac fallback', entry] : [entry]));
+    assert.deepEqual(offered.slice(0, 1), ['Gentle Dot']);
+    assert.equal(offered.includes('Hablar en Gentle Dot'), false);
+    assert.deepEqual(offered.slice(1).filter(option => !option.startsWith('Voice: ')), ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel'].flatMap(entry => entry === 'Speed' ? ['Mac voice', 'Toggle Mac fallback', entry] : [entry]));
   } finally { h.close(); }
 });
 

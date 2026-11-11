@@ -55,7 +55,10 @@ test('Python worker env: HOME is the real home (user site-packages), flags and o
 function dotRpc(real: string, fakeHome: string) {
   const speakHome = join(real, '.gentle-speak'), dotAgent = join(real, '.gentle-dot', 'agent');
   mkdirSync(speakHome, { recursive: true }); mkdirSync(dotAgent, { recursive: true });
-  writeFileSync(join(speakHome, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'all', dotSpeech: true }));
+  writeFileSync(join(speakHome, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: false, mode: 'all', dotSpeech: true }));
+  // T34: Dot reads its OWN settings from its $HOME; the terminal file in the real home is ignored.
+  mkdirSync(join(fakeHome, '.gentle-speak'), { recursive: true });
+  writeFileSync(join(fakeHome, '.gentle-speak', 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'all' }));
   const events = new Map<string, Function>(), writes: string[] = [];
   const child: any = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill() { return true; } });
   child.stdin = { write: (l: string) => { writes.push(l); return true; } };
@@ -65,13 +68,13 @@ function dotRpc(real: string, fakeHome: string) {
   process.env.HOME = fakeHome;
   // No explicit speak home: it must derive from the real home. Only the account home is injected (as userInfo().homedir would be).
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut() {}, registerTool() {} } as any, undefined, {
-    userHome: real, env: { PI_CODING_AGENT_DIR: dotAgent, HOME: fakeHome }, spawn: () => child, modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }),
+    userHome: real, processHome: fakeHome, env: { PI_CODING_AGENT_DIR: dotAgent, HOME: fakeHome }, spawn: () => child, modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }),
     focusCheck: async () => 'unfocused', focusPollMs: 5, lockPollMs: 5, sayAvailable: () => false, resolveTerminal: async () => undefined,
   } as any);
   return { events, ctx, writes, child };
 }
 
-test('inside Dot (HOME overridden): settings come from <real>/.gentle-speak, the session is recognized as Dot and speaks `Dot: `', async () => {
+test('inside Dot (HOME overridden): settings come from its own $HOME/.gentle-speak (the terminal one is ignored), the session is recognized as Dot and speaks `Dot: `', async () => {
   const real = scratch(), fakeHome = join(scratch(), 'fake-home');
   const w = dotRpc(real, fakeHome);
   const turn = w.events.get('agent_settled')!({ aborted: false }, w.ctx);

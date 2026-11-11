@@ -27,6 +27,9 @@ function world(o: Opts = {}) {
   writeFileSync(join(shell, 'settings.json'), JSON.stringify({ packages: o.terminalPackages ?? ['npm:pi-btw', '../../dev/gentle-speak'] }));
   // The process env decides the session's agent dir: Dot's engine home, the terminal's, or an unrelated one.
   const env: Record<string, string | undefined> = o.as === 'dot' ? { PI_CODING_AGENT_DIR: dot, GENTLE_DOT_AGENT_HOME: dot } : o.as === 'other' ? { PI_CODING_AGENT_DIR: join(base, 'other-agent') } : typeof o.as === 'object' ? { PI_CODING_AGENT_DIR: join(base, 'other-agent'), ...o.as } : { PI_CODING_AGENT_DIR: shell };
+  // T34: Dot keeps its own settings under its HOME; assets and the lock stay in the shared (speak) home.
+  const isDot = o.as === 'dot' || typeof o.as === 'object', dotSpeakDir = join(userHome, '.gentle-dot', 'home', '.gentle-speak');
+  if (isDot) { mkdirSync(dotSpeakDir, { recursive: true }); writeFileSync(join(dotSpeakDir, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'all', ...o.speak })); }
   const state = { branch: msg(o.text ?? 'Resultado listo.'), checks: 0, focus: o.focus ?? 'focused' };
   const children: any[] = [], events = new Map<string, Function>(), tools = new Map<string, any>(), shortcuts = new Map<string, any>(), commands = new Map<string, any>();
   const ui: string[] = [], notes: string[] = [], confirms: string[] = [], selections = [...(o.select ?? [])];
@@ -41,6 +44,7 @@ function world(o: Opts = {}) {
       notify: (t: string) => notes.push(t), confirm: async (_t: string, m: string) => { confirms.push(m); return o.confirm ?? false; }, select: async () => selections.shift() } };
   const watchers: any[] = [];
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand: (n: string, c: any) => commands.set(n, c), registerShortcut: (k: string, s: any) => shortcuts.set(k, s), registerTool: (t: any) => tools.set(t.name, t) } as any, speakHome, {
+    ...(isDot ? { settingsHome: dotSpeakDir } : {}),
     modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), spawn,
     focusCheck: async () => { state.checks++; return state.focus as any; }, focusPollMs: 5, lockPollMs: 5, sayAvailable: () => false,
     env, userHome, packageRoot: '/pkg/gentle-speak', resolveTerminal: async () => 'com.t', createWatcher: ((w: any) => { watchers.push(w); return { start() {}, stop() {} }; }) as any,
@@ -52,8 +56,9 @@ function world(o: Opts = {}) {
   // The offer runs in the background after session_start returns: let that timer and its microtasks run.
   const start = async () => { await startRaw(); await new Promise(r => setTimeout(r, 5)); };
   return { base, userHome, speakHome, dot, shell, ctx, ui, notes, confirms, state, children, events, tools, shortcuts, commands, watchers, settle, texts, finish, start, startRaw, selections,
-    dotFile: () => readFileSync(join(dot, 'settings.json'), 'utf8'), dotBackups: () => readdirSync(dot).filter(n => n.includes('gentle-speak-backup')), speakSettings: () => readSpeakSettings(speakHome), shutdown: () => events.get('session_shutdown')!({}, ctx) };
+    dotFile: () => readFileSync(join(dot, 'settings.json'), 'utf8'), dotBackups: () => readdirSync(dot).filter(n => n.includes('gentle-speak-backup')), speakSettings: () => readSpeakSettings(speakHome), dotSpeak: () => JSON.parse(readFileSync(join(dotSpeakDir0(userHome), 'speak-settings.json'), 'utf8')), dotSpeakExists: () => existsSync(join(dotSpeakDir0(userHome), 'speak-settings.json')), shutdown: () => events.get('session_shutdown')!({}, ctx) };
 }
+const dotSpeakDir0 = (userHome: string) => join(userHome, '.gentle-dot', 'home', '.gentle-speak');
 const rpcDot = (o: Opts = {}) => world({ mode: 'rpc', as: 'dot', ...o, speak: { dotSpeech: true, ...o.speak } });
 
 test('Dot root RPC session speaks `Dot: <text>` at once (no focus deferral, even when unfocused), holding the voice lock', async () => {
@@ -83,7 +88,7 @@ for (const [name, o] of [
   ['a Dot child session (has a parent session)', { mode: 'rpc', as: 'dot', header: { type: 'session', parentSession: '/p.jsonl' }, speak: { dotSpeech: true } }],
   ['print mode in Dot\'s home', { mode: 'print', as: 'dot', speak: { dotSpeech: true } }],
   ['json mode in Dot\'s home', { mode: 'json', as: 'dot', speak: { dotSpeech: true } }],
-  ['Dot root RPC with dotSpeech false', { mode: 'rpc', as: 'dot', speak: { dotSpeech: false } }],
+  ['Dot root RPC whose own settings are not enabled (the terminal dotSpeech is irrelevant)', { mode: 'rpc', as: 'dot', speak: { enabled: false, dotSpeech: true } }],
   ['RPC in the terminal agent dir', { mode: 'rpc', as: 'shell', speak: { dotSpeech: true } }],
 ] as Array<[string, Opts]>) test(`never speaks: ${name}`, async () => {
   const w = world(o);
@@ -112,14 +117,14 @@ test('preserve: the terminal parent still defers when unfocused and speaks witho
   assert.deepEqual(w.texts(), ['Resultado listo.']); w.finish(w.children[0]); w.shutdown();
 });
 
-test('offer: yes connects (backup, package entry re-resolved for Dot, other keys kept, dotSpeech on) and is not asked again', async () => {
+test('offer: yes connects (backup, package entry re-resolved for Dot, other keys kept, own Dot settings enabled) and is not asked again', async () => {
   const w = world({ confirm: true });
   const before = w.dotFile();
   await w.start();
   assert.deepEqual(w.confirms, ['Encontré Gentle Dot. ¿Querés que también hable ahí?']);
   assert.equal(w.dotBackups().length, 1); assert.equal(readFileSync(join(w.dot, w.dotBackups()[0]), 'utf8'), before);
   assert.equal(w.dotFile(), `${JSON.stringify({ theme: 'dot', packages: ['npm:pi-btw', resolve(w.shell, '../../dev/gentle-speak')] }, null, 2)}\n`);
-  assert.equal(w.speakSettings().dotSpeech, true);
+  assert.equal(w.dotSpeak().enabled, true); assert.equal(w.dotSpeak().copySpeech, false);
   assert.ok(w.notes.includes('Gentle Dot conectado: silenciá la voz propia de Dot y reinicialo.'));
   await w.start(); assert.equal(w.confirms.length, 1, 'already connected: nothing more to ask'); assert.equal(w.dotBackups().length, 1);
   w.shutdown();
@@ -134,7 +139,7 @@ test('offer: no persists dotOffer "declined", leaves Dot untouched and never ask
   const w = world({ confirm: false });
   const before = w.dotFile();
   await w.start();
-  assert.equal(w.confirms.length, 1); assert.equal(w.speakSettings().dotOffer, 'declined'); assert.equal(w.speakSettings().dotSpeech, false);
+  assert.equal(w.confirms.length, 1); assert.equal(w.speakSettings().dotOffer, 'declined'); assert.equal(w.dotSpeakExists(), false);
   assert.equal(w.dotFile(), before); assert.deepEqual(w.dotBackups(), []);
   await w.start(); assert.equal(w.confirms.length, 1); w.shutdown();
 });
@@ -170,33 +175,34 @@ test('the offer writes through a temp file and rename, never in place', async ()
   const events = new Map<string, Function>();
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut() {}, registerTool() {} } as any, w.speakHome, { env: { PI_CODING_AGENT_DIR: w.shell }, userHome: w.userHome, dotFs: spy, packageRoot: '/pkg', sayAvailable: () => false, focusCheck: async () => 'focused', resolveTerminal: async () => undefined } as any);
   await events.get('session_start')!({}, w.ctx); await quiet(20);
-  assert.equal(renames.length, 1); assert.match(renames[0], new RegExp(`settings\\.json\\.[^/]+\\.tmp=>${w.dot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/settings\\.json$`));
+  assert.equal(renames.length, 2, 'Dot settings.json and Dot speak settings'); assert.match(renames.find(r => /gentle-dot\/agent/.test(r))!, new RegExp(`settings\\.json\\.[^/]+\\.tmp=>${w.dot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/settings\\.json$`));
   w.shutdown();
 });
 
-const menu = async (w: ReturnType<typeof world>, choice: string) => { w.selections.push(choice); await w.commands.get('speak').handler('', w.ctx); };
+const menu = async (w: ReturnType<typeof world>, choice: string) => { w.selections.push(...(choice === 'Cancel' ? [choice] : ['Gentle Dot', choice])); await w.commands.get('speak').handler('', w.ctx); };
 
 test('/speak shows the Dot state and « Conectar Gentle Dot » connects without asking', async () => {
   const w = world({ confirm: false, speak: { dotOffer: 'declined' } });
   let offered: string[] = []; const select = w.ctx.ui.select; w.ctx.ui.select = async (t: string, items: string[]) => { offered = items; return select(t, items); };
   await menu(w, 'Conectar Gentle Dot');
-  assert.equal(offered[0], 'Gentle Dot: no conectado · habla: no');
+  assert.equal(offered[0], 'Gentle Dot: no conectado · habla: no · voz sin configurar · modo sin configurar');
   assert.deepEqual(w.confirms, []); assert.equal(w.dotBackups().length, 1); assert.ok(JSON.parse(w.dotFile()).packages.includes(resolve(w.shell, '../../dev/gentle-speak')));
-  assert.equal(w.speakSettings().dotSpeech, true); assert.ok(w.notes.includes('Gentle Dot conectado: silenciá la voz propia de Dot y reinicialo.'));
-  await menu(w, 'Cancel'); assert.equal(offered[0], 'Gentle Dot: conectado · habla: sí'); w.shutdown();
+  assert.equal(w.dotSpeak().enabled, true); assert.ok(w.notes.includes('Gentle Dot conectado: silenciá la voz propia de Dot y reinicialo.'));
+  w.selections.push('Gentle Dot', 'Volver'); await w.commands.get('speak').handler('', w.ctx); assert.equal(offered[0], 'Gentle Dot: conectado · habla: sí · voz es_MX · modo all'); w.shutdown();
 });
 
-test('/speak « Desconectar Gentle Dot » backs up, removes only our entry and turns dotSpeech off', async () => {
-  const w = world({ confirm: true, speak: { dotSpeech: true }, dotSettings: JSON.stringify({ keep: 1, packages: ['npm:pi-btw', '/x/gentle-speak', 'npm:gentle-engram'] }, null, 2) + '\n' });
+test('/speak « Desconectar Gentle Dot » backs up, removes only our entry and sets Dot\'s own enabled off', async () => {
+  const w = world({ confirm: true, dotSettings: JSON.stringify({ keep: 1, packages: ['npm:pi-btw', '/x/gentle-speak', 'npm:gentle-engram'] }, null, 2) + '\n' });
+  mkdirSync(dotSpeakDir0(w.userHome), { recursive: true }); writeFileSync(join(dotSpeakDir0(w.userHome), 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true }));
   await menu(w, 'Desconectar Gentle Dot');
   assert.deepEqual(JSON.parse(w.dotFile()), { keep: 1, packages: ['npm:pi-btw', 'npm:gentle-engram'] });
-  assert.equal(w.dotBackups().length, 1); assert.equal(w.speakSettings().dotSpeech, false); w.shutdown();
+  assert.equal(w.dotBackups().length, 1); assert.equal(w.dotSpeak().enabled, false); w.shutdown();
 });
 
 test('/speak connect refuses a malformed Dot settings.json without writing', async () => {
   const w = world({ dotSettings: '[]' });
   await menu(w, 'Conectar Gentle Dot');
-  assert.equal(w.dotFile(), '[]'); assert.deepEqual(w.dotBackups(), []); assert.equal(w.speakSettings().dotSpeech, false); assert.ok(w.notes.some(n => /mal formado/.test(n))); w.shutdown();
+  assert.equal(w.dotFile(), '[]'); assert.deepEqual(w.dotBackups(), []); assert.equal(w.dotSpeakExists(), false); assert.ok(w.notes.some(n => /mal formado/.test(n))); w.shutdown();
 });
 
 // Review fix: the offer runs in the background, never inside `session_start`.
@@ -213,7 +219,7 @@ test('offer: session_start resolves while the confirm is still pending; the answ
   assert.equal(w.dotFile(), before, 'nothing written before the answer');
   answer.resolve(true);
   await until(() => w.dotBackups().length === 1, 'answer applied');
-  assert.deepEqual(JSON.parse(w.dotFile()).packages.length, 2); assert.equal(w.speakSettings().dotSpeech, true);
+  assert.deepEqual(JSON.parse(w.dotFile()).packages.length, 2); assert.equal(w.dotSpeak().enabled, true);
   await w.start(); assert.equal(w.confirms.length, 1); w.shutdown();
 });
 
@@ -224,7 +230,7 @@ test('offer: shutdown before the answer writes nothing', async () => {
   const before = w.dotFile();
   await w.startRaw(); await until(() => w.confirms.length === 1, 'offer shown');
   w.shutdown(); answer.resolve(true); await quiet(50);
-  assert.equal(w.dotFile(), before); assert.deepEqual(w.dotBackups(), []); assert.equal(w.speakSettings().dotSpeech, false); assert.equal(w.speakSettings().dotOffer, null);
+  assert.equal(w.dotFile(), before); assert.deepEqual(w.dotBackups(), []); assert.equal(w.dotSpeakExists(), false); assert.equal(w.speakSettings().dotOffer, null);
 });
 
 test('offer: a second session_start in the same process never shows it twice while the first is pending', async () => {
@@ -250,7 +256,7 @@ test('offer: a confirm that rejects is swallowed and a write failure is notified
 test('hermetic guard: with an injected HOME and fs, no fs call touches the real Dot paths', async () => {
   const { homedir } = await import('node:os');
   const real = homedir(), seen: string[] = [];
-  const spy: any = {}; for (const k of ['readFileSync', 'writeFileSync', 'renameSync', 'copyFileSync', 'existsSync', 'unlinkSync']) spy[k] = (...a: any[]) => { seen.push(String(a[0])); return (fs as any)[k](...a); };
+  const spy: any = {}; for (const k of ['readFileSync', 'writeFileSync', 'renameSync', 'copyFileSync', 'existsSync', 'unlinkSync', 'mkdirSync']) spy[k] = (...a: any[]) => { seen.push(String(a[0])); return (fs as any)[k](...a); };
   const w = world({ dotSettings: null, confirm: true });
   const events = new Map<string, Function>(), commands = new Map<string, any>();
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand: (n: string, c: any) => commands.set(n, c), registerShortcut() {}, registerTool() {} } as any, w.speakHome, { env: {}, userHome: w.userHome, dotFs: spy, packageRoot: '/pkg', sayAvailable: () => false, focusCheck: async () => 'focused', resolveTerminal: async () => undefined } as any);

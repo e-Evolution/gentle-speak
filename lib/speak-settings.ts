@@ -86,14 +86,20 @@ export function readSpeakSettings(home: string): SpeakSettings {
   catch { return structuredClone(DEFAULT_SPEAK_SETTINGS); }
 }
 
-export function writeSpeakSettings(settings: SpeakSettings, home: string): string {
+/** The validated file text for `settings` (same schema as every writer); throws on invalid settings. */
+export function serializeSpeakSettings(settings: SpeakSettings): string {
   const valid = validate({ schema: SPEAK_SETTINGS_SCHEMA, ...settings });
   if (!valid) throw new Error('Invalid speak settings');
+  return `${JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...valid })}\n`;
+}
+
+export function writeSpeakSettings(settings: SpeakSettings, home: string): string {
+  const text = serializeSpeakSettings(settings);
   const path = join(home, SPEAK_SETTINGS_FILE);
   const temporary = `${path}.${randomUUID()}.tmp`;
   mkdirSync(home, { recursive: true });
   try {
-    writeFileSync(temporary, `${JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...valid })}\n`, { flag: 'wx', mode: 0o600 });
+    writeFileSync(temporary, text, { flag: 'wx', mode: 0o600 });
     renameSync(temporary, path);
   } finally {
     try { unlinkSync(temporary); } catch { /* Rename consumed the temporary file. */ }

@@ -17,6 +17,7 @@
 - Playback no longer aborts on non-fatal stream errors (buffer underrun/overrun, device rerouted, real-time scheduling refused): it plays to the end, bounded by the utterance timeout and a 50-glitch cap; other stream errors still fail with their cause.
 - Added the macOS `Mac` voice (`/usr/bin/say`, text on stdin, no download) as an extra voice and as a fallback when the selected Piper or Qwen voice is not installed or fails (`macVoice`, `macFallback`, `/speak` → `Mac voice` / `Toggle Mac fallback`; notified once per session; never on cancel or stop).
 - Added Gentle Dot support (S12): opt-in `dotSpeech` makes Dot's root RPC session speak with a `Dot: ` prefix and no focus deferral, a one-time offer in the terminal (`dotOffer`) and `/speak` → `Conectar/Desconectar Gentle Dot` add or remove gentle-speak in Dot's `settings.json` `packages` after a backup; existing settings files stay valid.
+- Gentle Dot now has its own settings (S12, T34): Dot reads `<dotHome>/.gentle-speak/speak-settings.json` and speaks only when its own `enabled` is set, while runtime, models, voices and the voice lock stay in the real `~/.gentle-speak`; connect seeds it from the terminal's settings, and `/speak` → `Gentle Dot` replaces `Hablar en Gentle Dot` (terminal `dotSpeech` is now ignored).
 
 ## 0.1.0 - 2026-11-08 (local candidate)
 

@@ -20,6 +20,10 @@ export interface SpeakSettings {
   macVoice: string | null;
   /** S11: speak with the Mac voice when the selected Piper or Qwen voice is not installed or fails. Optional in files; absent means true. */
   macFallback: boolean;
+  /** S12: speak inside Gentle Dot's engine (its root RPC session). Optional in files; absent means false. */
+  dotSpeech: boolean;
+  /** S12: `"declined"` once the one-time Gentle Dot offer was refused; null means never asked or accepted. Optional in files. */
+  dotOffer: 'declined' | null;
   shortcuts: { speakLast: string; stop: string; toggle: string; cycleVoice: string; toggleCopy: string };
 }
 export const DEFAULT_SPEAK_SETTINGS: SpeakSettings = {
@@ -31,6 +35,8 @@ export const DEFAULT_SPEAK_SETTINGS: SpeakSettings = {
   copySpeech: false,
   macVoice: null,
   macFallback: true,
+  dotSpeech: false,
+  dotOffer: null,
   shortcuts: { speakLast: 'ctrl+alt+v', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m', cycleVoice: 'ctrl+alt+n', toggleCopy: 'ctrl+alt+c' },
 };
 
@@ -48,8 +54,10 @@ const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
 function validate(value: unknown): SpeakSettings | undefined {
-  if (!record(value) || !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts'].every(key => Object.hasOwn(value, key)) || Object.keys(value).some(key => !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts', 'summaryModel', 'copySpeech', 'macVoice', 'macFallback'].includes(key)) || value.schema !== SPEAK_SETTINGS_SCHEMA) return undefined;
+  if (!record(value) || !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts'].every(key => Object.hasOwn(value, key)) || Object.keys(value).some(key => !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts', 'summaryModel', 'copySpeech', 'macVoice', 'macFallback', 'dotSpeech', 'dotOffer'].includes(key)) || value.schema !== SPEAK_SETTINGS_SCHEMA) return undefined;
   if (Object.hasOwn(value, 'copySpeech') && typeof value.copySpeech !== 'boolean') return undefined;
+  if (Object.hasOwn(value, 'dotSpeech') && typeof value.dotSpeech !== 'boolean') return undefined;
+  if (Object.hasOwn(value, 'dotOffer') && value.dotOffer !== null && value.dotOffer !== 'declined') return undefined;
   if (Object.hasOwn(value, 'macFallback') && typeof value.macFallback !== 'boolean') return undefined;
   if (Object.hasOwn(value, 'macVoice') && value.macVoice !== null && (typeof value.macVoice !== 'string' || !/^[\p{L}\p{N} ._()'-]{1,64}$/u.test(value.macVoice))) return undefined;
   const model = value.summaryModel ?? null;
@@ -65,7 +73,7 @@ function validate(value: unknown): SpeakSettings | undefined {
   const copyDefault = TOGGLE_COPY_DEFAULTS.find(key => ![...bound, cycle].includes(key));
   const shortcuts = [...bound, cycle, value.shortcuts.toggleCopy ?? (!Object.hasOwn(value.shortcuts, 'toggleCopy') ? copyDefault : undefined)];
   if (shortcuts.some(key => typeof key !== 'string' || !/^(?:(?:ctrl|alt|shift)\+)+(?:[a-z0-9]|[.,;\/])$/.test(key) || reserved.has(key)) || new Set(shortcuts).size !== shortcuts.length) return undefined;
-  return { enabled: value.enabled, mode: value.mode as SpeakMode, voice: value.voice, speed: value.speed, summaryModel: model as SpeakSettings['summaryModel'], copySpeech: value.copySpeech === true, macVoice: (value.macVoice as string | null | undefined) ?? null, macFallback: value.macFallback !== false,
+  return { enabled: value.enabled, mode: value.mode as SpeakMode, voice: value.voice, speed: value.speed, summaryModel: model as SpeakSettings['summaryModel'], copySpeech: value.copySpeech === true, macVoice: (value.macVoice as string | null | undefined) ?? null, macFallback: value.macFallback !== false, dotSpeech: value.dotSpeech === true, dotOffer: (value.dotOffer as 'declined' | null | undefined) ?? null,
     shortcuts: { speakLast: shortcuts[0] as string, stop: shortcuts[1] as string, toggle: shortcuts[2] as string, cycleVoice: shortcuts[3] as string, toggleCopy: shortcuts[4] as string } };
 }
 

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA } from '../lib/speak-settings.ts';
 import gentleSpeak from '../extensions/gentle-speak.ts';
+import { hermetic } from './helpers/hermetic.ts';
 
 // S10 wiring: message_update drives speculative synthesis, agent_settled plays the prepared WAVs. All fakes; no model, no audio.
 const QS = 'gentle.speak.qwen/v1', AS = 'gentle.speak/v1';
@@ -19,7 +20,7 @@ function fakeChild() {
 const installed = (ids: string[]) => ({ manifest: 'valid', voices: Object.fromEntries(['qwen-intima', 'qwen-brisa'].map(id => [id, ids.includes(id) ? 'installed' : 'missing'])) });
 const text = (value: string) => ({ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: value }] });
 
-function setup(opts: { voice?: string; mode?: string; ctxMode?: string; header?: unknown; focus?: () => string; enabled?: boolean; settleText?: string } = {}) {
+function setup(opts: { voice?: string; mode?: string; ctxMode?: string; header?: unknown; focus?: () => string; enabled?: boolean; settleText?: string; dot?: boolean } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'speak-spec-'));
   const events = new Map<string, Function>(), shortcuts = new Map<string, any>(), tools = new Map<string, any>(), commands = new Map<string, any>();
   const pythons: Array<ReturnType<typeof fakeChild>> = [], audios: Array<ReturnType<typeof fakeChild>> = [];
@@ -29,7 +30,7 @@ function setup(opts: { voice?: string; mode?: string; ctxMode?: string; header?:
   const scratch = join(home, 'scratch'); mkdirSync(scratch); // keeps prepared WAVs out of the shared system temp dir other tests inspect
   mkdirSync(join(home, 'voices', 'qwen3'), { recursive: true });
   writeFileSync(join(home, 'voices', 'qwen3', 'manifest.json'), JSON.stringify({ python: '/fake/python3' }));
-  const save = (patch: Record<string, unknown>) => writeFileSync(join(home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: opts.enabled ?? true, mode: opts.mode ?? 'all', voice: opts.voice ?? 'qwen-intima', ...patch }));
+  const save = (patch: Record<string, unknown>) => writeFileSync(join(home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, ...(opts.dot ? { dotSpeech: true } : {}), enabled: opts.enabled ?? true, mode: opts.mode ?? 'all', voice: opts.voice ?? 'qwen-intima', ...patch }));
   save({});
   const selections: string[] = [];
   const ctx: any = { cwd: '/work/gentle-theme', mode: opts.ctxMode ?? 'tui', hasUI: true, isIdle: () => true,
@@ -41,6 +42,8 @@ function setup(opts: { voice?: string; mode?: string; ctxMode?: string; header?:
     spawn: () => { const a = fakeChild(); audios.push(a); return a.child; },
     spawnQwen: () => { const p = fakeChild(); pythons.push(p); return p.child; },
     focusCheck: async () => (opts.focus ? opts.focus() : state.focus) as any, focusPollMs: 5, lockPollMs: 5, sayAvailable: () => false, qwenTmpRoot: scratch,
+    ...hermetic(home),
+    ...(opts.dot ? { env: { PI_CODING_AGENT_DIR: join(home, 'dot-agent'), GENTLE_DOT_AGENT_HOME: join(home, 'dot-agent') }, userHome: home } : {}),
   } as any);
   const synths = () => pythons.flatMap((p, index) => p.writes.filter(w => w.type === 'synth').map(w => ({ ...w, python: index })));
   const synthTexts = () => synths().map(w => w.text as string);
@@ -368,5 +371,21 @@ test('an in-flight prepare adopted at settle is aborted and deleted when the def
     await until(() => !existsSync(p0), 'dropped item deletes the in-flight audio');
     h.part(2, 1); h.finish(2); await quiet();
     assert.equal(h.audios.length, 0);
+  } finally { h.close(); }
+});
+
+test('S12: Dot\'s root RPC session speculates and plays with the `Dot: ` prefix, so prepared audio still matches at settle', async () => {
+  const h = setup({ ctxMode: 'rpc', dot: true });
+  try {
+    await h.stream(`${FIRST} ${SECOND} Terc`);
+    await h.ready();
+    assert.deepEqual(h.synthTexts().slice(0, 1), [`Dot: ${FIRST}`]);
+    const a = await h.answer(1);
+    await until(() => existsSync(a), 'wav'); await quiet();
+    const done = h.settle(`${FIRST} ${SECOND}`);
+    await until(() => h.plays().length >= 1, 'prepared audio plays at settle');
+    assert.equal(h.plays()[0].wav, a);
+    assert.equal(h.synthTexts().includes(`Dot: ${FIRST}`), true);
+    void done;
   } finally { h.close(); }
 });

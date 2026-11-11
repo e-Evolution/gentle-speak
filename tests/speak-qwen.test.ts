@@ -7,6 +7,7 @@ import { join, basename } from 'node:path';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA } from '../lib/speak-settings.ts';
 import { QWEN_VOICES } from '../lib/speak-voices.ts';
 import gentleSpeak from '../extensions/gentle-speak.ts';
+import { hermetic } from './helpers/hermetic.ts';
 import { createQwenSpeech } from '../lib/speak-qwen.ts';
 
 const QS = 'gentle.speak.qwen/v1', AS = 'gentle.speak/v1';
@@ -31,6 +32,7 @@ function harness(opts: { status?: any; voiceId?: string; manifest?: boolean; spa
   writeFileSync(join(home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, voice: opts.voiceId ?? 'qwen-intima', speed: 1.25 }));
   const ctx = { mode: 'tui', hasUI: true, sessionManager: { getHeader: () => ({ type: 'session' }), getBranch: () => [{ type: 'message', message }] }, ui: { notify: (text: string, level: string) => notifications.push([text, level]) } };
   const dependencies = {
+    ...hermetic(home),
     modelStatus: async () => ({ state: 'installed', path: '/verified/model' }),
     runtimeStatus: async () => ({ state: 'installed', path: '/verified/runtime' }),
     qwenStatus: async () => opts.status ?? { manifest: 'valid', voices: { 'qwen-intima': 'installed' } },

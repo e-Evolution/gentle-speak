@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA } from '../lib/speak-settings.ts';
 import gentleSpeak from '../extensions/gentle-speak.ts';
+import { hermetic } from './helpers/hermetic.ts';
 
 // S9 wiring: focus deferral, one voice across sessions (shared lock dir), project prefix. All fakes; no herdr, osascript or audio.
 // No wall-clock sleeps decide an outcome: positive results wait on a condition (bounded by a deadline, so a regression fails fast
@@ -41,7 +42,7 @@ function session(home: string, opts: { focus?: () => string | Promise<string>; t
     ui: { setStatus() {}, notify: (t: string) => notes.push(t), confirm: async () => false, select: async () => undefined, input: async () => undefined } };
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut: (k: string, s: any) => shortcuts.set(k, s), registerTool: (t: any) => tools.set(t.name, t) } as any, home, {
     modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), spawn,
-    focusCheck: opts.focus ?? (async () => { state.checks++; return state.focus as any; }), focusPollMs: 5, lockPollMs: 5, sayAvailable: () => false, ...opts.deps } as any);
+    focusCheck: opts.focus ?? (async () => { state.checks++; return state.focus as any; }), focusPollMs: 5, lockPollMs: 5, sayAvailable: () => false, ...hermetic(home), ...opts.deps } as any);
   const settle = () => events.get('agent_settled')!({ aborted: false }, ctx);
   const finish = (c: any) => c.stdout.emit('data', JSON.stringify({ schema: 'gentle.speak/v1', type: 'done', id: JSON.parse(c.writes[0]).id }) + '\n');
   const texts = () => children.filter(c => c.writes.length).map(c => JSON.parse(c.writes[0]).text);
@@ -225,7 +226,7 @@ function mkReal(home: string, o: any, execs: string[][]) {
   const spawn = () => { const c: any = Object.assign(new EventEmitter(), { writes: [] as string[], stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true }); c.stdin = { write: (l: string) => { c.writes.push(l); return true; } }; children.push(c); return c; };
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut() {}, registerTool() {} } as any, home, {
     modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), spawn,
-    env: o.env ?? { HERDR_ENV: '1', HERDR_PANE_ID: 'w1:p1' }, focusPollMs: 1000, lockPollMs: 5, sayAvailable: () => false,
+    userHome: home, env: o.env ?? { HERDR_ENV: '1', HERDR_PANE_ID: 'w1:p1' }, focusPollMs: 1000, lockPollMs: 5, sayAvailable: () => false,
     herdrExec: async (f: string, a: string[]) => { execs.push([f, ...a]); if (o.hang) return new Promise<string>(() => {}); return JSON.stringify({ result: { pane: { focused: o.herdr ?? true } } }); },
     resolveTerminal: async () => o.terminal, readFrontmost: async () => o.front } as any);
   return { children, settle: () => events.get('agent_settled')!({ aborted: false }, ctx), texts: () => children.filter(c => c.writes.length).map(c => JSON.parse(c.writes[0]).text), shutdown: () => events.get('session_shutdown')!({}, ctx) };

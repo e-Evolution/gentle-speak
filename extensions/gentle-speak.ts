@@ -11,6 +11,7 @@ import { createCopiedSelectionWatcher, createOwnCopyGate, isSelectionTui, resolv
 import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix, readFrontmostBundleId, type FocusState, type HerdrExec } from '../lib/speak-focus.ts';
 import { MAC_VOICE_NAME, listSpanishSayVoices, pickMacVoice, sayAvailable, speakWithSay, type MacVoice } from '../lib/speak-say.ts';
 import { createVoiceLock } from '../lib/speak-voice-lock.ts';
+import { connectDot, detectDot, disconnectDot, isDotEngine, terminalSource, type DotFs } from '../lib/speak-dot.ts';
 import { createSpeculativePlanner } from '../lib/speak-speculative.ts';
 import { createQwenSpeech, playbackFailure, readQwenPython, type QwenChild, type QwenPrepareHandle } from '../lib/speak-qwen.ts';
 import { SPEAK_MODELS, SPEAK_TARGETS, installSpeakModel, installSpeakRuntime, readSpeakModelStatus, readSpeakRuntimeStatus, type SpeakTarget } from '../lib/speak-install.ts';
@@ -38,6 +39,12 @@ type Dependencies = {
   sayAvailable: () => boolean;
   listMacVoices: () => Promise<MacVoice[]>;
   say: typeof speakWithSay;
+  /** S12: the user's home (tests); Gentle Dot's engine home and the terminal agent dir derive from it and `env`. */
+  userHome?: string;
+  /** S12: fs used for Gentle Dot's settings.json (tests); defaults to node:fs. */
+  dotFs?: DotFs;
+  /** S12: the installed package root, used as the Dot package source when the terminal settings carry no entry. */
+  packageRoot?: string;
   /** Scratch root of the Qwen engine (tests); defaults to the system temp dir. */
   qwenTmpRoot?: string;
 };
@@ -88,6 +95,20 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   const installs = new Set<AbortController>();
   const summaries = new Set<AbortController>();
   const parent = (ctx: ExtensionContext) => ctx.mode === 'tui' && ctx.sessionManager.getHeader()?.type === 'session' && !ctx.sessionManager.getHeader()?.parentSession;
+  // S12: Gentle Dot's engine. The session runs under PI_CODING_AGENT_DIR (set by gentle-shell, read by pi-coding-agent's getAgentDir).
+  const dotIo = { env: deps.env, home: deps.userHome ?? homedir(), fs: deps.dotFs };
+  const packageRoot = deps.packageRoot ?? resolve(import.meta.dirname, '..');
+  /** The root RPC session of Gentle Dot's engine with `dotSpeech` on; never another RPC client, a child, print or JSON mode. */
+  const dotSession = (ctx: ExtensionContext) => ctx.mode === 'rpc' && ctx.sessionManager.getHeader()?.type === 'session' && !ctx.sessionManager.getHeader()?.parentSession
+    && isDotEngine(dotIo) && readSpeakSettings(home).dotSpeech;
+  /** Who may speak: the terminal parent, or Dot's root RPC session. UI-bound features keep using `parent`. */
+  const speaker = (ctx: ExtensionContext) => parent(ctx) || dotSession(ctx);
+  const dotText = (text: string) => text ? `Dot: ${text}`.slice(0, 4000) : text;
+  /** RPC cannot serve every UI call: a notification there is best effort and never breaks speech. */
+  const notifySpeech = (ctx: ExtensionContext, message: string, level: 'info' | 'warning' | 'error') => {
+    if (ctx.mode === 'tui') ctx.ui.notify(message, level);
+    else { try { ctx.ui.notify(message, level); } catch { /* the client may not render it */ } }
+  };
   /** S11: installed Spanish `say` voices, listed once and cached; `fresh` re-lists (the voice picker). */
   let macVoices: MacVoice[] | undefined;
   const loadMacVoices = async (fresh = false): Promise<MacVoice[]> => {
@@ -210,25 +231,25 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     const voice = VOICE_CATALOG[settings.voice] as Extract<(typeof VOICE_CATALOG)[string], { engine: 'qwen3' }>;
     const status = await deps.qwenStatus(home);
     const python = status.manifest === 'valid' && status.voices[settings.voice] === 'installed' ? readQwenPython(home) : undefined;
-    if (stopped || signal?.aborted || !parent(ctx)) return result('Speech cancelled.', true);
+    if (stopped || signal?.aborted || !speaker(ctx)) return result('Speech cancelled.', true);
     if (!python) {
       const message = `Qwen voice "${voice.label}" is not installed or is invalid. Install the Qwen voices (requires macOS Apple Silicon with mlx-audio; see README, "Qwen voices"), or choose a Piper voice with /speak.`;
       // With the Mac fallback on, the fallback speaks instead and announces itself; otherwise today's error.
       if (canFallBack(settings, ctx, signal)) return result(message, true);
-      ctx.ui.notify(message, 'error');
+      notifySpeech(ctx, message, 'error');
       const failure = result(message, true);
       reported.add(failure);
       return failure;
     }
     const runtime = await deps.runtimeStatus({ home, target });
-    if (stopped || signal?.aborted || !parent(ctx)) return result('Speech cancelled.', true);
+    if (stopped || signal?.aborted || !speaker(ctx)) return result('Speech cancelled.', true);
     if (runtime.state !== 'installed') return result('Install and verify the voice and runtime with /speak first.', true);
     return playLocked(signal, () => result('Speech cancelled.', true), async held => {
       // Soft stop: a superseded utterance keeps the warm synth worker; an explicit stop() hard-stops it separately.
       const onAbort = () => qwen.stop(false);
       held.addEventListener('abort', onAbort, { once: true });
       try {
-        const request = { python, ref: join(home, 'voices', 'qwen3', voice.file), refText: voice.transcript, speed: settings.speed, runtime: runtime.path, onWarning: (message: string) => { if (!stopped && parent(ctx)) ctx.ui.notify(message, 'warning'); } };
+        const request = { python, ref: join(home, 'voices', 'qwen3', voice.file), refText: voice.transcript, speed: settings.speed, runtime: runtime.path, onWarning: (message: string) => { if (!stopped && speaker(ctx)) notifySpeech(ctx, message, 'warning'); } };
         // Prepared audio only plays in the voice and speed it was synthesized with; anything else takes today's path.
         const usable = prepared && !prepared.taken && prepared.voice === settings.voice && prepared.speed === settings.speed;
         if (prepared && usable) prepared.taken = true; // the Qwen engine owns (and deletes) the files from here on
@@ -243,7 +264,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     finally { if (prepared && !prepared.taken) { prepared.taken = true; discardPrepared(prepared); } }
   }
   async function speakNow(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, prepared: Prepared | undefined) {
-    if (stopped || !parent(ctx)) return result('Speech requires an interactive parent TUI session.', true);
+    if (stopped || !speaker(ctx)) return result('Speech requires an interactive parent TUI session.', true);
     if (!text.trim() || text.length > 4000 || /[\x00-\x1f]/.test(text)) return result('Invalid speech text.', true);
     const settings = readSpeakSettings(home);
     // S11: the Mac voice needs no Piper/Qwen runtime and no node-cpal, and never speculates.
@@ -253,7 +274,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     const failure = outcome.content[0].text;
     if (failure === 'Speech cancelled.') return outcome; // a cancel or stop never falls back
     const voice = await resolveMacVoice(settings);
-    if (!voice || stopped || signal?.aborted || !parent(ctx)) return outcome; // Mac unavailable: today's error stands
+    if (!voice || stopped || signal?.aborted || !speaker(ctx)) return outcome; // Mac unavailable: today's error stands
     if (!fallbackNotified) {
       fallbackNotified = true;
       const reason = /not installed|Install and verify/.test(failure) ? 'not installed' : /Unsupported audio/.test(failure) ? 'unsupported platform' : failure.replace(/\.$/, '').slice(0, 60);
@@ -264,7 +285,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   /** S11: Mac speech through `say`; the cross-process lock is held for the whole playback like every voice. */
   let fallbackNotified = false;
   const canFallBack = (settings: ReturnType<typeof readSpeakSettings>, ctx: ExtensionContext, signal: AbortSignal | undefined) =>
-    settings.macFallback && VOICE_CATALOG[settings.voice]?.engine !== 'system' && !stopped && !signal?.aborted && parent(ctx) && deps.sayAvailable();
+    settings.macFallback && VOICE_CATALOG[settings.voice]?.engine !== 'system' && !stopped && !signal?.aborted && speaker(ctx) && deps.sayAvailable();
   async function resolveMacVoice(settings: ReturnType<typeof readSpeakSettings>): Promise<string | undefined> {
     if (!deps.sayAvailable()) return undefined;
     return pickMacVoice(await loadMacVoices(), settings.macVoice);
@@ -277,7 +298,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   }
   async function speakMac(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, settings: ReturnType<typeof readSpeakSettings>) {
     const voice = await resolveMacVoice(settings);
-    if (stopped || signal?.aborted || !parent(ctx)) return result('Speech cancelled.', true);
+    if (stopped || signal?.aborted || !speaker(ctx)) return result('Speech cancelled.', true);
     if (!voice) return result('The Mac voice is not available: it needs macOS with /usr/bin/say and a Spanish voice installed.', true);
     return playMac(text, signal, settings, voice);
   }
@@ -288,7 +309,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     // Never transmit paths to the native child until BOTH installers validate the complete artifacts.
     const model = await deps.modelStatus({ home, voice });
     const runtime = await deps.runtimeStatus({ home, target });
-    if (stopped || signal?.aborted || !parent(ctx)) return result('Speech cancelled.', true);
+    if (stopped || signal?.aborted || !speaker(ctx)) return result('Speech cancelled.', true);
     if (model.state !== 'installed' || runtime.state !== 'installed') return result('Install and verify the voice and runtime with /speak first.', true);
     return playLocked(signal, () => result('Speech cancelled.', true), held => playPiper(text, held, settings, voice, model, runtime));
   }
@@ -335,7 +356,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   }
   /** Why a text cannot be spoken at all, checked before it is offered to the focus deferral. */
   function unspeakable(text: string, ctx: ExtensionContext) {
-    if (stopped || !parent(ctx)) return result('Speech requires an interactive parent TUI session.', true);
+    if (stopped || !speaker(ctx)) return result('Speech requires an interactive parent TUI session.', true);
     if (!text.trim() || text.length > 4000 || /[\x00-\x1f]/.test(text)) return result('Invalid speech text.', true);
     return undefined;
   }
@@ -378,13 +399,18 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     item.detached = true;
     return undefined;
   }
+  /** S12: Dot's session takes its turn at once (no Herdr pane, no focus deferral); the outcome resolves when playback ends. */
+  function deliver(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, report: boolean, prepared?: Prepared) {
+    if (!dotSession(ctx)) return speakWhenFocused(text, ctx, signal, report, prepared);
+    return report ? speakAutomatically(text, ctx, signal, prepared).then(() => undefined) : speak(text, ctx, signal, prepared);
+  }
   /** User stop: halts playback and drops the pending item. Internal supersession uses `stop()` alone. */
   const clearPending = () => { deferral.clear(); if (pendingItem && !pendingItem.started) dropPrepared(pendingItem); pendingItem = undefined; };
   const stopAll = () => { clearPending(); cancelSpeculation(); stop(); };
   async function speakAutomatically(text: string, ctx: ExtensionContext, signal?: AbortSignal, prepared?: Prepared) {
     const outcome = await speak(text, ctx, signal, prepared);
     const message = outcome.content[0].text;
-    if (outcome.isError && !reported.has(outcome) && message !== 'Speech cancelled.' && !stopped && !signal?.aborted && parent(ctx)) ctx.ui.notify(message, 'error');
+    if (outcome.isError && !reported.has(outcome) && message !== 'Speech cancelled.' && !stopped && !signal?.aborted && speaker(ctx)) notifySpeech(ctx, message, 'error');
   }
   /**
    * S10 speculative synthesis: only a parent TUI with auto-speak on, a qwen3 voice installed and a mode other than summary.
@@ -426,6 +452,7 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     finally { speculationStarting = false; }
   }
   async function speculate(text: string, ctx: ExtensionContext) {
+    if (dotSession(ctx)) text = dotText(text); // the audio prepared ahead must carry the same `Dot: ` prefix it will be spoken with
     streamedText = text;
     let settings: ReturnType<typeof readSpeakSettings>;
     try { settings = readSpeakSettings(home); } catch { return; }
@@ -435,14 +462,14 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
     if (!speculationStarting) await startSpeculation(settings);
   }
   pi.on('message_update', async (event, ctx) => {
-    if (stopped || !parent(ctx)) return;
+    if (stopped || !speaker(ctx)) return;
     const message = assistantText(event.message);
     if (!message) return;
     if (message.toolCall || message.ended) { cancelSpeculation(); return; }
     await speculate(message.text, ctx);
   });
   pi.on('message_end', (event, ctx) => {
-    if (stopped || !parent(ctx)) return;
+    if (stopped || !speaker(ctx)) return;
     const message = assistantText(event.message);
     if (message && (message.toolCall || message.ended)) cancelSpeculation();
   });
@@ -459,18 +486,19 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
   }
   pi.on('agent_settled', async (event, ctx) => {
     if (stopped) return;
-    if (event.aborted || !parent(ctx)) { cancelSpeculation(); return; }
+    if (event.aborted || !speaker(ctx)) { cancelSpeculation(); return; }
     const settings = readSpeakSettings(home);
     if (!settings.enabled) { cancelSpeculation(); return; }
     const messages = ctx.sessionManager.getBranch().filter(entry => entry.type === 'message').map(entry => entry.message);
     // Summarize only sanitized final assistant prose, never a transcript, tool output, code, or diffs.
     const source = filterSettledSpeech(messages, settings.mode === 'summary' ? 'questions-and-results' : settings.mode);
     if (settings.mode === 'summary') cancelSpeculation();
-    const prepared = settings.mode === 'summary' ? undefined : settleSpeculation(source ?? ''); // empty text discards everything
+    const spoken = source && dotSession(ctx) ? dotText(source) : source;
+    const prepared = settings.mode === 'summary' ? undefined : settleSpeculation(spoken ?? ''); // empty text discards everything
     if (!source) return;
     if (settings.mode !== 'summary') {
-      if (unspeakable(source, ctx)) { if (prepared) { prepared.taken = true; discardPrepared(prepared); } return; }
-      await speakWhenFocused(source, ctx, undefined, true, prepared);
+      if (unspeakable(spoken as string, ctx)) { if (prepared) { prepared.taken = true; discardPrepared(prepared); } return; }
+      await deliver(spoken as string, ctx, undefined, true, prepared);
       return;
     }
     if (!settings.summaryModel) return;
@@ -483,23 +511,66 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
       if (stopped || controller.signal.aborted) return;
       const summary = filterSettledSpeech([{ role: 'assistant', stopReason: 'stop', content: response.content }], 'all');
       if (!summary || summary.length > 240 || /[\n]/.test(summary) || /[.!?。]\s+\S/.test(summary)) return;
-      if (!unspeakable(summary, ctx)) await speakWhenFocused(summary, ctx, controller.signal, false);
+      const line = dotSession(ctx) ? dotText(summary) : summary;
+      if (!unspeakable(line, ctx)) await deliver(line, ctx, controller.signal, false);
     } catch { /* Model failure is silent; never fall back to unsummarized speech. */ }
     finally { summaries.delete(controller); controller.abort(); }
   });
-  pi.on('session_start', async (_event, ctx) => { await refreshRowPrimed(ctx); await syncCopy(ctx); });
+  /** S12: the Dot connection (shared by the one-time offer and `/speak` → Conectar Gentle Dot): package entry first, then `dotSpeech`. */
+  function connectDotNow(ctx: ExtensionContext): boolean {
+    const found = detectDot(dotIo);
+    if (found.state === 'absent') { ctx.ui.notify(`No encontré Gentle Dot (${found.path}).`, 'warning'); return false; }
+    if (found.state === 'malformed') { ctx.ui.notify('El settings.json de Gentle Dot está mal formado; no lo toqué.', 'warning'); return false; }
+    const done = connectDot(terminalSource({ ...dotIo, packageRoot }), dotIo);
+    if (!done.ok) { ctx.ui.notify('No pude actualizar el settings.json de Gentle Dot; nada cambió.', 'error'); return false; }
+    try { const settings = readSpeakSettings(home); settings.dotSpeech = true; writeSpeakSettings(settings, home); }
+    catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return false; }
+    ctx.ui.notify('Gentle Dot conectado: silenciá la voz propia de Dot y reinicialo.', 'info');
+    return true;
+  }
+  /**
+   * S12: asked once, in the terminal TUI parent only; never inside Dot's own engine, a child, or an RPC/print session.
+   * It runs in the background after `session_start` returns (the dialog waits on the human, never on startup), is dropped on
+   * shutdown or when a newer session started, and is shown at most once per extension instance.
+   */
+  let dotMalformedNotified = false, offerShown = false, offerGeneration = 0;
+  let offerTimer: ReturnType<typeof setTimeout> | undefined;
+  async function offerDot(ctx: ExtensionContext, generation: number) {
+    const live = () => !stopped && generation === offerGeneration;
+    if (!live() || offerShown || !parent(ctx) || isDotEngine(dotIo) || readSpeakSettings(home).dotOffer === 'declined') return;
+    const found = detectDot(dotIo);
+    if (found.state === 'absent' || (found.state === 'ready' && found.connected)) return;
+    if (found.state === 'malformed') {
+      if (!dotMalformedNotified) { dotMalformedNotified = true; ctx.ui.notify('El settings.json de Gentle Dot está mal formado; no lo toqué.', 'warning'); }
+      return;
+    }
+    offerShown = true;
+    const yes = await ctx.ui.confirm('Gentle Dot', 'Encontré Gentle Dot. ¿Querés que también hable ahí?');
+    if (!live()) return; // reloaded or shut down while the human decided: nothing is written
+    if (yes) { connectDotNow(ctx); return; }
+    try { const settings = readSpeakSettings(home); settings.dotOffer = 'declined'; writeSpeakSettings(settings, home); } catch { /* asked again next time */ }
+  }
+  pi.on('session_start', async (_event, ctx) => {
+    await refreshRowPrimed(ctx); await syncCopy(ctx);
+    const generation = ++offerGeneration;
+    if (offerTimer) clearTimeout(offerTimer);
+    offerTimer = setTimeout(() => { offerTimer = undefined; offerDot(ctx, generation).catch(() => { /* the offer is a convenience; it never breaks anything */ }); }, 0);
+    offerTimer.unref?.();
+  });
   pi.on('session_shutdown', (_event, ctx) => {
     if (parent(ctx)) { try { ctx.ui.setStatus(SPEAK_STATUS_KEY, undefined); } catch { /* Status is cosmetic. */ } }
     stopCopy(ctx);
+    offerGeneration++; if (offerTimer) { clearTimeout(offerTimer); offerTimer = undefined; }
     stopped = true; for (const controller of installs) controller.abort(); installs.clear(); for (const controller of summaries) controller.abort(); summaries.clear(); deferral.dispose(); if (pendingItem && !pendingItem.started) dropPrepared(pendingItem); pendingItem = undefined; disposeSpeculation(); stop(); voiceLock.close(); qwen.dispose(); // close(): rejects a pending acquire, releases a held lock once, refuses later acquires
   });
   pi.registerTool({
     name: 'speak', label: 'Speak', description: 'Speak a short message in the parent interactive TUI after local voice installation.',
     parameters: { type: 'object', properties: { text: { type: 'string', maxLength: 4000 } }, required: ['text'], additionalProperties: false },
     async execute(_id, params, signal, _update, ctx) {
-      const refused = unspeakable(params.text, ctx);
+      const text = dotSession(ctx) ? dotText(params.text) : params.text;
+      const refused = unspeakable(text, ctx);
       if (refused) return refused;
-      return (await speakWhenFocused(params.text, ctx, signal, false)) ?? result('Speech deferred until this pane has focus.');
+      return (await deliver(text, ctx, signal, false)) ?? result('Speech deferred until this pane has focus.');
     },
   });
   pi.registerCommand('speak', {
@@ -509,9 +580,26 @@ export default function gentleSpeak(pi: ExtensionAPI, home = join(homedir(), '.g
       const settings = readSpeakSettings(home);
       const voices = voiceMenuEntries(VOICE_CATALOG, await voiceAvailability());
       if (stopped) return;
-      const choice = await ctx.ui.select('Speech settings', ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Mac voice', 'Toggle Mac fallback', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
+      const dot = detectDot(dotIo);
+      const dotState = dot.state === 'absent' ? 'no encontrado' : dot.state === 'malformed' ? 'settings.json mal formado' : `${dot.connected ? 'conectado' : 'no conectado'} · habla: ${settings.dotSpeech ? 'sí' : 'no'}`;
+      const choice = await ctx.ui.select('Speech settings', [`Gentle Dot: ${dotState}`, 'Conectar Gentle Dot', 'Desconectar Gentle Dot', 'Hablar en Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Mac voice', 'Toggle Mac fallback', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
       if (!choice || choice === 'Cancel' || stopped) return;
       if (choice === 'Stop playback') { stopAll(); return; }
+      if (choice === `Gentle Dot: ${dotState}`) { ctx.ui.notify(`Gentle Dot: ${dotState}.`, 'info'); return; }
+      if (choice === 'Conectar Gentle Dot') { connectDotNow(ctx); await refreshRowPrimed(ctx); return; }
+      if (choice === 'Desconectar Gentle Dot') {
+        const done = disconnectDot(dotIo);
+        if (!done.ok) { ctx.ui.notify(done.reason === 'absent' ? `No encontré Gentle Dot (${dot.path}).` : done.reason === 'malformed' ? 'El settings.json de Gentle Dot está mal formado; no lo toqué.' : 'No pude actualizar el settings.json de Gentle Dot; nada cambió.', done.reason === 'io' ? 'error' : 'warning'); return; }
+        settings.dotSpeech = false;
+        try { writeSpeakSettings(settings, home); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); return; }
+        ctx.ui.notify('Gentle Dot desconectado: ya no habla ahí. Reinicialo para aplicar.', 'info');
+        return;
+      }
+      if (choice === 'Hablar en Gentle Dot') {
+        settings.dotSpeech = !settings.dotSpeech;
+        try { writeSpeakSettings(settings, home); ctx.ui.notify(settings.dotSpeech ? 'Hablar en Gentle Dot: sí.' : 'Hablar en Gentle Dot: no.', 'info'); } catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); }
+        return;
+      }
       if (choice === 'Install voice and runtime') {
         if (!SPEAK_TARGETS.includes(target)) { ctx.ui.notify('Unsupported audio runtime platform.', 'error'); return; }
         const controller = new AbortController();

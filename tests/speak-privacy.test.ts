@@ -7,6 +7,7 @@ import { join } from 'node:path';
 const ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const clip: any = await import(ROOT + '/lib/speak-clipboard.ts');
 const { default: gentleSpeak } = await import(ROOT + '/extensions/gentle-speak.ts');
+import { hermetic } from './helpers/hermetic.ts';
 const { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA } = await import(ROOT + '/lib/speak-settings.ts');
 const SENT = 'SENTINEL-s3cr3t-9f2a';
 const line = (types: string[], front = 'com.term', n = 2) => ['GSCLIP', n, types.join(','), front].join('\t') + '\n';
@@ -102,7 +103,7 @@ function ext(over: { mode?: string; header?: any; tui?: any; terminal?: string |
     setWidget: (_k: string, f: any) => { if (typeof f === 'function') f('tui' in over ? over.tui : goodTui(), {}); } } });
   const ctx: any = mkCtx();
   writeFileSync(join(home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, copySpeech: over.copy !== false }));
-  const deps = { sayAvailable: () => false, modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), qwenStatus: async () => ({ manifest: 'missing', voices: {} }),
+  const deps = { ...hermetic(home), sayAvailable: () => false, modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), qwenStatus: async () => ({ manifest: 'missing', voices: {} }),
     spawn: () => { const c: any = new EventEmitter(); c.stdin = { write: (l: string) => { speaks.push(l); return true; } }; c.stdout = new EventEmitter(); c.stderr = new EventEmitter(); c.kill = () => true; children.push(c); return c; },
     resolveTerminal: async () => ('terminal' in over ? over.terminal : 'com.term'),
     createWatcher: (opts: any) => { const wc = fakeChild(); watcherSpawns.push(wc); return clip.createCopiedSelectionWatcher({ ...opts, spawn: () => wc, readText: async () => { reads.push(1); return SENT; } }); } };

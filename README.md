@@ -81,6 +81,16 @@ Off by default. `/speak` → `Toggle speak copied selection` speaks, with the cu
 - **Focus unknown.** Outside Herdr, on a system other than macOS, when the terminal cannot be identified, or when the Herdr CLI fails or times out, speech takes its turn and starts with the project name: `gentle-theme: …`.
 - `HERDR_BIN_PATH` is honored only when it is an absolute path ending in `herdr`; otherwise `herdr` from `PATH` is used.
 
+### Gentle Dot
+
+gentle-speak can also speak inside Gentle Dot's own engine, with no change to Gentle Dot. Dot runs an isolated `gentle-shell --mode rpc` whose agent dir is `GENTLE_DOT_AGENT_HOME` (default `~/.gentle-dot/agent`).
+
+- **One-time offer.** On startup of an interactive terminal session, if that home has a `settings.json` without gentle-speak in its `packages`, you are asked once: «Encontré Gentle Dot. ¿Querés que también hable ahí?». The offer never appears inside Dot, in child sessions, or in RPC/print mode. **No** is remembered (`dotOffer: "declined"`) and you are never asked again.
+- **Connect.** **Yes** (or `/speak` → `Conectar Gentle Dot`, which does not ask again) backs up Dot's file as `settings.json.gentle-speak-backup-<timestamp>`, adds this terminal's gentle-speak source to its `packages` (a local path is written absolute so it works from Dot's home; an npm source is copied as is), keeps every other key, writes atomically, and turns `dotSpeech` on. A `settings.json` that is not valid JSON is never written; you are told instead.
+- **Disconnect.** `/speak` → `Desconectar Gentle Dot` backs up the file, removes only the gentle-speak entry and turns `dotSpeech` off. `/speak` → `Hablar en Gentle Dot` toggles `dotSpeech` alone. The first menu line shows the current state.
+- **Mute Dot's own voice.** Dot replies with its own text-to-speech; turn that off in Dot, or you will hear every answer twice. Then restart Dot so its engine loads the package.
+- **What speaks.** Only Dot's root RPC session, and only with `dotSpeech` on, with the same voice, mode, filter, Qwen speculation and cross-process voice lock as the terminal. It takes its turn at once (no focus deferral) and every text starts with `Dot: `. It never speaks in other RPC clients, child sessions, print or JSON mode, and shows no SPEAK row, shortcuts or copy speech (there is no TUI there). `GENTLE_SPEAK_DOT=1` also marks a session as Dot's. Settings are shared with the terminal (`~/.gentle-speak/speak-settings.json`).
+
 ## Platform, licenses and verification
 
 Supported runtime targets: macOS x64/arm64, Linux x64/arm64 (glibc ≥2.34 for native binaries), Windows x64; other platforms are unsupported. The extension installs its own sherpa-onnx-node / node-cpal runtime, independently of Gentle Shell dictation. Converted voice bundles come from [sherpa-onnx TTS model releases](https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models); retain each installed model's `MODEL_CARD` and check dataset/voice rights before redistribution. The es_MX Claude model card identifies Apache-2.0 dataset attribution; es_ES Davefx identifies CC0. Repository code is [MIT](LICENSE); sherpa-onnx-node/platform binaries are Apache-2.0, bundled onnxruntime MIT, and node-cpal ISC with Rust dependencies. Runtime tarballs do not contain all bundled LICENSE/NOTICE texts; resolve notices before distributing a combined runtime.

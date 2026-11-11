@@ -16,6 +16,7 @@
 - Libraries for speculative speech: `lib/speak-speculative.ts` plans which completed sentences of a streaming answer to synthesize ahead (one synthesis at a time, at most 500 characters ahead, exact-prefix match at settle, everything else deleted), and `createQwenSpeech` gains `prepare` (synthesize WAVs without playing, cancellable), `speakPrepared` (play them, then synthesize the remainder) and `discard`. A prepare never runs together with a speak: it waits for one, and a speak cancels it.
 - Playback no longer aborts on non-fatal stream errors (buffer underrun/overrun, device rerouted, real-time scheduling refused): it plays to the end, bounded by the utterance timeout and a 50-glitch cap; other stream errors still fail with their cause.
 - Added the macOS `Mac` voice (`/usr/bin/say`, text on stdin, no download) as an extra voice and as a fallback when the selected Piper or Qwen voice is not installed or fails (`macVoice`, `macFallback`, `/speak` → `Mac voice` / `Toggle Mac fallback`; notified once per session; never on cancel or stop).
+- Added Gentle Dot support (S12): opt-in `dotSpeech` makes Dot's root RPC session speak with a `Dot: ` prefix and no focus deferral, a one-time offer in the terminal (`dotOffer`) and `/speak` → `Conectar/Desconectar Gentle Dot` add or remove gentle-speak in Dot's `settings.json` `packages` after a backup; existing settings files stay valid.
 
 ## 0.1.0 - 2026-11-08 (local candidate)
 

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA, readSpeakSettings } from '../lib/speak-settings.ts';
 import gentleSpeak from '../extensions/gentle-speak.ts';
+import { hermetic } from './helpers/hermetic.ts';
 
 // S11 wiring: the Mac voice as an extra voice and as fallback. All fakes: no `say`, no audio, no model. Scratch lives under mktemp.
 const until = async (cond: () => boolean, what = 'condition') => {
@@ -38,6 +39,7 @@ function setup(o: Opts = {}) {
     sessionManager: { getHeader: () => o.header ?? { type: 'session' }, getBranch: () => state.branch },
     ui: { setStatus: (_k: string, t?: string) => statuses.push(t), notify: (t: string, l: string) => notes.push([t, l]), confirm: async () => false, select: async (_t: string, opts: string[]) => { offered.push(opts); return selections.shift(); }, input: async () => undefined, setWidget: (_k: string, f: any) => { if (typeof f === 'function') f({ getCopyOnSelect: () => true, hasActiveSelection: () => true, getScreenLines: () => [] }, {}); } } };
   const deps: any = {
+    ...hermetic(home),
     sayAvailable: () => o.say !== false, listMacVoices: async () => o.voices ?? VOICES,
     say: (req: any) => new Promise(resolve => {
       sayCalls.push({ ...req, lockHeld: existsSync(join(home, 'voice.lock')) });
@@ -177,7 +179,7 @@ function sharedHome(first: ReturnType<typeof setup>) {
   const sayCalls: any[] = [], resolvers: Array<(r: any) => void> = [];
   const ctx: any = { cwd: '/w', mode: 'tui', hasUI: true, isIdle: () => true, sessionManager: { getHeader: () => ({ type: 'session' }), getBranch: () => [] }, ui: { setStatus() {}, notify() {}, select: async () => undefined, input: async () => undefined, confirm: async () => false, setWidget() {} } };
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut() {}, registerTool: (t: any) => tools.set(t.name, t) } as any, first.home, {
-    sayAvailable: () => true, listMacVoices: async () => VOICES, say: (r: any) => new Promise(res => { sayCalls.push(r); resolvers.push(res); }), focusCheck: async () => 'focused', focusPollMs: 5, lockPollMs: 5,
+    ...hermetic(first.home), sayAvailable: () => true, listMacVoices: async () => VOICES, say: (r: any) => new Promise(res => { sayCalls.push(r); resolvers.push(res); }), focusCheck: async () => 'focused', focusPollMs: 5, lockPollMs: 5,
     modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), qwenStatus: async () => ({ manifest: 'missing', voices: {} }) } as any);
   return { sayCalls, tool: (text: string) => tools.get('speak').execute('id', { text }, undefined, undefined, ctx), finishSay: () => resolvers[0]({ ok: true, message: 'ok' }), shutdown: () => events.get('session_shutdown')!({}, ctx) };
 }

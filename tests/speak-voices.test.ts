@@ -55,7 +55,7 @@ test('v1 file without cycleVoice loads unchanged plus the default; cycleVoice is
   assert.equal(DEFAULT_SPEAK_SETTINGS.shortcuts.cycleVoice, 'ctrl+alt+n');
   const shortcuts = { speakLast: 'ctrl+alt+s', stop: 'ctrl+alt+x', toggle: 'ctrl+alt+t' };
   const v1 = { schema: SPEAK_SETTINGS_SCHEMA, enabled: true, mode: 'summary', voice: 'es_ES', speed: 1.25, shortcuts };
-  assert.deepEqual(parseSpeakSettingsFile(JSON.stringify(v1)), { enabled: true, mode: 'summary', voice: 'es_ES', speed: 1.25, summaryModel: null, copySpeech: false, macVoice: null, macFallback: true, shortcuts: { ...shortcuts, cycleVoice: 'ctrl+alt+n', toggleCopy: 'ctrl+alt+c' } });
+  assert.deepEqual(parseSpeakSettingsFile(JSON.stringify(v1)), { enabled: true, mode: 'summary', voice: 'es_ES', speed: 1.25, summaryModel: null, copySpeech: false, macVoice: null, macFallback: true, dotSpeech: false, dotOffer: null, shortcuts: { ...shortcuts, cycleVoice: 'ctrl+alt+n', toggleCopy: 'ctrl+alt+c' } });
 });
 
 test('unknown voice, reserved, duplicate and malformed cycleVoice stay rejected', () => {

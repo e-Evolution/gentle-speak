@@ -9,7 +9,11 @@
 // Request ids belong to one connection: the service maps them to its own ids for the Python worker, so clients never see each other's traffic.
 // The service never executes anything it is sent: it validates every field and only ever runs the one worker it was started with.
 //
-// Usage: node speak-qwen-service.mjs --home <dir> --python <exe> --script <worker.py> --version <v> [--idle-ms <n|never>] [--exit-idle-ms <n>]
+// Idle (S13, L77): ONE timeout, `--idle-ms` (the user's qwenIdleMinutes). After that long with no request from anyone the Python worker closes, and
+// the service itself exits once it is that idle AND no client is connected. `--idle-ms never` never closes either. `--exit-idle-ms <n>` (tests)
+// overrides only the exit delay; there is no separate 30 minute default. Neither fires mid-request.
+//
+// Usage: node speak-qwen-service.mjs --home <dir> --python <exe> --script <worker.py> --version <v> [--idle-ms <n|never>] [--exit-idle-ms <n|never>]
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,7 +34,7 @@ const args = (() => {
 const home = args.home, python = args.python, script = args.script, version = args.version;
 const number = (value, fallback) => (value === 'never' ? null : Number.isFinite(Number(value)) && value !== undefined && value !== '' ? Number(value) : fallback);
 const idleMs = number(args['idle-ms'], 5 * 60_000);
-const exitIdleMs = number(args['exit-idle-ms'], 30 * 60_000);
+const exitIdleMs = args['exit-idle-ms'] === undefined ? idleMs : number(args['exit-idle-ms'], idleMs);
 const log = (...parts) => process.stderr.write(`${new Date().toISOString()} [qwen-service ${process.pid}] ${parts.join(' ')}\n`);
 
 if (!home || !path.isAbsolute(home) || !python || !script || !version) { log('usage: --home <abs dir> --python <exe> --script <worker.py> --version <v>'); process.exit(2); }
@@ -47,6 +51,10 @@ function ensurePrivateDir() {
 
 // ---- validation: every field of every request -------------------------------------------------------------------------------------------
 const isPlainAbs = value => typeof value === 'string' && value.length <= 4095 && path.isAbsolute(value) && path.normalize(value) === value && !value.includes('\0');
+/** Text is whitespace (tab, LF, CR, VT, FF) plus printable characters; any other control character (NUL, BEL, ESC, DEL...) is rejected. */
+const UNSAFE_TEXT = /[\x00-\x08\x0e-\x1f\x7f]/;
+/** What Python gets: CRLF and CR become LF, VT and FF become a space. Clients (Windows clipboards, pasted selections) legitimately send these. */
+const normalizeText = text => text.replace(/\r\n?/g, '\n').replace(/[\x0b\x0c]/g, ' ');
 const SYNTH_KEYS = ['schema', 'type', 'id', 'priority', 'text', 'ref', 'refText', 'outDir', 'speed'];
 /** Returns a short reason when the synth request is invalid, else undefined. */
 function invalidSynth(message) {
@@ -54,7 +62,7 @@ function invalidSynth(message) {
   if (keys.length !== SYNTH_KEYS.length || !SYNTH_KEYS.every(key => keys.includes(key))) return 'bad synth keys';
   if (message.priority !== 'speak' && message.priority !== 'prepare') return 'bad priority';
   const { text, refText, speed } = message;
-  if (typeof text !== 'string' || !text.trim() || text.length > MAX_TEXT || /[\x00-\x08\x0b-\x1f]/.test(text)) return 'bad text';
+  if (typeof text !== 'string' || !text.trim() || text.length > MAX_TEXT || UNSAFE_TEXT.test(text)) return 'bad text';
   if (typeof refText !== 'string' || !refText.trim() || refText.length > MAX_TEXT) return 'bad refText';
   if (typeof speed !== 'number' || !Number.isFinite(speed) || speed < 0.5 || speed > 2) return 'bad speed';
   if (!isPlainAbs(message.ref) || !message.ref.startsWith(voicesDir + path.sep)) return 'bad ref';
@@ -73,7 +81,7 @@ const connections = new Set();
 /** @type {Array<Job>} */ const queue = [];
 /** @type {Job | undefined} */ let running;
 /** @type {{ child: import('node:child_process').ChildProcess, ready: boolean, readyTimer?: NodeJS.Timeout } | undefined} */ let worker;
-let nextInternalId = 1, draining = false, server, pythonTimer, exitTimer, jobTimer, heartbeat;
+let lastActivity = Date.now(), nextInternalId = 1, draining = false, server, pythonTimer, exitTimer, jobTimer, heartbeat;
 /** @typedef {{ conn: Connection, id: number, priority: 'speak'|'prepare', request: any, internalId: number, cancelled: boolean }} Job */
 /** @typedef {{ socket: net.Socket, jobs: Map<number, Job>, closed: boolean, send: (message: object) => void }} Connection */
 
@@ -92,14 +100,14 @@ function pump() {
 function sendRunning() {
   const job = running;
   if (!job || !worker) return;
-  const { text, ref, refText, outDir, speed } = job.request;
+  const { ref, refText, outDir, speed } = job.request, text = normalizeText(job.request.text);
   armJobTimer();
   try { worker.child.stdin.write(JSON.stringify({ schema: WORKER_SCHEMA, type: 'synth', id: job.internalId, text, ref, refText, outDir, speed }) + '\n'); }
   catch { killWorker(); failRunning('Qwen worker input failed.'); }
 }
 function armJobTimer() { clearTimeout(jobTimer); jobTimer = setTimeout(() => { log('synthesis timed out'); killWorker(); failRunning('Qwen worker timed out.'); }, SYNTH_IDLE_TIMEOUT_MS); }
 function finishRunning() {
-  clearTimeout(jobTimer);
+  clearTimeout(jobTimer); lastActivity = Date.now();
   const job = running; running = undefined;
   if (job) job.conn.jobs.delete(job.id);
   pump();
@@ -159,11 +167,12 @@ function onWorkerLine(state, line) {
 /** Re-arms both countdowns from the current state: the worker closes after `idleMs` without work; the whole service exits after `exitIdleMs` with no client. */
 function settle() {
   clearTimeout(pythonTimer); clearTimeout(exitTimer); pythonTimer = exitTimer = undefined;
+  const left = ms => Math.max(0, lastActivity + ms - Date.now());
   const busy = running !== undefined || queue.length > 0;
   if (draining) { if (!busy) finalize(); return; }
   if (busy) return;
-  if (worker && idleMs !== null) { pythonTimer = setTimeout(() => { if (!running && queue.length === 0) { log('idle: closing the Qwen worker'); killWorker(); settle(); } }, idleMs); pythonTimer.unref?.(); }
-  if (connections.size === 0 && exitIdleMs !== null) { exitTimer = setTimeout(() => { if (!running && queue.length === 0 && connections.size === 0) { log('idle: no clients, exiting'); shutdown(true); } }, exitIdleMs); }
+  if (worker && idleMs !== null) { pythonTimer = setTimeout(() => { if (!running && queue.length === 0 && Date.now() - lastActivity >= idleMs - 5) { log('idle: closing the Qwen worker'); killWorker(); settle(); } else settle(); }, left(idleMs)); pythonTimer.unref?.(); }
+  if (connections.size === 0 && exitIdleMs !== null) { exitTimer = setTimeout(() => { if (!running && queue.length === 0 && connections.size === 0 && Date.now() - lastActivity >= exitIdleMs - 5) { log('idle: no clients, exiting'); shutdown(true); } else settle(); }, left(exitIdleMs)); }
 }
 
 function shutdown(now) {
@@ -186,7 +195,7 @@ function finalize() {
 function onConnection(socket) {
   /** @type {Connection} */
   const conn = { socket, jobs: new Map(), closed: false, send(message) { if (!conn.closed && !socket.destroyed) socket.write(JSON.stringify({ schema: SCHEMA, ...message }) + '\n'); } };
-  connections.add(conn);
+  connections.add(conn); lastActivity = Date.now();
   settle();
   socket.setEncoding('utf8');
   socket.on('error', () => { /* handled by close */ });
@@ -229,6 +238,7 @@ function onRequest(conn, line) {
   if (conn.jobs.size >= MAX_JOBS_PER_CONNECTION) { conn.send({ type: 'error', id, message: 'too many pending requests' }); return; }
   const reason = invalidSynth(message);
   if (reason) { conn.send({ type: 'error', id, message: `invalid request: ${reason}` }); return; }
+  lastActivity = Date.now();
   const job = { conn, id, priority: message.priority, request: message, internalId: nextInternalId++, cancelled: false };
   conn.jobs.set(id, job); queue.push(job);
   pump();

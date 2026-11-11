@@ -39,6 +39,7 @@ export function createQwenServiceSpawner(options: QwenServiceSpawnerOptions): (p
     const forward = (line: string) => {
       let message: any;
       try { message = JSON.parse(line); } catch { return; }
+      if (typeof message?.text === 'string') message.text = message.text.replace(/\r\n?/g, '\n').replace(/[\x0b\x0c]/g, ' '); // mirrors the service's normalization
       if (mode === 'local') {
         if (message?.priority !== undefined) delete message.priority;
         local!.stdin.write(JSON.stringify(message) + '\n');

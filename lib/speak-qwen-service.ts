@@ -1,5 +1,5 @@
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
-import { execFileSync, spawn as spawnChild } from 'node:child_process';
+import { execFile, spawn as spawnChild } from 'node:child_process';
 import net from 'node:net';
 import { join } from 'node:path';
 
@@ -10,12 +10,28 @@ export const QWEN_SERVICE_PROTOCOL_REV = 1;
 const PACKAGE_VERSION: string = (() => { try { return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version; } catch { return '0.0.0'; } })();
 export const qwenServiceVersion = (): string => `${PACKAGE_VERSION}+p${QWEN_SERVICE_PROTOCOL_REV}`;
 
-export interface QwenServicePaths { dir: string; socket: string; pid: string; lock: string; log: string }
-export const qwenServicePaths = (home: string): QwenServicePaths => ({ dir: home, socket: join(home, 'qwen.sock'), pid: join(home, 'qwen-service.pid'), lock: join(home, 'qwen-service.lock'), log: join(home, 'qwen-service.log') });
+export interface QwenServicePaths { dir: string; socket: string; pid: string; lock: string; log: string; restart: string }
+export const qwenServicePaths = (home: string): QwenServicePaths => ({ dir: home, socket: join(home, 'qwen.sock'), pid: join(home, 'qwen-service.pid'), lock: join(home, 'qwen-service.lock'), log: join(home, 'qwen-service.log'), restart: join(home, 'qwen-service.restart') });
+
+/**
+ * Orders two handshake versions (`<major>.<minor>.<patch>+p<rev>`): 1 when `a` is newer than `b`, -1 when older, 0 when equal, `undefined` when either
+ * does not parse (then nothing can be said about who is newer). The package version decides first, then the protocol revision.
+ */
+export function compareQwenServiceVersions(a: string, b: string): number | undefined {
+  const parse = (v: string) => { const m = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?\+p(\d+)$/.exec(v); return m ? [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])] : undefined; };
+  const left = parse(a), right = parse(b);
+  if (!left || !right) return undefined;
+  for (let i = 0; i < 4; i++) if (left[i] !== right[i]) return left[i]! > right[i]! ? 1 : -1;
+  return 0;
+}
+const protocolRev = (version: string): string | undefined => /\+p(\d+)$/.exec(version)?.[1];
 
 /** The service log is rotated at start once it passes this size, so it never grows without bound. */
 export const QWEN_SERVICE_LOG_MAX = 512 * 1024;
 const LOCK_STALE_MS = 60_000;
+/** A service is replaced at most once per this window (a second, different replacement inside it is refused), so clients never take turns restarting it. */
+export const QWEN_SERVICE_RESTART_WINDOW_MS = 30_000;
+const PS_TIMEOUT_MS = 1500;
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
 export interface QwenServiceOptions {
@@ -37,6 +53,11 @@ export interface QwenServiceOptions {
   timeoutMs?: number;
   /** Tests: the service exits this long after its last client left. */
   exitIdleMs?: number;
+  /** Tests: the `ps` executable and its bound (ms). */
+  psPath?: string;
+  psTimeoutMs?: number;
+  /** Tests: the minimum time between two service replacements. */
+  restartWindowMs?: number;
   /** Tests: the current user id. */
   uid?: number;
 }
@@ -76,11 +97,13 @@ function attempt(socketPath: string, timeoutMs = 3000): Promise<Attempt> {
 
 const readPid = (path: string): number | undefined => { try { const pid = Number(readFileSync(path, 'utf8').trim()); return Number.isSafeInteger(pid) && pid > 1 ? pid : undefined; } catch { return undefined; } };
 /** A live process that is (as far as `ps` can tell) the Qwen service: a recycled pid of an unrelated process does not count. */
-const alive = (pid: number | undefined): boolean => {
+const alive = async (pid: number | undefined, ps = 'ps', timeoutMs = PS_TIMEOUT_MS): Promise<boolean> => {
   if (pid === undefined) return false;
   try { process.kill(pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EPERM') return false; }
-  try { return /qwen-service/.test(execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: 2000 })); } catch { return false; }
+  // Asynchronous and bounded: the session's event loop keeps running during the probe, and a hung `ps` is killed and counted as "not ours".
+  return new Promise<boolean>(resolve => { try { execFile(ps, ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: timeoutMs }, (error, stdout) => resolve(!error && /qwen-service/.test(stdout))); } catch { resolve(false); } });
 };
+const readRestart = (path: string): { at: number; version: string } | undefined => { try { const stamp = JSON.parse(readFileSync(path, 'utf8')); return typeof stamp?.at === 'number' && typeof stamp.version === 'string' ? stamp : undefined; } catch { return undefined; } };
 const removeQuiet = (path: string) => { try { rmSync(path, { force: true }); } catch { /* best effort */ } };
 
 function acquireLock(path: string): boolean {
@@ -136,13 +159,24 @@ export async function connectQwenService(options: QwenServiceOptions): Promise<Q
         const { connection } = result;
         if (connection.version === version) return connection;
         if (replaced) { connection.socket.destroy(); throw new Error('Qwen service version mismatch after restart'); }
+        // Who is newer decides (a service of a newer version is never replaced by an older client), and replacements are rate-limited.
+        const order = compareQwenServiceVersions(version, connection.version);
+        const compatible = protocolRev(version) !== undefined && protocolRev(version) === protocolRev(connection.version);
+        const refuse = (why: string) => { if (compatible && order !== undefined) return connection; connection.socket.destroy(); throw new Error(`Qwen service is ${why}; using a local worker instead`); };
+        if (order !== undefined && order < 0) return refuse('newer and not compatible with this client') ;
+        const stamp = readRestart(paths.restart);
+        if (stamp && Date.now() - stamp.at < (options.restartWindowMs ?? QWEN_SERVICE_RESTART_WINDOW_MS)) {
+          if (stamp.version === version) { connection.socket.destroy(); await sleep(50); continue; } // someone already replaced it for our version: wait for that
+          return refuse('restarted recently by a client of another version');
+        }
         replaced = true;
+        try { writeFileSync(paths.restart, JSON.stringify({ at: Date.now(), version }), { mode: 0o600 }); } catch { /* the rate limit is best effort */ }
         connection.socket.write(JSON.stringify({ schema: QWEN_SERVICE_SCHEMA, type: 'shutdown' }) + '\n');
         connection.socket.destroy();
         continue; // the old one stops listening at once and exits once its queue drains; the loop below waits for that
       }
       if (!['ECONNREFUSED', 'ENOENT', 'ECLOSED', 'ECONNRESET'].includes(result.code)) throw new Error(`Qwen service unreachable (${result.code})`);
-      if (alive(readPid(paths.pid)) ) { await sleep(50); continue; } // starting up elsewhere, or an old service still draining
+      if (await alive(readPid(paths.pid), options.psPath, options.psTimeoutMs)) { await sleep(50); continue; } // starting up elsewhere, or an old service still draining
       if (!ownedLock) {
         if (!acquireLock(paths.lock)) { await sleep(50); continue; }
         ownedLock = true;

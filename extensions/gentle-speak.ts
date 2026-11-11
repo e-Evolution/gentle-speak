@@ -730,7 +730,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   /**
    * S12: asked once, in the terminal TUI parent only; never inside Dot's own engine, a child, or an RPC/print session.
    * It runs in the background after `session_start` returns (the dialog waits on the human, never on startup), is dropped on
-   * shutdown or when a newer session started, and is shown at most once per extension instance.
+   * shutdown, or when a newer session started before it was shown (an offer already on screen keeps its answer), and is shown at most once per extension instance.
    */
   let dotMalformedNotified = false, offerShown = false, offerGeneration = 0;
   let offerTimer: ReturnType<typeof setTimeout> | undefined;
@@ -745,7 +745,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     }
     offerShown = true;
     const yes = await ctx.ui.confirm('Gentle Dot', 'Encontré Gentle Dot. ¿Querés que también hable ahí?');
-    if (!live()) return; // reloaded or shut down while the human decided: nothing is written
+    if (stopped) return; // shut down while the human decided: nothing is written. A newer session_start does not cancel an offer already on screen: the human's answer still counts (T48, L95).
     if (yes) { connectDotNow(ctx); return; }
     try { const settings = readSpeakSettings(settingsDir); settings.dotOffer = 'declined'; writeSpeakSettings(settings, settingsDir); } catch { /* asked again next time */ }
   }

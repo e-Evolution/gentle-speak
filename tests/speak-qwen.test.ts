@@ -29,13 +29,14 @@ function harness(opts: { custom?: 'ok' | 'missing' | 'invalid'; voiceId?: string
   const audios: Array<ReturnType<typeof fakeChild>> = [];
   const piperSpawns: string[] = [];
   let failures = opts.spawnFailures ?? 0;
+  const tmp = join(home, 'tmp'); mkdirSync(tmp); // private tmp root: only this harness's dirs are ever counted (T48, L95)
   mkdirSync(join(home, 'voices', 'qwen3'), { recursive: true });
   if (opts.manifest !== false) writeFileSync(join(home, 'voices', 'qwen3', 'manifest.json'), JSON.stringify({ python: '/fake/python3' }));
   if (opts.custom !== 'missing') writeEntry(join(home, 'voices', 'custom'), 'intima', { meta: { label: 'Íntima', transcript: voice.transcript, ...(opts.custom === 'invalid' ? { sha256: '0'.repeat(64) } : {}) } });
   writeFileSync(join(home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, voice: opts.voiceId ?? 'custom:intima', speed: 1.25 }));
   const ctx = { mode: 'tui', hasUI: true, sessionManager: { getHeader: () => ({ type: 'session' }), getBranch: () => [{ type: 'message', message }] }, ui: { notify: (text: string, level: string) => notifications.push([text, level]) } };
   const dependencies = {
-    ...hermetic(home),
+    ...hermetic(home), qwenTmpRoot: tmp,
     modelStatus: async () => ({ state: 'installed', path: '/verified/model' }),
     runtimeStatus: async () => ({ state: 'installed', path: '/verified/runtime' }),
     spawn: () => { const a = fakeChild(); if (opts.voiceId && opts.voiceId.startsWith('es_')) piperSpawns.push('piper'); audios.push(a); return a.child; },
@@ -43,7 +44,7 @@ function harness(opts: { custom?: 'ok' | 'missing' | 'invalid'; voiceId?: string
   };
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut: (k: string, s: any) => shortcuts.set(k, s), registerTool: (t: any) => tools.set(t.name, t) } as any, home, { focusCheck: async () => 'focused', sayAvailable: () => false, ...dependencies } as any);
   const speak = (text = 'Hola mundo.') => tools.get('speak').execute('id', { text }, undefined, undefined, ctx);
-  return { home, events, shortcuts, tools, notifications, pythons, audios, ctx, speak, piperSpawns, close: () => rmSync(home, { recursive: true, force: true }) };
+  return { home, tmp, events, shortcuts, tools, notifications, pythons, audios, ctx, speak, piperSpawns, close: () => rmSync(home, { recursive: true, force: true }) };
 }
 const outDirOf = (p: { writes: any[] }) => p.writes.find(w => w.type === 'synth').outDir as string;
 
@@ -259,7 +260,7 @@ const lateTrafficIgnored = (h: ReturnType<typeof harness>, py: any, dir: string,
 
 test('failure: the python spawn fails -> error notification, no workers, no temp dir leaked, next utterance respawns', async () => {
   const h = harness({ spawnFailures: 1 });
-  const leftovers = () => readdirSync(tmpdir()).filter(n => n.startsWith('gentle-speak-')).length;
+  const leftovers = () => readdirSync(h.tmp).filter(n => n.startsWith('gentle-speak-')).length;
   const before = leftovers();
   try {
     await auto(h);

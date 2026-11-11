@@ -244,6 +244,16 @@ test('offer: a second session_start in the same process never shows it twice whi
   assert.equal(w.confirms.length, 1); answer.resolve(false); await until(() => w.speakSettings().dotOffer === 'declined'); w.shutdown();
 });
 
+test('offer: a newer session_start while the first offer is on screen neither re-asks nor discards the answer (deterministic order)', async () => {
+  const w = world({ confirm: true });
+  const answer = deferred<boolean>();
+  w.ctx.ui.confirm = async (_t: string, m: string) => { w.confirms.push(m); return answer.promise; };
+  await w.startRaw(); await until(() => w.confirms.length === 1, 'first offer shown');
+  await w.startRaw(); await quiet(20);
+  assert.equal(w.confirms.length, 1, 'never shown twice');
+  answer.resolve(false); await until(() => w.speakSettings().dotOffer === 'declined', 'the decline is recorded'); w.shutdown();
+});
+
 test('offer: a confirm that rejects is swallowed and a write failure is notified once', async () => {
   const w = world({ confirm: true });
   w.ctx.ui.confirm = async () => { throw new Error('dialog gone'); };

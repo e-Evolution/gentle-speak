@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA } from '../lib/speak-settings.ts';
 import gentleSpeak from '../extensions/gentle-speak.ts';
 import { hermetic } from './helpers/hermetic.ts';
+import { writeEntry } from './helpers/custom-voice-fixture.ts';
 
 // S10 wiring: message_update drives speculative synthesis, agent_settled plays the prepared WAVs. All fakes; no model, no audio.
 const QS = 'gentle.speak.qwen/v1', AS = 'gentle.speak/v1';
@@ -18,7 +19,6 @@ function fakeChild() {
   const child: any = Object.assign(new EventEmitter(), { stdin: { write: (line: string) => { writes.push(JSON.parse(line)); return true; } }, stdout: new EventEmitter(), stderr: new EventEmitter(), killed: 0, kill() { child.killed++; return true; } });
   return { child, writes, emit: (m: object) => child.stdout.emit('data', JSON.stringify(m) + '\n') };
 }
-const installed = (ids: string[]) => ({ manifest: 'valid', voices: Object.fromEntries(['qwen-intima', 'qwen-brisa'].map(id => [id, ids.includes(id) ? 'installed' : 'missing'])) });
 const text = (value: string) => ({ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: value }] });
 
 function setup(opts: { voice?: string; mode?: string; ctxMode?: string; header?: unknown; focus?: () => string; enabled?: boolean; settleText?: string; dot?: boolean } = {}) {
@@ -31,7 +31,8 @@ function setup(opts: { voice?: string; mode?: string; ctxMode?: string; header?:
   const scratch = join(home, 'scratch'); mkdirSync(scratch); // keeps prepared WAVs out of the shared system temp dir other tests inspect
   mkdirSync(join(home, 'voices', 'qwen3'), { recursive: true });
   writeFileSync(join(home, 'voices', 'qwen3', 'manifest.json'), JSON.stringify({ python: '/fake/python3' }));
-  const save = (patch: Record<string, unknown>) => writeFileSync(join(home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, ...(opts.dot ? { dotSpeech: true } : {}), enabled: opts.enabled ?? true, mode: opts.mode ?? 'all', voice: opts.voice ?? 'qwen-intima', ...patch }));
+  for (const id of ['intima', 'brisa']) writeEntry(join(home, 'voices', 'custom'), id, { meta: { label: id } }); // T45: Qwen voices are the user's own
+  const save = (patch: Record<string, unknown>) => writeFileSync(join(home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, ...(opts.dot ? { dotSpeech: true } : {}), enabled: opts.enabled ?? true, mode: opts.mode ?? 'all', voice: opts.voice ?? 'custom:intima', ...patch }));
   save({});
   const selections: string[] = [];
   const ctx: any = { cwd: '/work/gentle-theme', mode: opts.ctxMode ?? 'tui', hasUI: true, isIdle: () => true,
@@ -39,7 +40,6 @@ function setup(opts: { voice?: string; mode?: string; ctxMode?: string; header?:
     ui: { setStatus() {}, notify: (t: string) => notes.push(t), confirm: async () => false, select: async () => selections.shift(), input: async () => undefined } };
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand: (n: string, c: any) => commands.set(n, c), registerShortcut: (k: string, s: any) => shortcuts.set(k, s), registerTool: (t: any) => tools.set(t.name, t) } as any, home, {
     modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }),
-    qwenStatus: async () => installed(['qwen-intima', 'qwen-brisa']),
     spawn: () => { const a = fakeChild(); audios.push(a); return a.child; },
     spawnQwen: () => { const p = fakeChild(); pythons.push(p); return p.child; },
     focusCheck: async () => (opts.focus ? opts.focus() : state.focus) as any, focusPollMs: 5, lockPollMs: 5, sayAvailable: () => false, qwenTmpRoot: scratch,

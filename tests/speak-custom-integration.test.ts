@@ -31,7 +31,7 @@ test('settings accept custom:<id> and reject malformed custom ids; built-in voic
 });
 
 // ---- shared service: ref validation ----
-test('the shared service accepts refs under voices/custom/<id>/reference.wav and voices/qwen3/, and rejects everything else', async () => {
+test('the shared service accepts refs under voices/custom/<id>/reference.wav and rejects everything else, including voices/qwen3/ (T45)', async () => {
   const fx = qwenFixture();
   try {
     const custom = join(fx.home, 'voices', 'custom');
@@ -39,6 +39,7 @@ test('the shared service accepts refs under voices/custom/<id>/reference.wav and
     mkdirSync(join(custom, 'mi-voz'), { recursive: true }); writeFileSync(join(custom, 'mi-voz', 'reference.wav'), 'RIFF'); writeFileSync(join(custom, 'mi-voz', 'voice.json'), '{}');
     mkdirSync(join(custom, 'mi-voz', 'sub')); writeFileSync(join(custom, 'mi-voz', 'sub', 'reference.wav'), 'RIFF');
     mkdirSync(join(custom, 'evil')); symlinkSync(join(fx.root, 'outside.wav'), join(custom, 'evil', 'reference.wav'));
+    mkdirSync(join(fx.home, 'voices', 'qwen3'), { recursive: true }); writeFileSync(join(fx.home, 'voices', 'qwen3', 'ref.wav'), 'RIFF');
     mkdirSync(join(fx.home, 'voices', 'other')); writeFileSync(join(fx.home, 'voices', 'other', 'reference.wav'), 'RIFF');
     mkdirSync(join(custom, 'Bad_Id')); writeFileSync(join(custom, 'Bad_Id', 'reference.wav'), 'RIFF');
     const connection = await connectQwenService(fx.options()); connection.socket.setEncoding('utf8');
@@ -47,15 +48,13 @@ test('the shared service accepts refs under voices/custom/<id>/reference.wav and
     const send = (id: number, ref: string) => c.send({ type: 'synth', id, priority: 'speak', text: 'hola', ref, refText: 'ref', outDir: dir, speed: 1 });
     send(1, join(custom, 'mi-voz', 'reference.wav'));
     await c.waitFor(m => m.some(x => x.id === 1 && x.type === 'done'), 'custom ref accepted');
-    send(2, fx.ref);
-    await c.waitFor(m => m.some(x => x.id === 2 && x.type === 'done'), 'qwen3 ref still accepted');
     const rejected: Array<[number, string]> = [
       [10, join(custom, 'mi-voz', 'voice.json')], [11, join(custom, 'mi-voz', 'sub', 'reference.wav')], [12, join(custom, 'evil', 'reference.wav')],
       [13, join(fx.home, 'voices', 'other', 'reference.wav')], [14, join(custom, 'Bad_Id', 'reference.wav')], [15, `${custom}/mi-voz/../../qwen3/ref.wav`],
-      [16, join(custom, 'reference.wav')], [17, join(fx.home, 'voices', 'custom') + '/'], [18, join(fx.root, 'outside.wav')],
+      [16, join(custom, 'reference.wav')], [19, join(fx.home, 'voices', 'qwen3', 'ref.wav')], [17, join(fx.home, 'voices', 'custom') + '/'], [18, join(fx.root, 'outside.wav')],
     ];
     for (const [id, ref] of rejected) { send(id, ref); await c.waitFor(m => m.some(x => x.id === id && x.type === 'error'), `rejected ${ref}`); assert.match(c.ofId(id)[0].message, /^invalid request: /, ref); }
-    assert.equal(fx.read('order.log').length, 2, 'only the two accepted requests reached Python');
+    assert.equal(fx.read('order.log').length, 1, 'only the accepted request reached Python');
   } finally { await fx.close(); }
 });
 
@@ -126,7 +125,6 @@ function setup(o: Opts = {}) {
     ...hermetic(home), sayAvailable: () => o.say !== false, listMacVoices: async () => [{ name: 'Paulina', locale: 'es_MX' }],
     say: async (req: any) => { sayCalls.push(req); return { ok: true, message: 'Speech completed.' }; },
     modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }),
-    qwenStatus: async () => ({ manifest: 'valid', voices: { 'qwen-intima': 'installed' } }),
     spawn: () => fakeChild(), spawnQwen: () => { const c = fakeChild(); pythons.push(c); return c; },
     focusCheck: async () => 'focused', focusPollMs: 5, lockPollMs: 5, qwenTmpRoot: tmpdir(),
     resolveTerminal: async () => 'com.term', createWatcher: () => ({ start() {}, stop() {} }),
@@ -158,9 +156,9 @@ test('the /speak menu lists the three actions, and custom voices appear as Voice
     const o = s.offered[0];
     for (const entry of [DESIGN, IMPORT, DELETE]) assert.ok(o.includes(entry), entry);
     const voices = o.filter(x => x.startsWith('Voice: '));
-    assert.equal(voices.length, 12);
-    assert.deepEqual(voices.slice(0, 10).map(x => x.match(/\(([^)]+)\) —/)![1]), Object.keys(VOICE_CATALOG));
-    assert.deepEqual(voices.slice(10), ['Voice: Propia · Mi voz (custom:mi-voz) — installed', 'Voice: Propia · Otra (custom:otra) — installed']);
+    assert.equal(voices.length, 5);
+    assert.deepEqual(voices.slice(0, 3).map(x => x.match(/\(([^)]+)\) —/)![1]), Object.keys(VOICE_CATALOG));
+    assert.deepEqual(voices.slice(3), ['Voice: Propia · Mi voz (custom:mi-voz) — installed', 'Voice: Propia · Otra (custom:otra) — installed']);
   } finally { s.shutdown(); s.close(); }
 });
 
@@ -171,7 +169,7 @@ test('a custom voice can be picked in /speak and persists as custom:<id>; with n
     assert.equal(s.settings().voice, 'custom:mi-voz');
   } finally { s.shutdown(); s.close(); }
   const plain = setup();
-  try { await plain.menu('Cancel'); assert.equal(plain.offered[0].filter(x => x.startsWith('Voice: ')).length, 10); } finally { plain.shutdown(); plain.close(); }
+  try { await plain.menu('Cancel'); assert.equal(plain.offered[0].filter(x => x.startsWith('Voice: ')).length, 3); } finally { plain.shutdown(); plain.close(); }
 });
 
 test('cycleVoice reaches custom voices after the built-ins and wraps back', async () => {
@@ -391,17 +389,15 @@ test('Borrar voz propia… with no custom voices only says so', async () => {
 });
 
 // ---- preserve ----
-test('PRESERVE: built-in Qwen speech still uses voices/qwen3 and its catalog transcript', async () => {
-  const s = setup({ voice: 'qwen-intima', say: false });
-  s.save({}); const original = s.settings();
+test('PRESERVE: Qwen speech through a custom voice uses its reference.wav and transcript', async () => {
+  const s = setup({ voice: 'custom:mi-voz', say: false }); seedVoice(s);
   try {
-    assert.equal(original.voice, 'qwen-intima');
     const run = s.tools.get('speak').execute('id', { text: 'Hola.' }, undefined, undefined, s.ctx);
     await until(() => s.pythons.length === 1);
     s.pythons[0].stdout.emit('data', JSON.stringify({ schema: 'gentle.speak.qwen/v1', type: 'ready' }) + '\n');
     await until(() => s.pythons[0].writes.length === 1);
-    assert.equal(s.pythons[0].writes[0].ref, join(s.home, 'voices', 'qwen3', 'qwen3-chain-l3.wav'));
-    assert.match(s.pythons[0].writes[0].refText, /^Encontré el problema/);
+    assert.equal(s.pythons[0].writes[0].ref, join(s.home, 'voices', 'custom', 'mi-voz', 'reference.wav'));
+    assert.equal(s.pythons[0].writes[0].refText, 'Hola, esta es mi voz.');
     s.shutdown(); await run;
   } finally { s.close(); }
 });

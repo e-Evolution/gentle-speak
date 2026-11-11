@@ -41,7 +41,7 @@ const log = (...parts) => process.stderr.write(`${new Date().toISOString()} [qwe
 
 if (!home || !path.isAbsolute(home) || !python || !script || !version) { log('usage: --home <abs dir> --python <exe> --script <worker.py> --version <v>'); process.exit(2); }
 process.umask(0o077);
-const socketPath = path.join(home, 'qwen.sock'), pidPath = path.join(home, 'qwen-service.pid'), voicesDir = path.join(home, 'voices', 'qwen3'), customDir = path.join(home, 'voices', 'custom');
+const socketPath = path.join(home, 'qwen.sock'), pidPath = path.join(home, 'qwen-service.pid'), customDir = path.join(home, 'voices', 'custom');
 
 /** The home directory must be ours and private; anything else is refused (the socket would be reachable by others). */
 function ensurePrivateDir() {
@@ -57,7 +57,7 @@ const isPlainAbs = value => typeof value === 'string' && value.length <= 4095 &&
 const UNSAFE_TEXT = /[\x00-\x08\x0e-\x1f\x7f]/;
 /** What Python gets: CRLF and CR become LF, VT and FF become a space. Clients (Windows clipboards, pasted selections) legitimately send these. */
 const normalizeText = text => text.replace(/\r\n?/g, '\n').replace(/[\x0b\x0c]/g, ' ');
-/** S14: a custom voice's reference is exactly `<home>/voices/custom/<id>/reference.wav` (id `^[a-z0-9][a-z0-9-]{0,31}$`), a regular file whose real path stays under the custom dir (no symlink out). */
+/** S14 + T45: the only accepted reference. `voices/qwen3/` is no longer accepted: the migration copies the old built-in voices into `voices/custom/`, so nothing references it, and one narrower rule is easier to keep safe. A custom voice's reference is exactly `<home>/voices/custom/<id>/reference.wav` (id `^[a-z0-9][a-z0-9-]{0,31}$`), a regular file whose real path stays under the custom dir (no symlink out). */
 function isCustomRef(ref) {
   const parts = path.relative(customDir, ref).split(path.sep);
   if (parts.length !== 2 || !/^[a-z0-9][a-z0-9-]{0,31}$/.test(parts[0]) || parts[1] !== 'reference.wav') return false;
@@ -77,7 +77,7 @@ function invalidSynth(message) {
   if (typeof text !== 'string' || !text.trim() || text.length > MAX_TEXT || UNSAFE_TEXT.test(text)) return 'bad text';
   if (typeof refText !== 'string' || !refText.trim() || refText.length > MAX_TEXT) return 'bad refText';
   if (typeof speed !== 'number' || !Number.isFinite(speed) || speed < 0.5 || speed > 2) return 'bad speed';
-  if (!isPlainAbs(message.ref) || !(message.ref.startsWith(voicesDir + path.sep) || isCustomRef(message.ref))) return 'bad ref';
+  if (!isPlainAbs(message.ref) || !isCustomRef(message.ref)) return 'bad ref';
   if (!isPlainAbs(message.outDir)) return 'bad outDir';
   try {
     if (!fs.statSync(message.ref).isFile()) return 'ref is not a file';

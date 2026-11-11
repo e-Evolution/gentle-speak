@@ -31,7 +31,7 @@ export const customVoicesDir = (home: string) => join(home, 'voices', 'custom');
 // ---- WAV ----------------------------------------------------------------------------------------------------------------------------
 export interface WavInfo { channels: number; rate: number; bits: number; seconds: number }
 /** Parses the header of a PCM16 mono WAV and enforces 3-30 s; throws an Error whose message says why not. */
-export function inspectWav(data: Buffer): WavInfo {
+export function inspectWav(data: Buffer, { maxSeconds = CUSTOM_WAV_MAX_SECONDS }: { maxSeconds?: number } = {}): WavInfo {
   if (data.length < 44 || data.toString('latin1', 0, 4) !== 'RIFF' || data.toString('latin1', 8, 12) !== 'WAVE') throw new Error('Not a valid WAV file');
   let at = 12, fmt: { format: number; channels: number; rate: number; bits: number } | undefined, bytes: number | undefined;
   while (at + 8 <= data.length) {
@@ -50,7 +50,7 @@ export function inspectWav(data: Buffer): WavInfo {
   if (fmt.rate < 8000 || fmt.rate > 192000) throw new Error('The WAV sample rate is not supported');
   const seconds = bytes / (fmt.rate * 2);
   if (seconds < CUSTOM_WAV_MIN_SECONDS) throw new Error(`The WAV is too short (minimum ${CUSTOM_WAV_MIN_SECONDS} s)`);
-  if (seconds > CUSTOM_WAV_MAX_SECONDS) throw new Error(`The WAV is too long (maximum ${CUSTOM_WAV_MAX_SECONDS} s)`);
+  if (seconds > maxSeconds) throw new Error(`The WAV is too long (maximum ${CUSTOM_WAV_MAX_SECONDS} s)`);
   return { channels: fmt.channels, rate: fmt.rate, bits: fmt.bits, seconds };
 }
 
@@ -131,6 +131,8 @@ export function slugifyVoiceId(label: string, taken: ReadonlySet<string>): strin
 export interface CreateCustomVoiceOptions {
   home: string; id: string; label: string; transcript: string; source: CustomVoiceSource; wav: Buffer;
   language?: string; description?: string; now?: Date;
+  /** T45: only the migration of the old built-in voices sets it: two of them are 35-36 s, over the 30 s import limit. The size bound still applies. */
+  allowLong?: boolean;
 }
 /** Validates everything, writes a temp dir next to the target and renames it into place: an entry is whole or absent. An existing id is refused. */
 export async function createCustomVoice(options: CreateCustomVoiceOptions): Promise<CustomVoice> {
@@ -143,7 +145,7 @@ export async function createCustomVoice(options: CreateCustomVoiceOptions): Prom
   if (!/^[a-z]{2,3}$/.test(language)) throw new Error('Invalid language');
   if (options.description !== undefined && (typeof options.description !== 'string' || options.description.length > 1000)) throw new Error('Invalid description');
   if (wav.length > CUSTOM_WAV_MAX_BYTES) throw new Error('The WAV is too long (file too large)');
-  inspectWav(wav);
+  inspectWav(wav, options.allowLong ? { maxSeconds: Infinity } : {});
   const root = customVoicesDir(home), final = join(root, id), stage = join(root, `.stage-${randomUUID()}`);
   await mkdir(root, { recursive: true, mode: 0o700 });
   if (await lstat(final).then(() => true, () => false)) throw new Error(`A custom voice with id "${id}" already exists`);

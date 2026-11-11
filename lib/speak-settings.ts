@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { VOICE_CATALOG, isCustomVoiceId } from './speak-voices.ts';
+import { VOICE_CATALOG, isCustomVoiceId, isLegacyQwenVoiceId } from './speak-voices.ts';
 
 export { VOICE_CATALOG };
 export const SPEAK_SETTINGS_SCHEMA = 'gentle-speak.settings/v1';
@@ -67,7 +67,7 @@ function validate(value: unknown): SpeakSettings | undefined {
   const model = value.summaryModel ?? null;
   if (model !== null && (!record(model) || !hasKeys(model, ['provider', 'id']) || ![model.provider, model.id].every(part => typeof part === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(part as string)))) return undefined;
   if (typeof value.enabled !== 'boolean' || !['all', 'questions-and-results', 'summary'].includes(value.mode as string)) return undefined;
-  if (typeof value.voice !== 'string' || !(Object.hasOwn(VOICE_CATALOG, value.voice) || isCustomVoiceId(value.voice))) return undefined;
+  if (typeof value.voice !== 'string' || !(Object.hasOwn(VOICE_CATALOG, value.voice) || isCustomVoiceId(value.voice) || isLegacyQwenVoiceId(value.voice))) return undefined;
   if (typeof value.speed !== 'number' || !Number.isFinite(value.speed) || value.speed < 0.5 || value.speed > 2) return undefined;
   // Older files predate cycleVoice (v1) and toggleCopy: accept them without those keys and fill in defaults.
   if (!record(value.shortcuts) || !(hasKeys(value.shortcuts, keys) || hasKeys(value.shortcuts, keys.slice(0, 4)) || hasKeys(value.shortcuts, keys.slice(0, 3)))) return undefined;

@@ -1,13 +1,12 @@
 import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA, VOICE_CATALOG, parseSpeakSettingsFile, readSpeakSettings, writeSpeakSettings } from '../lib/speak-settings.ts';
-import { QWEN_MODEL_ID, QWEN_PYTHON_FLAGS, QWEN_VOICES } from '../lib/speak-voices.ts';
-import { installQwenVoices, qwenVoicesStatus } from '../lib/speak-voices-install.ts';
+import { QWEN_MODEL_ID, QWEN_PYTHON_FLAGS } from '../lib/speak-voices.ts';
+import { LEGACY_QWEN_VOICES } from '../lib/speak-voices-install.ts';
 
 const TEXT_A = '¿Ya estás despierto? Mira, te tengo una noticia buena y una mala, y voy a empezar por la buena, porque me cae bien tu cara. Terminé todo. Sí, todo, y sin quejarme ni una sola vez... bueno, casi ninguna. Ahora la mala: vas a tener que revisar lo que hice, y sé que eso te da pereza. Ven, siéntate. Escúchame un segundo y me dices si te convence, ¿va?';
 const TEXT_B = TEXT_A.replace('Escúchame', 'Escuchame').replace('me dices', 'me decis');
@@ -26,30 +25,31 @@ const tmp = async (run: (dir: string) => unknown) => {
   const dir = mkdtempSync(join(tmpdir(), 'gentle-speak-voices-'));
   try { await run(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
 };
-const sha = (data: Buffer) => createHash('sha256').update(data).digest('hex');
 
-test('catalog has exactly the seven qwen voices with exact files, transcripts and hashes; piper entries unchanged', () => {
-  const qwen = Object.entries(VOICE_CATALOG).filter(([, v]) => v.engine === 'qwen3');
-  assert.deepEqual(qwen.map(([id]) => id).sort(), Object.keys(EXPECTED).sort());
-  for (const [id, voice] of qwen) {
+test('T45: the migration table keeps the seven old voices with exact files, transcripts and hashes; the public catalog is Piper and mac only', () => {
+  assert.deepEqual(Object.keys(LEGACY_QWEN_VOICES).sort(), Object.keys(EXPECTED).sort());
+  for (const [id, voice] of Object.entries(LEGACY_QWEN_VOICES)) {
     const [label, file, transcript, hash, bytes] = EXPECTED[id];
-    assert.deepEqual({ ...voice }, { engine: 'qwen3', label, file, transcript, sha256: hash, bytes });
+    assert.deepEqual({ ...voice }, { name: id.slice('qwen-'.length), label, file, transcript, sha256: hash, bytes });
   }
+  assert.deepEqual(Object.keys(VOICE_CATALOG), ['es_MX', 'es_ES', 'mac']);
   assert.deepEqual({ ...VOICE_CATALOG.es_MX }, { engine: 'piper', locale: 'es_MX', language: 'es', label: 'Español (México)' });
   assert.deepEqual({ ...VOICE_CATALOG.es_ES }, { engine: 'piper', locale: 'es_ES', language: 'es', label: 'Español (España)' });
   assert.deepEqual({ ...VOICE_CATALOG.mac }, { engine: 'system', label: 'Mac' });
-  assert.equal(Object.keys(VOICE_CATALOG).length, 10);
-  assert.equal(Object.keys(QWEN_VOICES).length, 7);
   assert.equal(QWEN_MODEL_ID, 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16');
+  assert.deepEqual(QWEN_PYTHON_FLAGS, ['-E', '-P']);
 });
 
-test('settings accept every catalog voice and round-trip a qwen voice; default stays es_MX', () => tmp(home => {
+test('settings accept every catalog voice and round-trip a custom voice; default stays es_MX', () => tmp(home => {
   assert.equal(DEFAULT_SPEAK_SETTINGS.voice, 'es_MX');
   for (const voice of Object.keys(VOICE_CATALOG)) {
     const settings = { ...DEFAULT_SPEAK_SETTINGS, voice };
     writeSpeakSettings(settings, home);
     assert.deepEqual(readSpeakSettings(home), settings);
   }
+  const custom = { ...DEFAULT_SPEAK_SETTINGS, voice: 'custom:mi-voz' };
+  writeSpeakSettings(custom, home);
+  assert.deepEqual(readSpeakSettings(home), custom);
 }));
 
 test('v1 file without cycleVoice loads unchanged plus the default; cycleVoice is ctrl+alt+n', () => {
@@ -70,71 +70,3 @@ test('unknown voice, reserved, duplicate and malformed cycleVoice stay rejected'
   assert.equal(parse({ shortcuts: { ...DEFAULT_SPEAK_SETTINGS.shortcuts, extra: 'ctrl+alt+q' } }), undefined);
   assert.throws(() => writeSpeakSettings({ ...DEFAULT_SPEAK_SETTINGS, shortcuts: { ...DEFAULT_SPEAK_SETTINGS.shortcuts, cycleVoice: 'ctrl+alt+v' } }, '/nonexistent-never-written'), /Invalid speak settings/);
 });
-
-// Fixture catalog with tiny files.
-const fixture = (dir: string) => {
-  const files = { 'a.wav': Buffer.from('alpha-audio'), 'b.wav': Buffer.from('beta-audio!!') };
-  const source = join(dir, 'src');
-  mkdirSync(source);
-  for (const [name, data] of Object.entries(files)) writeFileSync(join(source, name), data);
-  const catalog = {
-    'qwen-a': { engine: 'qwen3' as const, label: 'A', file: 'a.wav', transcript: 'Hola á', sha256: sha(files['a.wav']), bytes: files['a.wav'].length },
-    'qwen-b': { engine: 'qwen3' as const, label: 'B', file: 'b.wav', transcript: 'Adiós ¿?', sha256: sha(files['b.wav']), bytes: files['b.wav'].length },
-  };
-  return { source, catalog, home: join(dir, 'home') };
-};
-const okRun = () => { const calls: string[][] = []; return { calls, run: async (cmd: string, args: string[]) => { calls.push([cmd, ...args]); return { code: 0 }; } }; };
-
-test('installer copies, verifies and writes a manifest in a temp home', () => tmp(async dir => {
-  const { source, catalog, home } = fixture(dir);
-  assert.deepEqual((await qwenVoicesStatus(home, catalog)).voices, { 'qwen-a': 'missing', 'qwen-b': 'missing' });
-  const { calls, run } = okRun();
-  await installQwenVoices({ sourceDir: source, home, python: '/py/python3', catalog, run });
-  // Same interpreter flags the synth worker runs with, and the import that
-  // actually loads the model: a bare `import mlx_audio` passed even when
-  // load_model failed for lack of user-site dependencies.
-  assert.deepEqual(QWEN_PYTHON_FLAGS, ['-E', '-P']);
-  assert.deepEqual(calls, [['/py/python3', '-E', '-P', '-c', 'from mlx_audio.tts.utils import load_model']]);
-  const target = join(home, 'voices', 'qwen3');
-  assert.deepEqual(readdirSync(target).sort(), ['a.wav', 'b.wav', 'manifest.json']);
-  assert.equal(readFileSync(join(target, 'a.wav'), 'utf8'), 'alpha-audio');
-  assert.deepEqual(JSON.parse(readFileSync(join(target, 'manifest.json'), 'utf8')), {
-    schema: 'gentle-speak.qwen-voices/v1', python: '/py/python3', model: QWEN_MODEL_ID,
-    voices: Object.fromEntries(Object.entries(catalog).map(([id, v]) => [id, { file: v.file, sha256: v.sha256, bytes: v.bytes, transcript: v.transcript }])),
-  });
-  const status = await qwenVoicesStatus(home, catalog);
-  assert.deepEqual(status, { manifest: 'valid', voices: { 'qwen-a': 'installed', 'qwen-b': 'installed' } });
-  await installQwenVoices({ sourceDir: source, home, python: '/py/python3', catalog, run }); // idempotent
-  assert.deepEqual((await qwenVoicesStatus(home, catalog)).voices, status.voices);
-}));
-
-test('sha mismatch publishes nothing and reports invalid', () => tmp(async dir => {
-  const { source, catalog, home } = fixture(dir);
-  writeFileSync(join(source, 'b.wav'), Buffer.from('beta-audio??')); // same size, different hash
-  await assert.rejects(installQwenVoices({ sourceDir: source, home, python: 'py', catalog, run: okRun().run }), /qwen-b|sha256/);
-  const target = join(home, 'voices', 'qwen3');
-  assert.equal(existsSync(join(target, 'b.wav')), false);
-  assert.equal(existsSync(join(target, 'manifest.json')), false);
-  assert.deepEqual(existsSync(target) ? readdirSync(target).filter(n => n.endsWith('.tmp') || n.includes('.tmp')) : [], []);
-  const status = await qwenVoicesStatus(home, catalog);
-  assert.notEqual(status.voices['qwen-b'], 'installed');
-  assert.notEqual(status.manifest, 'valid');
-}));
-
-test('failed python check writes no manifest and no files', () => tmp(async dir => {
-  const { source, catalog, home } = fixture(dir);
-  await assert.rejects(installQwenVoices({ sourceDir: source, home, python: 'py', catalog, run: async () => ({ code: 1 }) }), /mlx_audio|python/i);
-  assert.equal(existsSync(join(home, 'voices')), false);
-  assert.deepEqual(await qwenVoicesStatus(home, catalog), { manifest: 'missing', voices: { 'qwen-a': 'missing', 'qwen-b': 'missing' } });
-}));
-
-test('existing different file is never overwritten and reports invalid', () => tmp(async dir => {
-  const { source, catalog, home } = fixture(dir);
-  const target = join(home, 'voices', 'qwen3');
-  mkdirSync(target, { recursive: true });
-  writeFileSync(join(target, 'a.wav'), 'user-owned');
-  await assert.rejects(installQwenVoices({ sourceDir: source, home, python: 'py', catalog, run: okRun().run }), /a\.wav|invalid/i);
-  assert.equal(readFileSync(join(target, 'a.wav'), 'utf8'), 'user-owned');
-  assert.equal(existsSync(join(target, 'manifest.json')), false);
-  assert.equal((await qwenVoicesStatus(home, catalog)).voices['qwen-a'], 'invalid');
-}));

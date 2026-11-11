@@ -10,6 +10,7 @@ import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA, parseSpeakSettingsFile, 
 import gentleSpeak from '../extensions/gentle-speak.ts';
 import { hermetic } from './helpers/hermetic.ts';
 import { createQwenSpeech } from '../lib/speak-qwen.ts';
+import { writeEntry } from './helpers/custom-voice-fixture.ts';
 
 const QS = 'gentle.speak.qwen/v1', AS = 'gentle.speak/v1';
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -233,13 +234,13 @@ function extensionHarness(minutes: number | null | undefined) {
   const pythons: Fake[] = [];
   mkdirSync(join(home, 'voices', 'qwen3'), { recursive: true });
   writeFileSync(join(home, 'voices', 'qwen3', 'manifest.json'), JSON.stringify({ python: '/fake/python3' }));
-  const settings: any = { schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, voice: 'qwen-intima' };
+  writeEntry(join(home, 'voices', 'custom'), 'intima', { wav: Buffer.from('RIFF') }); // T45
+  const settings: any = { schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, voice: 'custom:intima' };
   if (minutes === undefined) delete settings.qwenIdleMinutes; else settings.qwenIdleMinutes = minutes;
   writeFileSync(join(home, 'speak-settings.json'), JSON.stringify(settings));
   const offered: string[][] = []; const selections: string[] = []; const notes: string[] = [];
   const ctx: any = { mode: 'tui', hasUI: true, sessionManager: { getHeader: () => ({ type: 'session' }), getBranch: () => [] }, ui: { notify: (t: string) => notes.push(t), setStatus() {}, select: async (_t: string, o: string[]) => { offered.push(o); return selections.shift(); } } };
-  const deps = { ...hermetic(home), modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }),
-    qwenStatus: async () => ({ manifest: 'valid', voices: { 'qwen-intima': 'installed' } }), spawn: () => fakeChild().child,
+  const deps = { ...hermetic(home), modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), spawn: () => fakeChild().child,
     spawnQwen: () => { const p = fakeChild(); pythons.push(p); return p.child; } };
   const tools = new Map<string, any>();
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand: (n: string, c: any) => commands.set(n, c), registerShortcut() {}, registerTool: (t: any) => tools.set(t.name, t) } as any, home, { focusCheck: async () => 'focused', sayAvailable: () => false, ...deps } as any);

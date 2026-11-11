@@ -8,10 +8,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hermetic } from './helpers/hermetic.ts';
 import gentleSpeak from '../extensions/gentle-speak.ts';
+import { writeEntry } from './helpers/custom-voice-fixture.ts';
 
 const message = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Resultado listo.' }] };
 function harness(mode = 'tui', overrides: any = {}) {
   const home = mkdtempSync(join(tmpdir(), 'speak-extension-'));
+  // T45: Qwen voices are the user's own. `customs` seeds custom voices (labelled by id) and, unless `noPython`, the Python record they need.
+  for (const id of overrides.customs ?? []) writeEntry(join(home, 'voices', 'custom'), id, { meta: { label: id[0].toUpperCase() + id.slice(1) } });
+  if (overrides.customs?.length && !overrides.noPython) writeFileSync(join(home, 'python.json'), JSON.stringify({ schema: 'gentle-speak.python/v1', python: '/fake/python3' }));
   const events = new Map<string, Function>();
   const commands = new Map<string, any>();
   const shortcuts = new Map<string, any>();
@@ -214,18 +218,18 @@ test('settings command is TUI-only and exposes no install on noninteractive sess
 const settingsFile = (h: { home: string }) => join(h.home, 'speak-settings.json');
 const save = (h: { home: string }, patch: Record<string, unknown>) => writeFileSync(settingsFile(h), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, ...patch }));
 const saved = (h: { home: string }) => JSON.parse(readFileSync(settingsFile(h), 'utf8'));
-const piperOnly = { modelStatus: async ({ voice }: any) => ({ state: voice === 'es_MX' ? 'installed' : 'missing', path: '/m' }), qwenStatus: async () => ({ manifest: 'missing', voices: {} }) };
-const qwenReady = (installed: string[]) => ({ modelStatus: async ({ voice }: any) => ({ state: 'installed', path: '/m' }), qwenStatus: async () => ({ manifest: 'valid', voices: Object.fromEntries(['qwen-suave', 'qwen-brisa', 'qwen-coqueta', 'qwen-maestra', 'qwen-intima', 'qwen-serena', 'qwen-viva'].map(id => [id, installed.includes(id) ? 'installed' : 'missing'])) }) });
+const piperOnly = { modelStatus: async ({ voice }: any) => ({ state: voice === 'es_MX' ? 'installed' : 'missing', path: '/m' }) };
+const allInstalled = { modelStatus: async () => ({ state: 'installed', path: '/m' }) };
 const last = (h: { statuses: Array<[string, string | undefined]> }) => h.statuses.at(-1);
 
 test('session start sets the SPEAK row in both states with default keys', async () => {
-  const h = harness();
+  const h = harness('tui', { customs: ['brisa'], dependencies: allInstalled });
   try {
     await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
     assert.deepEqual(last(h), ['gentle-speak', 'SPEAK ○ off · modo preguntas y resultados · Español (México) · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c']);
-    save(h, { enabled: true, voice: 'qwen-brisa' });
+    save(h, { enabled: true, voice: 'custom:brisa' });
     await h.events.get('session_start')!({ reason: 'startup' }, h.ctx);
-    assert.deepEqual(last(h), ['gentle-speak', 'SPEAK ● on · modo preguntas y resultados · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c']);
+    assert.deepEqual(last(h), ['gentle-speak', 'SPEAK ● on · modo preguntas y resultados · Propia · Brisa · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c']);
   } finally { h.close(); }
 });
 
@@ -285,17 +289,18 @@ test('other /speak entries keep their behavior (mode, speed)', async () => {
 });
 
 test('the /speak menu lists every catalog voice with label, id and install state, and keeps the other entries', async () => {
-  const h = harness('tui', { dependencies: qwenReady(['qwen-brisa']) });
+  const h = harness('tui', { customs: ['brisa', 'coqueta'], dependencies: allInstalled });
   let offered: string[] = [];
   h.ctx.ui.select = async (_title: string, options: string[]) => { offered = options; return 'Cancel'; };
   try {
     await h.commands.get('speak').handler('', h.ctx);
     const voices = offered.filter(option => option.startsWith('Voice: '));
-    assert.equal(voices.length, 10);
-    assert.equal(voices[9], 'Voice: Mac (mac) — not installed');
+    assert.equal(voices.length, 5, 'Piper es_MX and es_ES, mac, and the two custom voices: no built-in Qwen voice');
+    assert.equal(voices[2], 'Voice: Mac (mac) — not installed');
     assert.equal(voices[0], 'Voice: Español (México) (es_MX) — installed');
-    assert.equal(voices[4], 'Voice: Coqueta (qwen-coqueta) — not installed');
-    assert.equal(voices[3], 'Voice: Brisa (qwen-brisa) — installed');
+    assert.equal(voices[3], 'Voice: Propia · Brisa (custom:brisa) — installed');
+    assert.equal(voices[4], 'Voice: Propia · Coqueta (custom:coqueta) — installed');
+    assert.equal(voices.some(option => /qwen-/.test(option)), false);
     assert.equal(voices.some(option => option === 'Voice: es_MX' || option === 'Voice: es_ES'), false);
     assert.deepEqual(offered.slice(0, 1), ['Gentle Dot']);
     assert.equal(offered.includes('Hablar en Gentle Dot'), false);
@@ -304,24 +309,24 @@ test('the /speak menu lists every catalog voice with label, id and install state
 });
 
 test('selecting an installed voice persists it and refreshes the row', async () => {
-  const h = harness('tui', { dependencies: qwenReady(['qwen-brisa']) });
+  const h = harness('tui', { customs: ['brisa'], dependencies: allInstalled });
   try {
-    h.selections.push('Voice: Brisa (qwen-brisa) — installed');
+    h.selections.push('Voice: Propia · Brisa (custom:brisa) — installed');
     await h.commands.get('speak').handler('', h.ctx);
-    assert.equal(saved(h).voice, 'qwen-brisa');
+    assert.equal(saved(h).voice, 'custom:brisa');
     assert.deepEqual(h.notifications, ['Speech settings saved.']);
-    assert.match(last(h)![1]!, /^SPEAK ○ off · modo preguntas y resultados · Brisa · /);
+    assert.match(last(h)![1]!, /^SPEAK ○ off · modo preguntas y resultados · Propia · Brisa · /);
   } finally { h.close(); }
 });
 
-test('selecting an uninstalled voice explains how to install it and does not switch', async () => {
-  const h = harness('tui', { dependencies: qwenReady([]) });
+test('selecting a custom voice while the Qwen Python is not set up explains it and does not switch', async () => {
+  const h = harness('tui', { customs: ['brisa'], noPython: true, dependencies: allInstalled });
   try {
-    h.selections.push('Voice: Brisa (qwen-brisa) — not installed');
+    h.selections.push('Voice: Propia · Brisa (custom:brisa) — not installed');
     await h.commands.get('speak').handler('', h.ctx);
     assert.equal(existsSync(settingsFile(h)), false);
     assert.equal(h.notifications.length, 1);
-    assert.match(h.notifications[0], /Brisa.*not installed.*README/s);
+    assert.match(h.notifications[0], /custom:brisa.*no está disponible.*entorno de Qwen/s);
     assert.deepEqual(h.statuses, []);
   } finally { h.close(); }
 });
@@ -344,21 +349,21 @@ test('the cycleVoice rebind accepts a free key and rejects reserved or duplicate
 });
 
 test('the cycle shortcut is registered on the configured key and skips unavailable voices, wrapping', async () => {
-  const h = harness('tui', { dependencies: qwenReady(['qwen-brisa', 'qwen-viva']) });
+  const h = harness('tui', { customs: ['brisa', 'viva'], dependencies: allInstalled });
   try {
     assert.ok(h.shortcuts.has('ctrl+alt+n'));
     const cycle = () => h.shortcuts.get('ctrl+alt+n').handler(h.ctx);
     await cycle(); assert.equal(saved(h).voice, 'es_ES');
-    await cycle(); assert.equal(saved(h).voice, 'qwen-brisa');
-    assert.equal(h.notifications.at(-1), 'Voice: Brisa');
+    await cycle(); assert.equal(saved(h).voice, 'custom:brisa');
+    assert.equal(h.notifications.at(-1), 'Voice: Propia · Brisa');
     assert.match(last(h)![1]!, /Brisa/);
-    await cycle(); assert.equal(saved(h).voice, 'qwen-viva');
+    await cycle(); assert.equal(saved(h).voice, 'custom:viva');
     await cycle(); assert.equal(saved(h).voice, 'es_MX');
   } finally { h.close(); }
 });
 
-test('cycling skips qwen voices when the manifest is not valid', async () => {
-  const h = harness('tui', { dependencies: { modelStatus: async () => ({ state: 'installed', path: '/m' }), qwenStatus: async () => ({ manifest: 'invalid', voices: { 'qwen-brisa': 'installed' } }) } });
+test('cycling skips custom voices when no Qwen Python is recorded', async () => {
+  const h = harness('tui', { customs: ['brisa'], noPython: true, dependencies: allInstalled });
   try {
     await h.shortcuts.get('ctrl+alt+n').handler(h.ctx);
     assert.equal(saved(h).voice, 'es_ES');
@@ -378,7 +383,7 @@ test('cycling with no alternative changes nothing and notifies', async () => {
 });
 
 test('the cycle shortcut does nothing in a non-TUI session', async () => {
-  const h = harness('json', { dependencies: qwenReady(['qwen-brisa']) });
+  const h = harness('json', { customs: ['brisa'], dependencies: allInstalled });
   try {
     await h.shortcuts.get('ctrl+alt+n').handler(h.ctx);
     assert.equal(existsSync(settingsFile(h)), false);
@@ -427,8 +432,8 @@ function copyHarness(over: { tui?: unknown; terminal?: string | undefined; mode?
   const watchers: Array<{ opts: any; starts: number; stops: number }> = [];
   const widgets: Array<[string, unknown]> = [];
   const resolved: number[] = [];
-  const h = harness(over.mode ?? 'tui', { header: over.header, dependencies: {
-    ...qwenReady(['qwen-brisa']),
+  const h = harness(over.mode ?? 'tui', { header: over.header, customs: ['brisa'], dependencies: {
+    ...allInstalled,
     runtimeStatus: async () => ({ state: 'installed', path: '/r' }),
     resolveTerminal: async () => { resolved.push(1); return 'terminal' in over ? over.terminal : 'com.term'; },
     createWatcher: (opts: any) => { const w = { opts, starts: 0, stops: 0 }; watchers.push(w); return { start: () => { w.starts++; }, stop: () => { w.stops++; } }; },

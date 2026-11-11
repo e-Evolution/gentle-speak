@@ -104,7 +104,7 @@ function ext(over: { mode?: string; header?: any; tui?: any; terminal?: string |
     setWidget: (_k: string, f: any) => { if (typeof f === 'function') f('tui' in over ? over.tui : goodTui(), {}); } } });
   const ctx: any = mkCtx();
   writeFileSync(join(home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, copySpeech: over.copy !== false }));
-  const deps = { ...hermetic(home), sayAvailable: () => false, modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), qwenStatus: async () => ({ manifest: 'missing', voices: {} }),
+  const deps = { ...hermetic(home), sayAvailable: () => false, modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }),
     spawn: () => { const c: any = new EventEmitter(); c.stdin = { write: (l: string) => { speaks.push(l); return true; } }; c.stdout = new EventEmitter(); c.stderr = new EventEmitter(); c.kill = () => true; children.push(c); return c; },
     resolveTerminal: async () => ('terminal' in over ? over.terminal : 'com.term'),
     createWatcher: (opts: any) => { const wc = fakeChild(); watcherSpawns.push(wc); return clip.createCopiedSelectionWatcher({ ...opts, spawn: () => wc, readText: async () => { reads.push(1); return SENT; } }); } };

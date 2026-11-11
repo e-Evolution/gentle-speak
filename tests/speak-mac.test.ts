@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA, readSpeakSettings } from '../lib/speak-settings.ts';
 import gentleSpeak from '../extensions/gentle-speak.ts';
 import { hermetic } from './helpers/hermetic.ts';
+import { writeEntry } from './helpers/custom-voice-fixture.ts';
 
 // S11 wiring: the Mac voice as an extra voice and as fallback. All fakes: no `say`, no audio, no model. Scratch lives under mktemp.
 const until = async (cond: () => boolean, what = 'condition') => {
@@ -24,7 +25,9 @@ interface Opts { voice?: string; patch?: Record<string, unknown>; say?: boolean;
 function setup(o: Opts = {}) {
   const home = mkdtempSync(join(tmpdir(), 'speak-mac-')); roots.push(home);
   mkdirSync(join(home, 'voices', 'qwen3'), { recursive: true });
-  writeFileSync(join(home, 'voices', 'qwen3', 'manifest.json'), JSON.stringify({ python: '/fake/python3' }));
+  writeFileSync(join(home, 'python.json'), JSON.stringify({ schema: 'gentle-speak.python/v1', python: '/fake/python3' }));
+  // T45: Qwen voices are the user's own: `custom:intima` exists unless the test says `qwen: 'missing'`.
+  if (o.qwen !== 'missing') writeEntry(join(home, 'voices', 'custom'), 'intima', { meta: { label: 'Íntima' } });
   const save = (patch: Record<string, unknown>) => writeFileSync(join(home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'all', voice: o.voice ?? 'mac', ...o.patch, ...patch }));
   save({});
   const events = new Map<string, Function>(), shortcuts = new Map<string, any>(), tools = new Map<string, any>(), commands = new Map<string, any>();
@@ -50,7 +53,6 @@ function setup(o: Opts = {}) {
     }),
     modelStatus: async () => ({ state: o.piper === 'missing' ? 'missing' : 'installed', path: '/m' }),
     runtimeStatus: async () => ({ state: o.runtime === 'missing' ? 'missing' : 'installed', path: '/r' }),
-    qwenStatus: async () => ({ manifest: 'valid', voices: Object.fromEntries(['qwen-intima', 'qwen-brisa', 'qwen-suave'].map(id => [id, o.qwen === 'missing' ? 'missing' : 'installed'])) }),
     spawn: () => { if (o.piperSpawnThrows) throw new Error('no worker'); const c = fakeChild(); audioChildren.push(c); return c; },
     spawnQwen: () => { if (o.qwenSpawnThrows) throw new Error('spawn failed'); const c = fakeChild(); pythons.push(c); return c; },
     focusCheck: async () => (o.focus ? o.focus() : state.focus), focusPollMs: 5, lockPollMs: 5, qwenTmpRoot: join(home, 'scratch'),
@@ -181,7 +183,7 @@ function sharedHome(first: ReturnType<typeof setup>) {
   const ctx: any = { cwd: '/w', mode: 'tui', hasUI: true, isIdle: () => true, sessionManager: { getHeader: () => ({ type: 'session' }), getBranch: () => [] }, ui: { setStatus() {}, notify() {}, select: async () => undefined, input: async () => undefined, confirm: async () => false, setWidget() {} } };
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut() {}, registerTool: (t: any) => tools.set(t.name, t) } as any, first.home, {
     ...hermetic(first.home), sayAvailable: () => true, listMacVoices: async () => VOICES, say: (r: any) => new Promise(res => { sayCalls.push(r); resolvers.push(res); }), focusCheck: async () => 'focused', focusPollMs: 5, lockPollMs: 5,
-    modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), qwenStatus: async () => ({ manifest: 'missing', voices: {} }) } as any);
+    modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }) } as any);
   return { sayCalls, tool: (text: string) => tools.get('speak').execute('id', { text }, undefined, undefined, ctx), finishSay: () => resolvers[0]({ ok: true, message: 'ok' }), shutdown: () => events.get('session_shutdown')!({}, ctx) };
 }
 
@@ -249,20 +251,20 @@ test('fallback trigger: Piper worker error and early exit during synthesis speak
 
 test('fallback triggers for Qwen: not installed, runtime missing, worker spawn failure', async () => {
   for (const o of [{ qwen: 'missing' as const }, { runtime: 'missing' as const }, { qwenSpawnThrows: true }]) {
-    const s = setup({ voice: 'qwen-intima', ...o });
+    const s = setup({ voice: 'custom:intima', ...o });
     const run = s.tool('Hola.');
     await until(() => s.sayCalls.length === 1, `say fallback ${JSON.stringify(o)}`);
     assert.equal(s.sayCalls[0].text, 'Hola.');
     s.finishSay(); await run;
     assert.equal(fallbackNotes(s).length, 1);
-    assert.match(fallbackNotes(s)[0][0], /^gentle-speak: Íntima unavailable \(.+\); speaking with the Mac voice\.$/);
+    assert.match(fallbackNotes(s)[0][0], /^gentle-speak: (Propia · Íntima|custom:intima) unavailable \(.+\); speaking with the Mac voice\.$/);
     assert.equal(s.notes.some(([t, l]) => l === 'error'), false, 'the not-installed error is replaced by the fallback notice');
     s.shutdown();
   }
 });
 
 test('fallback trigger for Qwen: a worker error reply during synthesis', async () => {
-  const s = setup({ voice: 'qwen-intima' });
+  const s = setup({ voice: 'custom:intima' });
   const run = s.tool('Hola.');
   await until(() => s.pythons.length === 1, 'qwen worker');
   s.pythons[0].stdout.emit('data', JSON.stringify({ schema: 'gentle.speak.qwen/v1', type: 'error', id: 1, message: 'boom' }) + '\n');
@@ -307,7 +309,7 @@ test('no fallback on cancel, stop, invalid text or the parent-session refusal', 
 });
 
 test('no fallback on cancel while Qwen is playing', async () => {
-  const s = setup({ voice: 'qwen-intima' });
+  const s = setup({ voice: 'custom:intima' });
   const controller = new AbortController();
   const run = s.tool('Hola.', controller.signal);
   await until(() => s.pythons.length === 1);
@@ -322,9 +324,9 @@ test('macFallback off keeps today\'s Piper and Qwen errors and never calls say',
   const piper = setup({ voice: 'es_MX', piper: 'missing', patch: { macFallback: false } });
   const out = await piper.tool();
   assert.equal(out.isError, true); assert.equal(out.content[0].text, 'Install and verify the voice and runtime with /speak first.');
-  const qwen = setup({ voice: 'qwen-intima', qwen: 'missing', patch: { macFallback: false } });
+  const qwen = setup({ voice: 'custom:intima', qwen: 'missing', patch: { macFallback: false } });
   const q = await qwen.tool();
-  assert.match(q.content[0].text, /^Qwen voice "Íntima" is not installed or is invalid\./);
+  assert.match(q.content[0].text, /^Custom voice "intima" is not installed or is invalid\./);
   assert.equal(qwen.notes.some(([t, l]) => l === 'error' && /not installed/.test(t)), true);
   assert.equal(piper.sayCalls.length + qwen.sayCalls.length, 0);
   assert.deepEqual([...fallbackNotes(piper), ...fallbackNotes(qwen)], []);
@@ -335,8 +337,8 @@ test('Mac unavailable (no say, or no Spanish voice) keeps today\'s errors with n
     const piper = setup({ voice: 'es_MX', piper: 'missing', ...o });
     const out = await piper.tool();
     assert.equal(out.content[0].text, 'Install and verify the voice and runtime with /speak first.');
-    const qwen = setup({ voice: 'qwen-intima', qwen: 'missing', ...o });
-    assert.match((await qwen.tool()).content[0].text, /^Qwen voice "Íntima" is not installed/);
+    const qwen = setup({ voice: 'custom:intima', qwen: 'missing', ...o });
+    assert.match((await qwen.tool()).content[0].text, /^Custom voice "intima" is not installed/);
     assert.equal(piper.sayCalls.length + qwen.sayCalls.length, 0);
     assert.deepEqual([...fallbackNotes(piper), ...fallbackNotes(qwen)], []);
   }
@@ -364,7 +366,7 @@ test('PRESERVE: Piper speaks through its worker with the exact request and never
 });
 
 test('PRESERVE: Qwen speaks through its synth worker and never calls say', async () => {
-  const s = setup({ voice: 'qwen-intima' });
+  const s = setup({ voice: 'custom:intima' });
   const run = s.tool('Hola mundo.');
   await until(() => s.pythons.length === 1);
   assert.equal(s.sayCalls.length, 0);
@@ -397,7 +399,7 @@ test('cycle key reaches mac once with say available, never without', async () =>
     s.shutdown(); return seen;
   })();
   const withSay = await order(true), withoutSay = await order(false);
-  assert.equal(withSay.slice(0, 10).filter(v => v === 'mac').length, 1);
+  assert.equal(withSay.slice(0, 4).filter(v => v === 'mac').length, 1, 'one full cycle (es_MX, es_ES, mac, custom:intima) has mac once');
   assert.equal(withoutSay.includes('mac'), false);
 });
 
@@ -470,10 +472,10 @@ test('R3-empty-voice-list-cached: an empty voice list is not cached; the next at
 });
 
 test('R3-qwen-error-suppressed-without-voice: Mac fallback cannot speak (no Spanish voice), so the original Qwen error reaches the user unchanged', async () => {
-  const s = setup({ voice: 'qwen-intima', qwen: 'missing', voices: [] });
+  const s = setup({ voice: 'custom:intima', qwen: 'missing', voices: [] });
   const tool = await s.tool();
   const original = tool.content[0].text;
-  assert.match(original, /^Qwen voice "Íntima" is not installed or is invalid\./); assert.equal(tool.isError, true);
+  assert.match(original, /^Custom voice "intima" is not installed or is invalid\./); assert.equal(tool.isError, true);
   s.notes.length = 0;
   await s.settle(); await quiet();
   assert.deepEqual(s.notes, [[original, 'error']], 'automatic speech reports the original error exactly once');
@@ -490,11 +492,11 @@ test('R3: a failed Mac voice list (throws) also leaves the original Piper error 
 
 test('R4-001: a hanging voice-list probe is bounded; speech does not block and treats the list as unavailable for that attempt', async () => {
   let calls = 0;
-  const s = setup({ voice: 'qwen-intima', qwen: 'missing', voiceProbeMs: 20, listMac: () => { calls++; return calls === 1 ? new Promise(() => {}) : Promise.resolve(VOICES); } }); s.setSay('ok');
+  const s = setup({ voice: 'custom:intima', qwen: 'missing', voiceProbeMs: 20, listMac: () => { calls++; return calls === 1 ? new Promise(() => {}) : Promise.resolve(VOICES); } }); s.setSay('ok');
   const started = Date.now();
   const out = await Promise.race([s.tool(), new Promise<never>((_, rej) => setTimeout(() => rej(new Error('speech blocked by the probe')), 2000))]);
   assert.ok(Date.now() - started < 1500);
-  assert.equal(out.isError, true); assert.match(out.content[0].text, /^Qwen voice "Íntima" is not installed/);
+  assert.equal(out.isError, true); assert.match(out.content[0].text, /^Custom voice "intima" is not installed/);
   assert.equal(s.sayCalls.length, 0);
   const again = await s.tool(); // the timeout was not cached: the next attempt lists again and falls back
   assert.equal(again.isError, undefined); assert.equal(calls, 2); assert.equal(s.sayCalls.length, 1);

@@ -5,7 +5,9 @@ import { VOICE_CATALOG } from '../lib/speak-voices.ts';
 import { DEFAULT_SPEAK_SETTINGS } from '../lib/speak-settings.ts';
 import { SPEAK_STATUS_KEY, formatSpeakStatus, nextAvailableVoice, voiceMenuEntries } from '../lib/speak-status.ts';
 
-const order = Object.keys(VOICE_CATALOG);
+// T45: built-in voices (Piper, mac) then the user's custom Qwen voices, as the extension builds the list.
+const order = [...Object.keys(VOICE_CATALOG), 'custom:brisa', 'custom:viva'];
+const customCatalog = { ...VOICE_CATALOG, 'custom:brisa': { label: 'Propia · Brisa' }, 'custom:viva': { label: 'Propia · Viva' } };
 const keys = DEFAULT_SPEAK_SETTINGS.shortcuts;
 
 test('status row shows title, state, voice label and configured keys; both states', () => {
@@ -29,13 +31,13 @@ test('status row survives the Gentle Shell sanitizer unchanged and keeps the sta
 test('cycling advances to the next available voice in catalog order and wraps', () => {
   const all = Object.fromEntries(order.map(id => [id, true]));
   assert.equal(nextAvailableVoice(order, 'es_MX', all), 'es_ES');
-  assert.equal(nextAvailableVoice(order, 'qwen-viva', all), 'mac');
-  assert.equal(nextAvailableVoice(order, 'mac', all), 'es_MX');
-  const sparse = { es_MX: true, es_ES: false, 'qwen-brisa': true, 'qwen-viva': true };
-  assert.equal(nextAvailableVoice(order, 'es_MX', sparse), 'qwen-brisa');
-  assert.equal(nextAvailableVoice(order, 'qwen-brisa', sparse), 'qwen-viva');
-  assert.equal(nextAvailableVoice(order, 'qwen-viva', sparse), 'es_MX');
-  assert.equal(nextAvailableVoice(order, 'es_ES', sparse), 'qwen-brisa');
+  assert.equal(nextAvailableVoice(order, 'mac', all), 'custom:brisa');
+  assert.equal(nextAvailableVoice(order, 'custom:viva', all), 'es_MX');
+  const sparse = { es_MX: true, es_ES: false, 'custom:brisa': true, 'custom:viva': true };
+  assert.equal(nextAvailableVoice(order, 'es_MX', sparse), 'custom:brisa');
+  assert.equal(nextAvailableVoice(order, 'custom:brisa', sparse), 'custom:viva');
+  assert.equal(nextAvailableVoice(order, 'custom:viva', sparse), 'es_MX');
+  assert.equal(nextAvailableVoice(order, 'es_ES', sparse), 'custom:brisa');
 });
 
 test('cycling with no other available voice returns undefined', () => {
@@ -44,10 +46,11 @@ test('cycling with no other available voice returns undefined', () => {
 });
 
 test('voice menu entries follow catalog order with label, id and installed state', () => {
-  const entries = voiceMenuEntries(VOICE_CATALOG, { es_MX: true, 'qwen-brisa': true });
+  const entries = voiceMenuEntries(customCatalog, { es_MX: true, 'custom:brisa': true });
   assert.deepEqual(entries.map(entry => entry.id), order);
-  assert.equal(entries.length, 10);
-  assert.equal(entries[9].text, 'Voice: Mac (mac) — not installed');
+  assert.equal(entries.length, 5);
+  assert.equal(entries[2].text, 'Voice: Mac (mac) — not installed');
+  assert.equal(entries[3].text, 'Voice: Propia · Brisa (custom:brisa) — installed');
   assert.equal(entries[0].text, 'Voice: Español (México) (es_MX) — installed');
   assert.equal(entries[1].text, 'Voice: Español (España) (es_ES) — not installed');
   assert.ok(entries.every(entry => entry.text.includes(`(${entry.id})`)));

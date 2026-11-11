@@ -64,7 +64,7 @@ function world(o: Opts = {}) {
       select: async (_t: string, items: string[]) => { menus.push(items); return selections.shift(); } } };
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand: (n: string, c: any) => commands.set(n, c), registerShortcut() {}, registerTool() {} } as any, undefined, {
     modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), spawn,
-    focusCheck: async () => 'focused', focusPollMs: 5, lockPollMs: 5, sayAvailable: () => false, qwenStatus: async () => ({ manifest: 'missing', voices: {} }) as any,
+    focusCheck: async () => 'focused', focusPollMs: 5, lockPollMs: 5, sayAvailable: () => false,
     env, userHome: real, processHome: dot ? dh : real, packageRoot: '/pkg/gentle-speak', resolveTerminal: async () => undefined,
   } as any);
   const readDot = () => JSON.parse(readFileSync(dotSpeakFile, 'utf8'));

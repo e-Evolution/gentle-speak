@@ -33,8 +33,8 @@ send({ type: 'ready' });
 export function qwenFixture() {
   const root = mkdtempSync(join(tmpdir(), 'gsq-'));
   const home = join(root, 'h');
-  mkdirSync(join(home, 'voices', 'qwen3'), { recursive: true });
-  const ref = join(home, 'voices', 'qwen3', 'ref.wav');
+  mkdirSync(join(home, 'voices', 'custom', 'ref'), { recursive: true }); // T45: the service accepts only voices/custom/<id>/reference.wav
+  const ref = join(home, 'voices', 'custom', 'ref', 'reference.wav');
   writeFileSync(ref, 'RIFF');
   const worker = join(root, 'fake-worker.mjs');
   writeFileSync(worker, FAKE_WORKER);

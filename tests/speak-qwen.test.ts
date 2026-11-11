@@ -6,13 +6,14 @@ import { existsSync, readdirSync, mkdtempSync, rmSync, statSync, writeFileSync, 
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA } from '../lib/speak-settings.ts';
-import { QWEN_VOICES } from '../lib/speak-voices.ts';
+import { writeEntry } from './helpers/custom-voice-fixture.ts';
 import gentleSpeak from '../extensions/gentle-speak.ts';
 import { hermetic } from './helpers/hermetic.ts';
 import { createQwenSpeech } from '../lib/speak-qwen.ts';
 
 const QS = 'gentle.speak.qwen/v1', AS = 'gentle.speak/v1';
-const voice = QWEN_VOICES['qwen-intima'];
+// T45: Qwen voices are custom voices (`custom:intima` here), seeded under voices/custom/ with a known transcript.
+const voice = { transcript: 'Hola, soy Íntima.' };
 const message = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Resultado listo.' }] };
 const until = async (predicate: () => boolean) => { for (let i = 0; i < 200 && !predicate(); i++) await new Promise(r => setImmediate(r)); assert.ok(predicate(), 'condition not reached'); };
 function fakeChild() {
@@ -20,7 +21,7 @@ function fakeChild() {
   const child: any = Object.assign(new EventEmitter(), { stdin: { write: (line: string) => { writes.push(JSON.parse(line)); return true; } }, stdout: new EventEmitter(), stderr: new EventEmitter(), killed: 0, kill() { child.killed++; return true; } });
   return { child, writes, emit: (m: object) => child.stdout.emit('data', JSON.stringify(m) + '\n') };
 }
-function harness(opts: { status?: any; voiceId?: string; manifest?: boolean; spawnFailures?: number } = {}) {
+function harness(opts: { custom?: 'ok' | 'missing' | 'invalid'; voiceId?: string; manifest?: boolean; spawnFailures?: number } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'speak-qwen-ext-'));
   const events = new Map<string, Function>(), shortcuts = new Map<string, any>(), tools = new Map<string, any>();
   const notifications: Array<[string, string]> = [];
@@ -30,13 +31,13 @@ function harness(opts: { status?: any; voiceId?: string; manifest?: boolean; spa
   let failures = opts.spawnFailures ?? 0;
   mkdirSync(join(home, 'voices', 'qwen3'), { recursive: true });
   if (opts.manifest !== false) writeFileSync(join(home, 'voices', 'qwen3', 'manifest.json'), JSON.stringify({ python: '/fake/python3' }));
-  writeFileSync(join(home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, voice: opts.voiceId ?? 'qwen-intima', speed: 1.25 }));
+  if (opts.custom !== 'missing') writeEntry(join(home, 'voices', 'custom'), 'intima', { meta: { label: 'Íntima', transcript: voice.transcript, ...(opts.custom === 'invalid' ? { sha256: '0'.repeat(64) } : {}) } });
+  writeFileSync(join(home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, voice: opts.voiceId ?? 'custom:intima', speed: 1.25 }));
   const ctx = { mode: 'tui', hasUI: true, sessionManager: { getHeader: () => ({ type: 'session' }), getBranch: () => [{ type: 'message', message }] }, ui: { notify: (text: string, level: string) => notifications.push([text, level]) } };
   const dependencies = {
     ...hermetic(home),
     modelStatus: async () => ({ state: 'installed', path: '/verified/model' }),
     runtimeStatus: async () => ({ state: 'installed', path: '/verified/runtime' }),
-    qwenStatus: async () => opts.status ?? { manifest: 'valid', voices: { 'qwen-intima': 'installed' } },
     spawn: () => { const a = fakeChild(); if (opts.voiceId && opts.voiceId.startsWith('es_')) piperSpawns.push('piper'); audios.push(a); return a.child; },
     spawnQwen: (python: string, script: string) => { if (failures > 0) { failures--; throw new Error('spawn failed'); } const p = Object.assign(fakeChild(), { python, script }); pythons.push(p); return p.child; },
   };
@@ -58,15 +59,15 @@ test('Piper voices keep the exact current path and never touch the Qwen route', 
   } finally { h.close(); }
 });
 
-test('a Qwen voice that is not installed notifies how to install and spawns nothing', async () => {
-  for (const status of [{ manifest: 'missing', voices: { 'qwen-intima': 'missing' } }, { manifest: 'valid', voices: { 'qwen-intima': 'invalid' } }, { manifest: 'invalid', voices: { 'qwen-intima': 'installed' } }]) {
-    const h = harness({ status });
+test('a Qwen voice that is not usable (missing, invalid sha256, or no Python recorded) notifies why and spawns nothing', async () => {
+  for (const [opts, message] of [[{ custom: 'missing' }, /Custom voice "intima" is not installed or is invalid.*Crear voz propia…/], [{ custom: 'invalid' }, /Custom voice "intima" is not installed or is invalid/], [{ manifest: false }, /Custom voice "intima" needs the Qwen Python environment.*README/]] as const) {
+    const h = harness(opts);
     try {
       const result = await h.speak();
       assert.equal(result.isError, true);
       assert.equal(h.notifications.length, 1);
       assert.equal(h.notifications[0][1], 'error');
-      assert.match(h.notifications[0][0], /Qwen voice "Íntima" is not installed.*mlx-audio.*README/);
+      assert.match(h.notifications[0][0], message);
       assert.equal(h.pythons.length + h.audios.length, 0);
     } finally { h.close(); }
   }
@@ -84,7 +85,7 @@ test('an installed Qwen voice spawns the manifest python lazily and sends synth 
     h.pythons[0].emit({ schema: QS, type: 'ready' });
     await until(() => h.pythons[0].writes.length === 1);
     const synth = h.pythons[0].writes[0];
-    assert.deepEqual({ ...synth, outDir: undefined }, { schema: QS, type: 'synth', id: 1, text: 'Hola mundo.', ref: join(h.home, 'voices', 'qwen3', voice.file), refText: voice.transcript, outDir: undefined, speed: 1.25 });
+    assert.deepEqual({ ...synth, outDir: undefined }, { schema: QS, type: 'synth', id: 1, text: 'Hola mundo.', ref: join(h.home, 'voices', 'custom', 'intima', 'reference.wav'), refText: voice.transcript, outDir: undefined, speed: 1.25 });
     assert.equal(statSync(synth.outDir).mode & 0o777, 0o700);
     h.events.get('session_shutdown')!({}, h.ctx);
     assert.equal((await run).isError, true);
@@ -199,7 +200,7 @@ const withClock = async (body: () => Promise<void>) => {
 const ready = async (h: ReturnType<typeof harness>, n = 0) => { await until(() => h.pythons.length > n); const py = h.pythons[n]; py.emit({ schema: QS, type: 'ready' }); await until(() => py.writes.length >= 1); return py; };
 /** Runs one automatic utterance the way agent_settled does, so failures reach the user as notifications. */
 const auto = (h: ReturnType<typeof harness>) => {
-  writeFileSync(join(h.home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'all', voice: 'qwen-intima', speed: 1.25 }));
+  writeFileSync(join(h.home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true, mode: 'all', voice: 'custom:intima', speed: 1.25 }));
   return h.events.get('agent_settled')!({ aborted: false }, h.ctx) as Promise<void>;
 };
 const errorNotes = (h: ReturnType<typeof harness>) => h.notifications.filter(n => n[1] === 'error');

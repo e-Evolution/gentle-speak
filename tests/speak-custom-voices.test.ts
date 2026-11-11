@@ -117,7 +117,7 @@ test('customCatalog yields one qwen3 entry per voice keyed custom:<id>, and merg
     assert.equal(catalog['custom:mi-voz'].transcript, 'Hola, esta es mi voz.');
     const merged = { ...VOICE_CATALOG, ...catalog };
     assert.deepEqual(Object.keys(merged), [...Object.keys(VOICE_CATALOG), 'custom:mi-voz']);
-    assert.equal(Object.keys(VOICE_CATALOG).length, 10);
+    assert.equal(Object.keys(VOICE_CATALOG).length, 3, 'Piper es_MX, es_ES and mac: no built-in Qwen voice (T45)');
     assert.equal(Object.keys(VOICE_CATALOG).some(id => id.startsWith('custom:')), false);
   } finally { t.close(); }
 });

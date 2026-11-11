@@ -9,6 +9,7 @@ import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA } from '../lib/speak-sett
 import gentleSpeak from '../extensions/gentle-speak.ts';
 import { hermetic } from './helpers/hermetic.ts';
 import { qwenFixture, until } from './helpers/qwen-service-fixture.ts';
+import { writeEntry } from './helpers/custom-voice-fixture.ts';
 
 const fakeAudio = () => {
   const child: any = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill() { return true; },
@@ -18,15 +19,14 @@ const fakeAudio = () => {
 function session(fx: ReturnType<typeof qwenFixture>, extra: object = {}) {
   const tools = new Map<string, any>(), commands = new Map<string, any>(), events = new Map<string, Function>(), notes: string[] = [], selections: string[] = [];
   const ctx: any = { mode: 'tui', hasUI: true, sessionManager: { getHeader: () => ({ type: 'session' }), getBranch: () => [] }, ui: { notify: (t: string) => notes.push(t), setStatus() {}, select: async () => selections.shift() } };
-  const deps = { ...hermetic(fx.home), modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }),
-    qwenStatus: async () => ({ manifest: 'valid', voices: { 'qwen-intima': 'installed' } }), spawn: () => fakeAudio(), qwenTmpRoot: fx.root, focusCheck: async () => 'focused', sayAvailable: () => false, ...extra };
+  const deps = { ...hermetic(fx.home), modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), spawn: () => fakeAudio(), qwenTmpRoot: fx.root, focusCheck: async () => 'focused', sayAvailable: () => false, ...extra };
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand: (n: string, c: any) => commands.set(n, c), registerShortcut() {}, registerTool: (t: any) => tools.set(t.name, t) } as any, fx.home, deps as any);
   return { tools, commands, events, notes, selections, ctx, speak: (text: string) => tools.get('speak').execute('id', { text }, undefined, undefined, ctx), end: () => events.get('session_shutdown')?.({}, ctx) };
 }
 function prepare(fx: ReturnType<typeof qwenFixture>) {
-  writeFileSync(join(fx.home, 'voices', 'qwen3', 'qwen3-chain-l3.wav'), 'RIFF');
-  writeFileSync(join(fx.home, 'voices', 'qwen3', 'manifest.json'), JSON.stringify({ python: fx.options().python }));
-  writeFileSync(join(fx.home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true, voice: 'qwen-intima', qwenIdleMinutes: null }));
+  writeEntry(join(fx.home, 'voices', 'custom'), 'intima', { wav: Buffer.from('RIFF') }); // T45: the user's own voice
+  writeFileSync(join(fx.home, 'python.json'), JSON.stringify({ schema: 'gentle-speak.python/v1', python: fx.options().python }));
+  writeFileSync(join(fx.home, 'speak-settings.json'), JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true, voice: 'custom:intima', qwenIdleMinutes: null }));
 }
 const serviceOptions = (fx: ReturnType<typeof qwenFixture>) => { const { python: _p, idleMs: _i, ...rest } = fx.options(); return rest; };
 

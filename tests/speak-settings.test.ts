@@ -1,3 +1,4 @@
+import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

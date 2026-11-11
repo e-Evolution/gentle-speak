@@ -1,3 +1,4 @@
+import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
@@ -19,7 +20,7 @@ test('npm and Pi discover the inert extension entrypoint', async () => {
   assert.ok(!manifest.dependencies?.['@earendil-works/pi-coding-agent']);
   assert.ok(!manifest.dependencies?.['@earendil-works/pi-tui']);
   assert.deepEqual(manifest.files, ['extensions/', 'lib/', 'scripts/', 'assets/preview.png', 'README.md', 'CHANGELOG.md', 'LICENSE']);
-  assert.equal(manifest.scripts.test, 'node --experimental-strip-types --test tests/*.test.ts');
+  assert.equal(manifest.scripts.test, 'node --experimental-strip-types --import ./tests/helpers/guard-real-home.ts --test --test-timeout=60000 tests/*.test.ts');
   assert.match(await readFile(new URL('extensions/gentle-speak.ts', root), 'utf8'), /export default function/);
 });
 

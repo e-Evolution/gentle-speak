@@ -1,3 +1,4 @@
+import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';

@@ -1,3 +1,4 @@
+import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';

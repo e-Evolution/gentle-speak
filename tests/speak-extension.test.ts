@@ -1,3 +1,4 @@
+import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
@@ -5,6 +6,7 @@ import { EventEmitter } from 'node:events';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA } from '../lib/speak-settings.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { hermetic } from './helpers/hermetic.ts';
 import gentleSpeak from '../extensions/gentle-speak.ts';
 
 const message = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Resultado listo.' }] };
@@ -21,7 +23,7 @@ function harness(mode = 'tui', overrides: any = {}) {
   const inputs: string[] = [];
   const ctx = { cwd: '/work/gentle-theme', modelRegistry: overrides.modelRegistry, mode, hasUI: mode === 'tui', isIdle: () => true, sessionManager: { getHeader: () => overrides.header ?? { type: 'session' }, getBranch: () => overrides.branch ?? [{ type: 'message', message }] }, ui: { setStatus: (key: string, text?: string) => statuses.push([key, text]), notify: (text: string) => notifications.push(text), confirm: async () => confirmations.shift() ?? false, select: async () => selections.shift(), input: async () => inputs.shift() } };
   // Hermetic: never probe the real herdr or osascript; the lock dir is the (temp) home.
-  gentleSpeak({ on: (name: string, handler: Function) => events.set(name, handler), registerCommand: (name: string, command: any) => commands.set(name, command), registerShortcut: (key: string, shortcut: any) => shortcuts.set(key, shortcut), registerTool: (tool: any) => tools.set(tool.name, tool) } as any, home, { focusCheck: async () => 'focused', sayAvailable: () => false, userHome: home, env: {}, ...overrides.dependencies });
+  gentleSpeak({ on: (name: string, handler: Function) => events.set(name, handler), registerCommand: (name: string, command: any) => commands.set(name, command), registerShortcut: (key: string, shortcut: any) => shortcuts.set(key, shortcut), registerTool: (tool: any) => tools.set(tool.name, tool) } as any, home, { focusCheck: async () => 'focused', sayAvailable: () => false, ...hermetic(home), env: {}, ...overrides.dependencies });
   return { home, events, commands, shortcuts, tools, notifications, statuses, selections, confirmations, inputs, ctx, close: () => rmSync(home, { recursive: true, force: true }) };
 }
 

@@ -29,7 +29,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --experimental-strip-types --test tests/*.test.ts"
+    "test": "node --experimental-strip-types --import ./tests/helpers/guard-real-home.ts --test --test-timeout=60000 tests/*.test.ts"
   },
   "engines": {
     "node": ">=24"

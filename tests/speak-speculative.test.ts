@@ -1,3 +1,4 @@
+import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createSpeculativePlanner, completedSentences } from '../lib/speak-speculative.ts';

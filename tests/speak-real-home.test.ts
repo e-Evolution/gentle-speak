@@ -1,3 +1,4 @@
+import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';

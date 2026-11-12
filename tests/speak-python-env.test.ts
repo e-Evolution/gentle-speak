@@ -26,7 +26,7 @@ function toolbox(o: { versions?: Record<string, string>; failVenv?: boolean; fai
       if (args[0] === 'pip') return o.failInstall ? { code: 1, stdout: '', stderr: 'resolution failed' } : ok();
     }
     if (args[0] === '-c' && args[1]?.includes('sys.version_info')) { const v = o.versions?.[command.split('/').pop()!]; return v ? ok(`${v}\n`) : { code: 1, stdout: '', stderr: 'no' }; }
-    if (args[0] === '-m' && args[1] === 'venv') { if (o.failVenv) return { code: 1, stdout: '', stderr: 'ensurepip is not available' }; venvAt(args[2]); return ok(); }
+    if (args[0] === '-m' && args[1] === 'venv') { if (o.failVenv) return { code: 1, stdout: '', stderr: 'ensurepip is not available' }; venvAt(args[args.length - 1]); return ok(); }
     if (args[0] === '-m' && args[1] === 'pip') return o.failInstall ? { code: 1, stdout: '', stderr: 'no matching distribution' } : ok();
     if (args.includes('-c') && args.join(' ').includes('load_model')) return o.failImport ? { code: 1, stdout: '', stderr: 'ModuleNotFoundError: mlx' } : ok(`${o.mlx ?? MLX_AUDIO_VERSION}\n`);
     return { code: 127, stdout: '', stderr: `unexpected ${command} ${args.join(' ')}` };
@@ -152,4 +152,54 @@ test('findPython and makeWhich: PATH lookup without a shell, newest >= 3.10 only
   const t = toolbox({ versions: { python3: '3.13', 'python3.12': '3.12' } });
   assert.deepEqual(await findPython({ which: whichOf(['python3', 'python3.12']), run: t.run }), { python: '/bin/python3', version: '3.13' });
   assert.equal(await findPython({ which: whichOf(['python3']), run: toolbox({ versions: { python3: '3.8' } }).run }), undefined);
+});
+
+test('T49 R1-001: a home that is not an absolute path is refused before anything runs (no relative or option-like venv path reaches uv or python)', async () => {
+  for (const home of ['relative/home', '-x', '']) {
+    const t = toolbox();
+    const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf(['uv']), platform: 'darwin', env: {} });
+    assert.equal(out.status, 'failed'); assert.match(out.status === 'failed' ? out.message : '', /ruta/);
+    assert.deepEqual(t.calls, [], `nothing ran for ${JSON.stringify(home)}`);
+  }
+});
+
+test('T49 R1-001: an existing environment with another mlx-audio version is not reused; the pin is installed and validated again', async () => {
+  const { home } = tmp();
+  await ensurePythonEnv({ home, confirmed: true, run: toolbox().run, which: whichOf(['uv']), platform: 'darwin', env: {} });
+  const base = toolbox(); let installed = false;
+  const run: RunTool = async (command, args, options) => {
+    if (args[0] === 'pip') installed = true;
+    if (args.join(' ').includes('load_model')) { base.calls.push({ command, args }); return ok(`${installed ? MLX_AUDIO_VERSION : '0.4.3'}\n`); }
+    return base.run(command, args, options);
+  };
+  const out = await ensurePythonEnv({ home, confirmed: true, run, which: whichOf(['uv']), platform: 'darwin', env: {} });
+  assert.equal(out.status, 'installed'); assert.equal(out.status === 'installed' && out.alreadyInstalled, false);
+  assert.equal(out.status === 'installed' && out.version, MLX_AUDIO_VERSION);
+  assert.equal(base.calls.some(c => c.args[0] === 'pip'), true, 'the pinned package was installed');
+  assert.equal(JSON.parse(readFileSync(join(home, 'python.json'), 'utf8')).mlxAudio, MLX_AUDIO_VERSION);
+});
+
+test('T49 R3-venv-pip-reuse: a leftover venv from a failed install whose interpreter is broken or older than 3.10 is recreated with --clear, not pip-installed into', async () => {
+  for (const [tooling, versions] of [['uv', {}], ['uv', { python: '3.9' }], ['python3', {}], ['python3', { python: '3.8', python3: '3.12' }]] as const) {
+    const { home } = tmp();
+    const which = whichOf(tooling === 'uv' ? ['uv'] : ['python3']);
+    const first = await ensurePythonEnv({ home, confirmed: true, run: toolbox({ failInstall: true, versions: { python3: '3.12' } }).run, which, platform: 'darwin', env: {} });
+    assert.equal(first.status, 'failed');
+    const t = toolbox({ versions: { python3: '3.12', ...versions } });
+    const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which, platform: 'darwin', env: {} });
+    assert.equal(out.status, 'installed', JSON.stringify(out));
+    const made = t.calls.find(c => c.args[0] === 'venv' || (c.args[0] === '-m' && c.args[1] === 'venv'));
+    assert.ok(made, `recreated (${tooling}, ${JSON.stringify(versions)})`); assert.ok(made.args.includes('--clear'));
+    assert.ok(t.calls.findIndex(c => c === made) < t.calls.findIndex(c => c.args.includes('install')), 'recreated before installing');
+  }
+});
+
+test('T49 R3-venv-pip-reuse: a leftover venv with a healthy 3.10+ interpreter is completed in place (no --clear)', async () => {
+  const { home } = tmp();
+  const which = whichOf(['uv']);
+  await ensurePythonEnv({ home, confirmed: true, run: toolbox({ failInstall: true }).run, which, platform: 'darwin', env: {} });
+  const t = toolbox({ versions: { python: '3.12' } });
+  const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which, platform: 'darwin', env: {} });
+  assert.equal(out.status, 'installed');
+  assert.equal(t.calls.some(c => c.args[0] === 'venv'), false); assert.equal(t.calls.some(c => c.args.includes('install')), true);
 });

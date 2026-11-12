@@ -32,6 +32,20 @@ export interface TerminalFocusOptions {
   log?: (message: string) => void;
 }
 
+/**
+ * Whether `data` is input that means the user is at this pane: keys and mouse. Paste brackets and terminal replies (DA, CPR, kitty and mode reports,
+ * window-size reports, OSC/DCS/APC replies) are not: a terminal can send them without anyone present.
+ */
+export function isUserInput(data: string): boolean {
+  if (data.length === 0) return false;
+  if (data.includes('\x1b[200~') || data.includes('\x1b[201~')) return false; // paste brackets
+  if (/^\x1b[\]P_^X]/.test(data)) return false; // OSC, DCS, APC, PM, SOS replies
+  if (/^\x1b\[[?>=]/.test(data)) return false; // private-parameter CSI replies (DA1/DA2/DA3, kitty flags, DECRPM)
+  if (/^\x1b\[\d+;\d+R$/.test(data)) return false; // cursor position report
+  if (/^\x1b\[\d+(;\d+)*t$/.test(data)) return false; // window size reports
+  return true;
+}
+
 type Handler = (this: unknown, ...args: unknown[]) => unknown;
 
 export function createTerminalFocusTracker(tui: unknown, opts: TerminalFocusOptions = {}): TerminalFocusTracker {
@@ -73,13 +87,15 @@ export function createTerminalFocusTracker(tui: unknown, opts: TerminalFocusOpti
           const data = args[0];
           if (data === FOCUS_IN) eventState = 'focused';
           else if (data === FOCUS_OUT) eventState = 'unfocused';
-          else if (typeof data === 'string' && data.length > 0) { lastInputAt = now(); if (eventState !== undefined) eventState = 'focused'; } // typing implies focus
+          else if (typeof data === 'string' && isUserInput(data)) { lastInputAt = now(); if (eventState !== undefined) eventState = 'focused'; } // typing implies focus
           emit();
         } catch { /* observing never changes input handling */ }
       }
       return (original as Handler).apply(this, args);
     };
-    try { t.handleViewportInput = wrapper; attached = true; } catch { attached = false; wrapper = undefined; }
+    // The assignment must stick: a frozen object or a setter that ignores it leaves the original installed, and the tracker would wait for events forever.
+    try { t.handleViewportInput = wrapper; attached = t.handleViewportInput === wrapper; } catch { attached = false; }
+    if (!attached) { wrapper = undefined; try { opts.log?.('terminal focus events unavailable: handleViewportInput could not be wrapped'); } catch { /* logging is best effort */ } }
   }
 
   return {

@@ -152,7 +152,7 @@ export function createLatestOnlyDeferral<T>(opts: LatestOnlyDeferralOptions<T>):
   const tick = async () => {
     if (busy || !pending) return;
     busy = true;
-    try { await settle(pending); } finally { busy = false; if (rerun) { rerun = false; void tick(); } }
+    try { await settle(pending); } catch { /* a failing delivery never becomes an unhandled rejection; the item is already out of the queue */ } finally { busy = false; if (rerun) { rerun = false; void tick(); } }
   };
 
   return {

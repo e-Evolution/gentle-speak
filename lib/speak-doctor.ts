@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { closeSync, lstatSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import type { CustomVoiceList } from './speak-custom-voices.ts';
 import type { DotDetection } from './speak-dot.ts';
 import { ffmpegHint, ffmpegPurpose } from './speak-setup.ts';
@@ -195,10 +195,19 @@ function readLogTail(path: string): string {
   try { const buffer = Buffer.alloc(Math.min(size, max)); readSync(fd, buffer, 0, buffer.length, Math.max(0, size - buffer.length)); return buffer.toString('utf8'); } finally { closeSync(fd); }
 }
 
-/** Opens the default output device with a silent stream, in a child (`scripts/speak-audio-probe.cjs`) killed after `timeoutMs`. No sound. */
-export function probeAudioDevice({ script, runtimePath, timeoutMs = 6000, exec = execFile }: { script: string; runtimePath: string; timeoutMs?: number; exec?: typeof execFile }): Promise<{ ok: boolean; detail?: string }> {
+/** The only variables the probe child needs: PATH to resolve, HOME and the temp dir for the platform audio stack. Nothing else of the caller's environment (tokens, API keys) reaches code loaded from the runtime. */
+const probeEnv = (): NodeJS.ProcessEnv => Object.fromEntries((['PATH', 'HOME', 'USERPROFILE', 'TMPDIR', 'TEMP', 'TMP', 'SystemRoot', 'XDG_RUNTIME_DIR'] as const).filter(name => process.env[name] !== undefined).map(name => [name, process.env[name]]));
+
+/**
+ * Opens the default output device with a silent stream, in a child (`scripts/speak-audio-probe.cjs`) killed after `timeoutMs`. No sound. The child loads a
+ * native addon from `runtimePath`, so it only runs for a runtime that checked out (`runtimeState: 'installed'`, when the caller knows it) at an absolute path,
+ * and with a minimal environment.
+ */
+export function probeAudioDevice({ script, runtimePath, runtimeState, timeoutMs = 6000, exec = execFile }: { script: string; runtimePath: string; runtimeState?: 'missing' | 'installed' | 'invalid'; timeoutMs?: number; exec?: typeof execFile }): Promise<{ ok: boolean; detail?: string }> {
+  if (runtimeState !== undefined && runtimeState !== 'installed') return Promise.resolve({ ok: false, detail: 'el runtime no está instalado y verificado' });
+  if (typeof runtimePath !== 'string' || !isAbsolute(runtimePath) || runtimePath.includes('\0')) return Promise.resolve({ ok: false, detail: 'ruta de runtime inválida' });
   return new Promise(resolve => {
-    exec(process.execPath, [script, runtimePath], { timeout: timeoutMs, maxBuffer: 64 * 1024, encoding: 'utf8' }, (error, stdout) => {
+    exec(process.execPath, [script, runtimePath], { timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 64 * 1024, encoding: 'utf8', env: probeEnv(), windowsHide: true }, (error, stdout) => {
       let reply: any;
       try { reply = JSON.parse(String(stdout).trim().split('\n').pop() ?? ''); } catch { /* no reply */ }
       if (reply?.ok === true) resolve({ ok: true, detail: Number.isSafeInteger(reply.rate) ? `${reply.rate} Hz` : undefined });

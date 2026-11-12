@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants, statSync } from 'node:fs';
 import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { delimiter, join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { qwenPythonEnv } from './speak-qwen.ts';
 import { PYTHON_RECORD_FILE, PYTHON_RECORD_SCHEMA, resolveQwenPython } from './speak-voices-install.ts';
 import { QWEN_PYTHON_FLAGS } from './speak-voices.ts';
@@ -136,26 +136,36 @@ export async function ensurePythonEnv(options: EnsurePythonOptions): Promise<Pyt
   const run = options.run ?? defaultRunTool, which = options.which ?? makeWhich(), platform = options.platform ?? process.platform;
   const env = options.env ?? qwenPythonEnv();
   const now = options.now ?? (() => new Date());
+  // An absolute home keeps every derived path absolute: a relative or dash-leading venv path would be read by uv or python as a different location or an option.
+  if (typeof home !== 'string' || !isAbsolute(home) || home.includes('\0')) return { status: 'failed', message: 'la ruta de gentle-speak no es absoluta' };
   const python = interpreterOf(home, platform), venv = pythonEnvDir(home);
   try {
     const existing = await pythonEnvStatus(home);
     if (existing.state === 'installed') {
       const valid = await validatePythonEnv({ python: existing.python!, run, env, signal });
-      if (valid.ok) return { status: 'installed', python: existing.python!, version: valid.version, tool: 'venv', alreadyInstalled: true };
+      // Only the pinned mlx-audio is reused: another version is brought to the pin below instead of being recorded as current.
+      if (valid.ok && valid.version === MLX_AUDIO_VERSION) return { status: 'installed', python: existing.python!, version: valid.version, tool: 'venv', alreadyInstalled: true };
     }
     const tooling = await detectPythonTooling({ which, run });
     if (tooling.kind === 'none') return { status: 'skipped', instruction: tooling.instruction };
     let tool: 'uv' | 'venv' = tooling.kind === 'uv' ? 'uv' : 'venv';
-    const haveVenv = await stat(python).then(info => info.isFile(), () => false);
+    // A leftover venv (a failed earlier install, another Python) is completed in place only when its interpreter runs and is 3.10 or newer; otherwise it is rebuilt.
+    let haveVenv = await stat(python).then(info => info.isFile(), () => false);
+    let clear = false;
+    if (haveVenv) {
+      const probe = await run(python, ['-c', "import sys; print('%d.%d' % sys.version_info[:2])"], { env, timeoutMs: 10_000, signal }).catch(() => undefined);
+      const parsed = probe?.code === 0 ? parseVersion(probe.stdout) : undefined;
+      if (!parsed || !atLeast(parsed)) { haveVenv = false; clear = true; }
+    }
     const createWith = async (how: PythonTooling): Promise<string | undefined> => {
       if (how.kind === 'uv') {
         onProgress?.('Creando el entorno con uv…');
-        const made = await run(how.uv, ['venv', '--python', '3.12', venv], { env, timeoutMs: VENV_MS, signal });
+        const made = await run(how.uv, ['venv', ...(clear ? ['--clear'] : []), '--python', '3.12', venv], { env, timeoutMs: VENV_MS, signal });
         return made.code === 0 ? undefined : `uv no pudo crear el entorno (${tail(made.stderr) || `código ${made.code}`})`;
       }
       if (how.kind === 'python') {
         onProgress?.(`Creando el entorno con Python ${how.version}…`);
-        const made = await run(how.python, ['-m', 'venv', venv], { env, timeoutMs: VENV_MS, signal });
+        const made = await run(how.python, ['-m', 'venv', ...(clear ? ['--clear'] : []), venv], { env, timeoutMs: VENV_MS, signal });
         return made.code === 0 ? undefined : `python -m venv no pudo crear el entorno (${tail(made.stderr) || `código ${made.code}`})`;
       }
       return 'no hay herramienta para crear el entorno';
@@ -177,6 +187,7 @@ export async function ensurePythonEnv(options: EnsurePythonOptions): Promise<Pyt
     onProgress?.('Validando mlx_audio…');
     const valid = await validatePythonEnv({ python, run, env, signal });
     if (!valid.ok) return { status: 'failed', message: valid.message };
+    if (valid.version !== MLX_AUDIO_VERSION) return { status: 'failed', message: `se instaló mlx-audio ${valid.version || 'desconocido'} en lugar de ${MLX_AUDIO_VERSION}` };
     await writeRecord(home, python, valid.version, now());
     return { status: 'installed', python, version: valid.version, tool, alreadyInstalled: false };
   } catch (error) {

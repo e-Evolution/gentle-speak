@@ -125,3 +125,73 @@ test('deferral: wake() delivers the pending item without a poll, once, and only 
   await d.offer('b'); d.clear(); focus = 'focused'; await d.wake(); assert.equal(got.length, 2, 'b was delivered on offer (focused), clear() has nothing left');
   d.dispose();
 });
+
+// ---- T49 hardening --------------------------------------------------------------------------------------------------------------------
+
+test('T49 R1-typing-focus-spoof: paste brackets and terminal replies (DA, CPR, OSC, DCS, kitty, window size, mode report) never imply focus', () => {
+  const replies = ['\x1b[200~pasted\x1b[201~', '\x1b[200~', '\x1b[201~', '\x1b[?62;4c', '\x1b[>0;276;0c', '\x1b[24;80R', '\x1b[?0u', '\x1b[8;40;120t', '\x1b[?2004;1$y',
+    '\x1b]11;rgb:0000/0000/0000\x07', '\x1b]11;rgb:0000/0000/0000\x1b\\', '\x1bP>|kitty(0.30)\x1b\\', '\x1b_Gi=1;OK\x1b\\'];
+  for (const reply of replies) {
+    const c = clock(); const tui = new FakeTui(); const t = createTerminalFocusTracker(tui, { now: c.now });
+    assert.equal(tui.handleViewportInput(reply), RESULT, 'still delegated'); assert.equal(t.state(), 'unknown', `no events: ${JSON.stringify(reply)}`);
+    tui.handleViewportInput(FOCUS_OUT); tui.handleViewportInput(reply); assert.equal(t.state(), 'unfocused', `after focus-out: ${JSON.stringify(reply)}`);
+    t.dispose();
+  }
+});
+
+test('T49 R1-typing-focus-spoof: keys, arrows, kitty keys and SGR mouse input still imply focus', () => {
+  for (const input of ['a', ' ', '\r', '\x1b', '\x1b[A', '\x1bb', '\x1b[97;1u', '\x1b[1;5C', '\x1b[<0;5;5M', '\x1b[<0;5;5m', 'é']) {
+    const tui = new FakeTui(); const t = createTerminalFocusTracker(tui);
+    tui.handleViewportInput(FOCUS_OUT); tui.handleViewportInput(input); assert.equal(t.state(), 'focused', JSON.stringify(input));
+    t.dispose();
+  }
+});
+
+test('T49 R1-private-method-wrap: a delegation failure propagates unchanged (input is never swallowed) and the focus event was still observed', () => {
+  class Throwing extends FakeTui { handleViewportInput(...args: unknown[]): unknown { void args; throw new Error('pi-tui broke'); } }
+  const tui = new Throwing(); const t = createTerminalFocusTracker(tui);
+  assert.throws(() => tui.handleViewportInput(FOCUS_OUT), /pi-tui broke/); assert.equal(t.state(), 'unfocused');
+  t.dispose();
+});
+
+test('T49 R1-private-method-wrap: an observer that throws (clock failure) never breaks or alters input handling', () => {
+  const tui = new FakeTui(); const t = createTerminalFocusTracker(tui, { now: () => { throw new Error('clock'); } });
+  assert.equal(tui.handleViewportInput('x'), RESULT); assert.equal(tui.calls.length, 1);
+  t.dispose();
+});
+
+test('T49 R1-private-method-wrap: when the assignment does not stick (setter ignores it) the tracker is not attached and reports unknown', () => {
+  const tui = new FakeTui(); const fixed = FakeTui.prototype.handleViewportInput;
+  Object.defineProperty(tui, 'handleViewportInput', { get: () => fixed, set() { /* ignored */ }, configurable: true });
+  const logs: string[] = [];
+  const t = createTerminalFocusTracker(tui, { log: m => logs.push(m) });
+  assert.equal(t.attached, false); assert.equal(t.state(), 'unknown'); assert.equal(t.hasEvents(), false);
+  assert.equal(logs.length, 1); t.dispose();
+});
+
+test('T49 R1-private-method-wrap: dispose never restores over a method that is not our wrapper', () => {
+  const tui = new FakeTui(); const t = createTerminalFocusTracker(tui);
+  const theirs = function () { return 'theirs'; }; (tui as any).handleViewportInput = theirs;
+  t.dispose(); assert.equal((tui as any).handleViewportInput, theirs);
+});
+
+test('T49 R3-rerun-unhandled: an onReady that throws during a wake re-run or a poll tick is not an unhandled rejection', async () => {
+  const rejections: unknown[] = []; const on = (e: unknown) => { rejections.push(e); }; process.on('unhandledRejection', on);
+  try {
+    let release!: () => void; let focus: FocusState = 'unfocused'; let gate: Promise<void> | undefined;
+    const d = createLatestOnlyDeferral<string>({
+      checkFocus: async () => { const seen = focus; if (gate) await gate; return seen; }, pollMs: 1_000_000,
+      onReady: () => { throw new Error('speak failed'); },
+    });
+    await d.offer('a');
+    gate = new Promise<void>(r => { release = r; });
+    const first = d.wake(); // sees unfocused, parked on the gate
+    focus = 'focused'; const second = d.wake(); // busy: schedules a re-run that will see focused and call onReady
+    release(); await first; await second;
+    await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r));
+    d.dispose();
+    const p = createLatestOnlyDeferral<string>({ checkFocus: async () => 'unfocused', pollMs: 5, onReady: () => { throw new Error('boom'); } });
+    await p.offer('x'); await new Promise(r => setTimeout(r, 30)); p.dispose();
+    assert.deepEqual(rejections, []);
+  } finally { process.off('unhandledRejection', on); }
+});

@@ -232,3 +232,22 @@ test('the real probe script fails closed without a valid runtime (no device is o
   }
   assert.equal(readFileSync(script, 'utf8').includes('fill(0)'), true, 'the stream callback writes silence');
 });
+
+test('T49 R1-002: probeAudioDevice never spawns for a runtime that is not installed or a path that is not absolute', async () => {
+  let spawned = 0; const exec = ((..._a: unknown[]) => { spawned++; }) as any;
+  for (const [runtimeState, runtimePath] of [['missing', '/r'], ['invalid', '/r'], [undefined, 'relative/r'], ['installed', ''], ['installed', '-e'], ['installed', '/r\0x']] as const) {
+    const out = await probeAudioDevice({ script: '/s/probe.cjs', runtimePath, runtimeState, exec });
+    assert.equal(out.ok, false); assert.equal(typeof out.detail, 'string');
+  }
+  assert.equal(spawned, 0);
+});
+
+test('T49 R1-002: the probe child gets a minimal environment, a bounded buffer and a kill timeout; installed runtimes still probe', async () => {
+  const seen: any[] = [];
+  const exec = ((file: string, args: string[], options: any, cb: Function) => { seen.push({ args, options }); cb(null, `${JSON.stringify({ ok: true, rate: 1e99 })}\n`, ''); }) as any;
+  process.env.T49_CANARY = 'x';
+  try { assert.deepEqual(await probeAudioDevice({ script: '/s/probe.cjs', runtimePath: '/r', runtimeState: 'installed', exec }), { ok: true, detail: undefined }); } finally { delete process.env.T49_CANARY; }
+  assert.deepEqual(seen[0].args, ['/s/probe.cjs', '/r']);
+  assert.equal(typeof seen[0].options.env, 'object'); assert.equal(seen[0].options.env.T49_CANARY, undefined);
+  assert.ok(seen[0].options.maxBuffer <= 64 * 1024); assert.ok(seen[0].options.timeout > 0);
+});

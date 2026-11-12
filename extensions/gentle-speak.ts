@@ -844,7 +844,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     const probes: DoctorProbes = {
       platform: hostPlatform, target: hostTarget,
       runtime: () => deps.runtimeStatus({ home, target }),
-      audio: async () => { const runtime = await deps.runtimeStatus({ home, target }); return probeAudioDevice({ script: audioProbeScript, runtimePath: runtime.path }); },
+      audio: async () => { const runtime = await deps.runtimeStatus({ home, target }); return probeAudioDevice({ script: audioProbeScript, runtimePath: runtime.path, runtimeState: runtime.state }); },
       piper: async () => ({ es_MX: (await deps.modelStatus({ home, voice: 'es_MX' })).state, es_ES: (await deps.modelStatus({ home, voice: 'es_ES' })).state }),
       python: async () => {
         const interpreter = python();

@@ -14,7 +14,7 @@
 import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createTerminalFocusTracker, FOCUS_IN, FOCUS_OUT } from '../lib/speak-terminal-focus.ts';
+import { createTerminalFocusTracker, FOCUS_IN, FOCUS_OUT, isUserInput } from '../lib/speak-terminal-focus.ts';
 import { createFocusCheck, createLatestOnlyDeferral, type FocusState } from '../lib/speak-focus.ts';
 
 // T46 (S16, S9): terminal focus events read by wrapping the live TUI instance. Fake TUI only; no pi-tui, no terminal, no clock sleeps.
@@ -207,4 +207,9 @@ test('T49 R3-rerun-unhandled: an onReady that throws during a wake re-run or a p
     await p.offer('x'); await new Promise(r => setTimeout(r, 30)); p.dispose();
     assert.deepEqual(rejections, []);
   } finally { process.off('unhandledRejection', on); }
+});
+
+test('T54 R3-altshift-focus: known limit pinned — a modified F3 (`ESC[1;<mod>R`) is byte-identical to a cursor report at row 1, so it is not input; every other modified key still is', () => {
+  for (const key of ['\x1b[1;2R', '\x1b[1;4R', '\x1b[1;5R']) assert.equal(isUserInput(key), false, JSON.stringify(key)); // Shift/Alt+Shift/Ctrl+F3 vs CPR row 1: indistinguishable
+  for (const key of ['\x1b[1;4A', '\x1b[1;3C', '\x1b[1;4P', '\x1b[1;2Q', '\x1b[15;4~', '\x1b[97;4u', '\x1b\x1b[A', '\x1bB', 'a']) assert.equal(isUserInput(key), true, JSON.stringify(key));
 });

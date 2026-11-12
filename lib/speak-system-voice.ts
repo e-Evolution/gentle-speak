@@ -16,10 +16,10 @@
  * through PowerShell. Same rules on every platform: the text goes on stdin only (never argv, never inside a script), the process is killed on abort or timeout.
  * Linux and Windows are written from the tools' documentation and tested with fakes only: unverified live.
  */
-import { execFile } from 'node:child_process';
+import { spawn as spawnChild } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
-import { MAC_VOICE_NAME, SAY_BASE_RATE, SAY_PATH, parseSayVoices, pickMacVoice, runSpeechChild, sayTimeoutMs, speakWithSay, type MacVoice, type SayOutcome, type SaySpawn } from './speak-say.ts';
+import { MAC_VOICE_NAME, SAY_BASE_RATE, SAY_PATH, defaultSpawn, parseSayVoices, pickMacVoice, runSpeechChild, sayTimeoutMs, speakWithSay, type MacVoice, type SayOutcome, type SaySpawn } from './speak-say.ts';
 
 export type SystemEngine = 'say' | 'spd-say' | 'espeak-ng' | 'espeak' | 'sapi';
 export interface SystemEnv {
@@ -49,7 +49,7 @@ const pathWhich = (command: string): string | undefined => {
 
 export function detectSystemEngine({ platform = process.platform, exists = existsSync, which = pathWhich }: SystemEnv = {}): { engine: SystemEngine; file: string } | undefined {
   if (platform === 'darwin') return exists(SAY_PATH) ? { engine: 'say', file: SAY_PATH } : undefined;
-  if (platform === 'win32') return { engine: 'sapi', file: POWERSHELL };
+  if (platform === 'win32') { const file = which(POWERSHELL); return file ? { engine: 'sapi', file } : undefined; } // T54: SAPI needs powershell.exe on PATH
   if (platform !== 'linux') return undefined;
   for (const engine of ['spd-say', 'espeak-ng', 'espeak'] as const) { const file = which(engine); if (file) return { engine, file }; }
   return undefined;
@@ -82,7 +82,9 @@ export function speakWithSystemVoice({ voice, text, speed, signal, spawn, timeou
   if (!found) return Promise.resolve({ ok: false, message: 'System voice is not available.' });
   if (!MAC_VOICE_NAME.test(voice)) return Promise.resolve({ ok: false, message: 'Invalid system voice name.' });
   const command = buildSystemCommand({ engine: found.engine, file: found.file, voice, speed });
-  return runSpeechChild({ file: command.file, args: command.args, env: command.env, text, signal, spawn, timeoutMs: timeoutMs ?? sayTimeoutMs(text, speed), name: 'System' });
+  // T54: killing spd-say leaves what speech-dispatcher already queued; `spd-say -C` (cancel) empties that queue. It is server-wide (a second process cannot cancel only our messages), so it runs only on stop or timeout.
+  const onStop = found.engine === 'spd-say' ? () => { const child = (spawn ?? defaultSpawn)(found.file, ['-C']); child.on('error', () => {}); try { child.stdin.end(); } catch { /* nothing to close */ } } : undefined;
+  return runSpeechChild({ file: command.file, args: command.args, env: command.env, text, signal, spawn, timeoutMs: timeoutMs ?? sayTimeoutMs(text, speed), name: 'System', onStop });
 }
 
 const isSpanish = (locale: string) => /^es(?:[-_]|$)/i.test(locale);
@@ -107,17 +109,46 @@ export function parseSystemVoices(engine: SystemEngine, output: string): MacVoic
   return voices;
 }
 
-const runList = (timeout: number) => (file: string, args: string[]) => new Promise<string>((resolve, reject) => {
-  execFile(file, args, { timeout, maxBuffer: 1 << 20, encoding: 'utf8' }, (error, stdout) => error ? reject(error) : resolve(stdout));
+/** How long a voice listing may run before its child is killed (T54): PowerShell loads System.Speech, so it is allowed longer. */
+export const SYSTEM_LIST_TIMEOUT_MS = { sapi: 8000, default: 5000 } as const;
+/** How long the extension waits for a listing: on Windows a little longer than the listing's own bound, so the kill happens first. */
+export const systemVoiceProbeMs = (platform: string = process.platform): number => platform === 'win32' ? SYSTEM_LIST_TIMEOUT_MS.sapi + 1000 : 1500;
+
+export interface ListChild {
+  stdout?: { on(event: 'data', listener: (chunk: unknown) => void): unknown } | null;
+  on(event: 'exit' | 'error', listener: (...args: any[]) => void): unknown;
+  kill(signal?: NodeJS.Signals): unknown;
+}
+export type ListSpawn = (file: string, args: string[]) => ListChild;
+const defaultListSpawn: ListSpawn = (file, args) => spawnChild(file, args, { stdio: ['ignore', 'pipe', 'ignore'] }) as unknown as ListChild;
+
+/** Runs a listing command: its stdout on exit 0; rejects on failure, spawn error or timeout, and kills the child when the timeout fires. */
+const runList = (timeout: number, spawn: ListSpawn) => (file: string, args: string[]) => new Promise<string>((resolve, reject) => {
+  let child: ListChild;
+  try { child = spawn(file, args); } catch (error) { reject(error); return; }
+  let out = '';
+  let settled = false;
+  const finish = (error?: unknown, kill = false) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    if (kill) { try { child.kill('SIGTERM'); } catch { /* already gone */ } }
+    if (error) reject(error); else resolve(out);
+  };
+  const timer = setTimeout(() => finish(new Error('voice listing timed out'), true), timeout);
+  child.stdout?.on('data', chunk => { if (out.length < (1 << 20)) out += String(chunk); });
+  child.on('error', error => finish(error ?? new Error('voice listing failed')));
+  child.on('exit', (code: number | null) => finish(code === 0 ? undefined : new Error(`voice listing exited with ${code}`)));
 });
 
-/** Installed Spanish voices of the platform's engine; empty when it cannot be run. */
-export async function listSystemVoices({ run, ...env }: { run?: (file: string, args: string[]) => Promise<string> } & SystemEnv = {}): Promise<MacVoice[]> {
+/** Installed Spanish voices of the platform's engine; empty when it cannot be run or does not answer within its bound. */
+export async function listSystemVoices({ run, spawn, timeoutMs, ...env }: { run?: (file: string, args: string[]) => Promise<string>; spawn?: ListSpawn; timeoutMs?: number } & SystemEnv = {}): Promise<MacVoice[]> {
   const found = detectSystemEngine(env);
   if (!found) return [];
   const args = found.engine === 'say' ? ['-v', '?'] : found.engine === 'sapi' ? [...POWERSHELL_FLAGS, POWERSHELL_LIST_SCRIPT]
     : found.engine === 'spd-say' ? ['-l', 'es', '-O'] : ['--voices=es'];
-  try { return parseSystemVoices(found.engine, await (run ?? runList(found.engine === 'sapi' ? 15_000 : 5000))(found.file, args)); } catch { return []; }
+  const bound = timeoutMs ?? (found.engine === 'sapi' ? SYSTEM_LIST_TIMEOUT_MS.sapi : SYSTEM_LIST_TIMEOUT_MS.default);
+  try { return parseSystemVoices(found.engine, await (run ?? runList(bound, spawn ?? defaultListSpawn))(found.file, args)); } catch { return []; }
 }
 
 /** `preferred` when installed, else the platform's Spanish order: macOS Paulina/Mónica; Windows Sabina (es-MX), Helena (es-ES); Linux Latin-American Spanish, plain `es`; then the first Spanish voice. */
@@ -140,7 +171,7 @@ const ENGINE_NAME: Record<SystemEngine, string> = { say: 'say', 'spd-say': 'spd-
 export function systemVoiceStatus(env: SystemEnv, voices: readonly MacVoice[], preferred: string | null | undefined): { available: boolean; detail: string } {
   const platform = env.platform ?? process.platform;
   const found = detectSystemEngine(env);
-  if (!found) return { available: false, detail: platform === 'darwin' ? '`say` no está disponible' : platform === 'linux' ? 'falta `spd-say` (speech-dispatcher) o `espeak-ng`' : 'no hay voz del sistema para esta plataforma' };
+  if (!found) return { available: false, detail: platform === 'darwin' ? '`say` no está disponible' : platform === 'linux' ? 'falta `spd-say` (speech-dispatcher) o `espeak-ng`' : platform === 'win32' ? 'falta `powershell.exe` en el PATH' : 'no hay voz del sistema para esta plataforma' };
   const name = ENGINE_NAME[found.engine];
   const chosen = pickSystemVoice(voices, preferred, platform);
   if (chosen) return { available: true, detail: `${name}: ${voices.length} voz/voces en español (elegida: ${chosen})` };

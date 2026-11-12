@@ -60,6 +60,8 @@ The model can also speak on purpose through the **`speak` tool** (text up to 400
 3. on macOS, the frontmost app (must be your terminal);
 4. typing: with no focus events at all, input in the last 60 s counts as focus.
 
+*Known limit:* Shift+F3, Alt+Shift+F3 and Ctrl+F3 send `ESC[1;<modifier>R`, byte for byte the terminal's cursor-position reply for row 1, which is not treated as typing. Those three keys alone do not count as presence (every other modified key does); the focus events and the other sources are unaffected.
+
 When focus is unknown, the turn is spoken in order and starts with the project name: `my-project: …`. `HERDR_BIN_PATH` is honored only as an absolute path to an executable `herdr`.
 
 **One voice at a time.** Every playback holds a cross-process lock in `~/.gentle-speak/`, so sessions (terminals, Herdr panes, Gentle Dot) take turns and never overlap. A lock whose owner died is reclaimed. Your stop key stops only your own session.
@@ -247,7 +249,8 @@ Only macOS arm64 has been run live. **Linux and Windows are verified with fakes 
 - **Bluetooth headsets.** Playback uses the device's own sample rate and tolerates the buffer underruns (xruns) Bluetooth can produce; you may still hear small glitches. A failure reports `Audio playback failed: <cause>`.
 - **No sound when unfocused.** That is the focus deferral: the result is kept until you focus the pane. If focus is unknown it speaks in turn with a project prefix.
 - **`/reload` crashes Gentle Shell.** That is a gentle-pi issue, not gentle-speak. Restart with `pi -r` instead.
-- **Linux/Windows system voice silent.** Install the tools listed in [Dependencies](#dependencies); these paths are unverified live.
+- **Linux/Windows system voice silent.** Install the tools listed in [Dependencies](#dependencies); these paths are unverified live. On Windows the voice needs `powershell.exe` on `PATH`; without it the system voice is reported as unavailable (doctor: «falta `powershell.exe` en el PATH»). The voice listing is bounded (8 s) and an unanswered listing counts as no voices.
+- **Linux `spd-say` keeps talking after stop.** Stop (and a timeout) kills `spd-say` and then runs `spd-say -C`, which cancels everything speech-dispatcher has queued, including other applications' speech (it cannot cancel only ours). Unverified live.
 
 ## License and attribution
 

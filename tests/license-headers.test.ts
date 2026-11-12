@@ -12,48 +12,24 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { headerProblems, sourceFiles } from "./helpers/source-files.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-const COPYRIGHT = "Copyright (C) 2026, e-Evolution Consultants S.A. , http://www.e-evolution.com";
-const SPDX = "SPDX-License-Identifier: MIT";
-
-function tracked(): string[] {
-  const out = execFileSync(
-    "git",
-    ["ls-files", "extensions/*.ts", "lib/*.ts", "scripts/*.cjs", "scripts/*.mjs", "scripts/*.py", "scripts/*.sh", "tests/*.ts"],
-    { cwd: root, encoding: "utf8" },
-  );
-  return out.split("\n").filter(Boolean);
-}
-
-test("source files are discovered", () => {
-  const files = tracked();
+test("source files are discovered without git", () => {
+  const files = sourceFiles(root);
   assert.ok(files.length >= 70, `found ${files.length}`);
   assert.ok(files.includes("extensions/gentle-speak.ts"));
   assert.ok(files.includes("scripts/speak-qwen-worker.py"));
+  assert.ok(files.includes("tests/helpers/source-files.ts"));
 });
 
-test("every tracked source file carries the MIT header and keeps its shebang first", () => {
-  const bad: string[] = [];
-  for (const file of tracked()) {
-    const lines = readFileSync(join(root, file), "utf8").split("\n");
-    const hash = file.endsWith(".py") || file.endsWith(".sh");
-    const hasShebang = lines[0].startsWith("#!");
-    const head = lines.slice(hasShebang ? 1 : 0, (hasShebang ? 1 : 0) + 16);
-    const text = head.join("\n");
-    const ok = hash
-      ? head[0] === `# ${COPYRIGHT}` && head[1] === `# ${SPDX}`
-      : head[0] === "/**" && head[1] === ` * ${COPYRIGHT}` && head[2] === ` * ${SPDX}` && text.includes("\n */");
-    if (!ok) bad.push(file);
-    if (/^#!/m.test(lines.slice(1).join("\n")) && !hasShebang) bad.push(`${file} (shebang not first)`);
-  }
-  assert.deepEqual(bad, []);
+test("every source file carries the MIT header and keeps its shebang first", () => {
+  assert.deepEqual(headerProblems(root), []);
 });
 
 test("LICENSE names the holder and is still MIT", () => {

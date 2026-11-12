@@ -27,7 +27,7 @@ import { createCopiedSelectionWatcher, createOwnCopyGate, isSelectionTui, resolv
 import { createTerminalFocusTracker, type TerminalFocusTracker } from '../lib/speak-terminal-focus.ts';
 import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix, readFrontmostBundleId, type FocusState, type HerdrExec } from '../lib/speak-focus.ts';
 import { MAC_VOICE_NAME, type MacVoice, type speakWithSay } from '../lib/speak-say.ts';
-import { listSystemVoices, resolveSystemVoice, speakWithSystemVoice, systemVoiceAvailable, systemVoiceLabel, systemVoiceStatus, type SystemEnv } from '../lib/speak-system-voice.ts';
+import { listSystemVoices, resolveSystemVoice, speakWithSystemVoice, systemVoiceAvailable, systemVoiceLabel, systemVoiceProbeMs, systemVoiceStatus, type SystemEnv } from '../lib/speak-system-voice.ts';
 import { realHome, settingsHome, sharedHome } from '../lib/speak-home.ts';
 import { createVoiceLock } from '../lib/speak-voice-lock.ts';
 import { connectDot, detectDot, disconnectDot, dotHome, isDotEngine, readDotSpeak, seedDotSettings, resolveDotSource, writeDotSpeak, type DotFs } from '../lib/speak-dot.ts';
@@ -121,7 +121,7 @@ const defaults: Dependencies = {
   lockPollMs: 100,
   sayAvailable: () => systemVoiceAvailable(),
   listMacVoices: () => listSystemVoices(),
-  voiceProbeMs: 1500,
+  voiceProbeMs: systemVoiceProbeMs(),
   say: speakWithSystemVoice,
   designStatus: designModelStatus,
   designSize: () => designModelSize(),

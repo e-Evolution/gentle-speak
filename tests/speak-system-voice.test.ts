@@ -18,7 +18,7 @@ import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import {
   SYSTEM_DEFAULT_VOICE, buildSystemCommand, detectSystemEngine, listSystemVoices, parseSystemVoices, pickSystemVoice, resolveSystemVoice, speakWithSystemVoice,
-  systemRate, systemVoiceAvailable, systemVoiceHint, systemVoiceLabel, systemVoiceStatus, POWERSHELL_SPEAK_SCRIPT, POWERSHELL_LIST_SCRIPT,
+  systemRate, systemVoiceAvailable, systemVoiceHint, systemVoiceProbeMs, SYSTEM_LIST_TIMEOUT_MS, systemVoiceLabel, systemVoiceStatus, POWERSHELL_SPEAK_SCRIPT, POWERSHELL_LIST_SCRIPT,
 } from '../lib/speak-system-voice.ts';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA, readSpeakSettings } from '../lib/speak-settings.ts';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -48,11 +48,11 @@ test('engine per platform and per available tool', () => {
   assert.equal(detectSystemEngine({ platform: 'linux', which: have('espeak-ng', 'espeak') })?.engine, 'espeak-ng');
   assert.equal(detectSystemEngine({ platform: 'linux', which: have('espeak') })?.engine, 'espeak');
   assert.equal(detectSystemEngine({ platform: 'linux', which: have() }), undefined);
-  assert.deepEqual(detectSystemEngine({ platform: 'win32' }), { engine: 'sapi', file: 'powershell.exe' });
+  assert.deepEqual(detectSystemEngine({ platform: 'win32', which: have('powershell.exe') }), { engine: 'sapi', file: '/usr/bin/powershell.exe' });
   assert.equal(detectSystemEngine({ platform: 'freebsd', which: have('espeak-ng') }), undefined);
   assert.equal(systemVoiceAvailable({ platform: 'linux', which: have('espeak-ng') }), true);
   assert.equal(systemVoiceAvailable({ platform: 'linux', which: have() }), false);
-  assert.equal(systemVoiceAvailable({ platform: 'win32' }), true);
+  assert.equal(systemVoiceAvailable({ platform: 'win32', which: have('powershell.exe') }), true);
   assert.equal(systemVoiceAvailable({ platform: 'darwin', exists: () => true }), true);
 });
 
@@ -102,8 +102,8 @@ for (const [platform, which, expected] of [
 test('windows: text on stdin, voice and rate by environment, fixed script', async () => {
   const f = fakeSpawn();
   const text = "Hola `$(calc) 'x' \"y\"";
-  const p = speakWithSystemVoice({ voice: 'Microsoft Helena Desktop', text, speed: 1, spawn: f.spawn, platform: 'win32' });
-  assert.equal(f.calls[0].file, 'powershell.exe');
+  const p = speakWithSystemVoice({ voice: 'Microsoft Helena Desktop', text, speed: 1, spawn: f.spawn, platform: 'win32', which: have('powershell.exe') });
+  assert.equal(f.calls[0].file, '/usr/bin/powershell.exe');
   assert.deepEqual(f.calls[0].args, ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_SPEAK_SCRIPT]);
   assert.equal(f.calls[0].args.join(' ').includes('calc'), false);
   assert.equal(f.calls[0].stdin.join(''), text);
@@ -132,25 +132,25 @@ test('no engine, invalid voice names and a failing child never speak', async () 
   const p = speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, spawn: g.spawn, platform: 'linux', which: have('espeak-ng') });
   g.calls[0].child.emit('exit', 1);
   assert.deepEqual(await p, { ok: false, message: 'System voice failed.' });
-  assert.equal((await speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, spawn: () => { throw new Error('boom'); }, platform: 'win32' })).ok, false);
+  assert.equal((await speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, spawn: () => { throw new Error('boom'); }, platform: 'win32', which: have('powershell.exe') })).ok, false);
 });
 
 for (const platform of ['linux', 'win32'] as const) {
   test(`${platform}: abort kills the process; a pre-aborted signal never spawns`, async () => {
     const f = fakeSpawn();
     const c = new AbortController();
-    const p = speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, signal: c.signal, spawn: f.spawn, platform, which: have('espeak-ng') });
+    const p = speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, signal: c.signal, spawn: f.spawn, platform, which: have('espeak-ng', 'powershell.exe') });
     c.abort();
     assert.deepEqual(await p, { ok: false, message: 'Speech cancelled.', cancelled: true });
     assert.deepEqual(f.calls[0].killed, ['SIGTERM']);
     const pre = new AbortController(); pre.abort();
     const g = fakeSpawn();
-    assert.equal((await speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, signal: pre.signal, spawn: g.spawn, platform, which: have('espeak-ng') })).cancelled, true);
+    assert.equal((await speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, signal: pre.signal, spawn: g.spawn, platform, which: have('espeak-ng', 'powershell.exe') })).cancelled, true);
     assert.equal(g.calls.length, 0);
   });
   test(`${platform}: the timeout kills the process`, async () => {
     const f = fakeSpawn();
-    const out = await speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, spawn: f.spawn, platform, which: have('espeak-ng'), timeoutMs: 5 });
+    const out = await speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, spawn: f.spawn, platform, which: have('espeak-ng', 'powershell.exe'), timeoutMs: 5 });
     assert.deepEqual(out, { ok: false, message: 'System voice timed out.' });
     assert.deepEqual(f.calls[0].killed, ['SIGTERM']);
   });
@@ -177,8 +177,8 @@ test('voice listing: espeak-ng table, spd-say table, PowerShell Name|Culture lin
 test('listing runs the engine list command and returns [] on failure', async () => {
   const seen: Array<[string, string[]]> = [];
   const run = async (file: string, args: string[]) => { seen.push([file, args]); return 'Microsoft Sabina Desktop|es-MX'; };
-  assert.equal((await listSystemVoices({ platform: 'win32', run })).length, 1);
-  assert.deepEqual(seen[0], ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_LIST_SCRIPT]]);
+  assert.equal((await listSystemVoices({ platform: 'win32', which: have('powershell.exe'), run })).length, 1);
+  assert.deepEqual(seen[0], ['/usr/bin/powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_LIST_SCRIPT]]);
   await listSystemVoices({ platform: 'linux', which: have('espeak-ng'), run });
   assert.deepEqual(seen[1], ['/usr/bin/espeak-ng', ['--voices=es']]);
   await listSystemVoices({ platform: 'linux', which: have('spd-say', 'espeak-ng'), run });
@@ -236,12 +236,129 @@ test('doctor line and hint per platform', () => {
   assert.match(systemVoiceStatus({ platform: 'linux', which: have('espeak-ng') }, voices, null).detail, /^espeak-ng: 1 voz.*elegida: spanish/);
   assert.match(systemVoiceStatus({ platform: 'linux', which: have('espeak-ng') }, [], null).detail, /^espeak-ng: sin voces listadas; usa «es»/);
   assert.equal(systemVoiceStatus({ platform: 'linux', which: have('espeak-ng') }, [], null).available, true);
-  assert.match(systemVoiceStatus({ platform: 'win32' }, [{ name: 'Microsoft Sabina Desktop', locale: 'es-MX' }], null).detail, /^SAPI: 1 voz.*Sabina/);
-  assert.equal(systemVoiceStatus({ platform: 'win32' }, [], null).available, false);
+  assert.match(systemVoiceStatus({ platform: 'win32', which: have('powershell.exe') }, [{ name: 'Microsoft Sabina Desktop', locale: 'es-MX' }], null).detail, /^SAPI: 1 voz.*Sabina/);
+  assert.equal(systemVoiceStatus({ platform: 'win32', which: have('powershell.exe') }, [], null).available, false);
   const missing = systemVoiceStatus({ platform: 'linux', which: have() }, [], null);
   assert.equal(missing.available, false);
   assert.match(missing.detail, /spd-say.*espeak-ng/);
   assert.equal(systemVoiceHint('linux'), 'sudo apt install speech-dispatcher espeak-ng (o el gestor de paquetes de tu distribución)');
   assert.match(systemVoiceHint('win32'), /integrada en Windows/);
   assert.match(systemVoiceHint('darwin'), /Contenido hablado/);
+});
+
+// T54 (L109) advisories.
+test('T54-1 windows: the system voice needs powershell.exe on PATH; without it, unavailable like Linux without an engine', async () => {
+  assert.equal(detectSystemEngine({ platform: 'win32', which: have() }), undefined);
+  assert.equal(systemVoiceAvailable({ platform: 'win32', which: have() }), false);
+  assert.deepEqual(detectSystemEngine({ platform: 'win32', which: have('powershell.exe') }), { engine: 'sapi', file: '/usr/bin/powershell.exe' });
+  assert.equal(systemVoiceAvailable({ platform: 'win32', which: have('powershell.exe') }), true);
+  const f = fakeSpawn();
+  assert.deepEqual(await speakWithSystemVoice({ voice: 'Microsoft Helena Desktop', text: 'x', speed: 1, spawn: f.spawn, platform: 'win32', which: have() }), { ok: false, message: 'System voice is not available.' });
+  assert.equal(f.calls.length, 0);
+  assert.deepEqual(await listSystemVoices({ platform: 'win32', which: have(), run: async () => 'Microsoft Sabina Desktop|es-MX' }), []);
+  const status = systemVoiceStatus({ platform: 'win32', which: have() }, [], null);
+  assert.equal(status.available, false);
+  assert.match(status.detail, /powershell\.exe/);
+});
+
+/** A fake listing child: stdout data, then exit; `kill` is recorded. */
+function fakeListSpawn() {
+  const calls: Array<{ file: string; args: string[]; killed: string[]; child: any }> = [];
+  const spawn = (file: string, args: string[]) => {
+    const child: any = new EventEmitter();
+    child.stdout = new EventEmitter();
+    const rec = { file, args, killed: [] as string[], child };
+    child.kill = (s?: string) => { rec.killed.push(s ?? 'SIGTERM'); return true; };
+    calls.push(rec);
+    return child;
+  };
+  return { calls, spawn };
+}
+
+test('T54-2 the PowerShell voice listing is bounded: on timeout the child is killed and the result is an empty list', async () => {
+  const f = fakeListSpawn();
+  const out = await listSystemVoices({ platform: 'win32', which: have('powershell.exe'), spawn: f.spawn, timeoutMs: 5 });
+  assert.deepEqual(out, []);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].file, '/usr/bin/powershell.exe');
+  assert.deepEqual(f.calls[0].args, ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_LIST_SCRIPT]);
+  assert.deepEqual(f.calls[0].killed, ['SIGTERM']);
+  // A late exit after the timeout changes nothing.
+  f.calls[0].child.emit('exit', 0);
+});
+
+test('T54-2 the listing child answers in time: stdout is parsed; a failing child or a spawn error gives []', async () => {
+  const ok = fakeListSpawn();
+  const p = listSystemVoices({ platform: 'win32', which: have('powershell.exe'), spawn: ok.spawn, timeoutMs: 1000 });
+  ok.calls[0].child.stdout.emit('data', 'Microsoft Sabina Desktop|es-MX\r\nMicrosoft David Desktop|en-US\r\n');
+  ok.calls[0].child.emit('exit', 0);
+  assert.deepEqual(await p, [{ name: 'Microsoft Sabina Desktop', locale: 'es-MX' }]);
+  assert.deepEqual(ok.calls[0].killed, []);
+  const bad = fakeListSpawn();
+  const q = listSystemVoices({ platform: 'win32', which: have('powershell.exe'), spawn: bad.spawn, timeoutMs: 1000 });
+  bad.calls[0].child.stdout.emit('data', 'Microsoft Sabina Desktop|es-MX');
+  bad.calls[0].child.emit('exit', 1);
+  assert.deepEqual(await q, []);
+  const err = fakeListSpawn();
+  const r = listSystemVoices({ platform: 'win32', which: have('powershell.exe'), spawn: err.spawn, timeoutMs: 1000 });
+  err.calls[0].child.emit('error', new Error('ENOENT'));
+  assert.deepEqual(await r, []);
+  assert.deepEqual(await listSystemVoices({ platform: 'win32', which: have('powershell.exe'), spawn: () => { throw new Error('boom'); } }), []);
+});
+
+test('T54-2 the extension waits for the listing at least as long as the listing itself may run', () => {
+  assert.ok(systemVoiceProbeMs('win32') > SYSTEM_LIST_TIMEOUT_MS.sapi);
+  assert.equal(systemVoiceProbeMs('linux'), 1500);
+  assert.equal(systemVoiceProbeMs('darwin'), 1500);
+});
+
+test('T54-3 spd-say: stop and timeout also cancel the speech-dispatcher queue (spd-say -C); normal end and other engines do not', async () => {
+  const which = have('spd-say');
+  const abort = fakeSpawn();
+  const c = new AbortController();
+  const p = speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, signal: c.signal, spawn: abort.spawn, platform: 'linux', which });
+  c.abort();
+  assert.deepEqual(await p, { ok: false, message: 'Speech cancelled.', cancelled: true });
+  assert.deepEqual(abort.calls[0].killed, ['SIGTERM']);
+  assert.equal(abort.calls.length, 2);
+  assert.equal(abort.calls[1].file, '/usr/bin/spd-say');
+  assert.deepEqual(abort.calls[1].args, ['-C']);
+  const slow = fakeSpawn();
+  assert.deepEqual(await speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, spawn: slow.spawn, platform: 'linux', which, timeoutMs: 5 }), { ok: false, message: 'System voice timed out.' });
+  assert.deepEqual(slow.calls.map(call => call.args), [slow.calls[0].args, ['-C']]);
+  const done = fakeSpawn();
+  const q = speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, spawn: done.spawn, platform: 'linux', which });
+  done.calls[0].child.emit('exit', 0);
+  assert.equal((await q).ok, true);
+  assert.equal(done.calls.length, 1);
+  const eng = fakeSpawn();
+  const d = new AbortController();
+  const r = speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, signal: d.signal, spawn: eng.spawn, platform: 'linux', which: have('espeak-ng') });
+  d.abort(); await r;
+  assert.equal(eng.calls.length, 1);
+  // A spawn that throws for the cancel never breaks the outcome.
+  const e = new AbortController();
+  let n = 0;
+  const flaky = (file: string, args: string[]) => { if (n++ === 1) throw new Error('boom'); return abort.spawn(file, args); };
+  const s = speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, signal: e.signal, spawn: flaky, platform: 'linux', which });
+  e.abort();
+  assert.equal((await s).cancelled, true);
+});
+
+test('T54 regression: Linux detection order, SAPI argv and env, macOS say keep their behaviour', async () => {
+  assert.equal(detectSystemEngine({ platform: 'linux', which: have('espeak', 'spd-say', 'espeak-ng') })?.engine, 'spd-say');
+  assert.equal(detectSystemEngine({ platform: 'linux', which: have('espeak', 'espeak-ng') })?.engine, 'espeak-ng');
+  assert.deepEqual(detectSystemEngine({ platform: 'darwin', exists: () => true }), { engine: 'say', file: '/usr/bin/say' });
+  const f = fakeSpawn();
+  const p = speakWithSystemVoice({ voice: 'Microsoft Sabina Desktop', text: 'Hola', speed: 1.5, spawn: f.spawn, platform: 'win32', which: have('powershell.exe') });
+  assert.deepEqual(f.calls[0].args, ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_SPEAK_SCRIPT]);
+  assert.deepEqual(f.calls[0].env, { GENTLE_SPEAK_VOICE: 'Microsoft Sabina Desktop', GENTLE_SPEAK_RATE: '5' });
+  f.calls[0].child.emit('exit', 0);
+  assert.equal((await p).ok, true);
+  const m = fakeSpawn();
+  const q = speakWithSystemVoice({ voice: 'Paulina', text: 'Hola', speed: 1, spawn: m.spawn, platform: 'darwin', exists: () => true });
+  assert.deepEqual(m.calls[0].args, ['-v', 'Paulina', '-r', '185', '-f', '-']);
+  m.calls[0].child.emit('exit', 0);
+  assert.equal((await q).ok, true);
+  assert.equal(m.calls.length, 1);
 });

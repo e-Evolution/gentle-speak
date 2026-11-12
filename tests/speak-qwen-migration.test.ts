@@ -229,7 +229,7 @@ function harness(o: Opts = {}) {
     sessionManager: { getHeader: () => ({ type: 'session', ...o.header }), getBranch: () => [] },
     ui: { setStatus() {}, setWidget() {}, setTitle() {}, input: async () => undefined, notify: (t: string) => notes.push(t), confirm: async () => false, select: async () => undefined } };
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut() {}, registerTool: (t: any) => tools.set(t.name, t) } as any, undefined, {
-    userHome: real, processHome: dot ? dotHome : real, env, sayAvailable: () => o.say !== false, listMacVoices: async () => [{ name: 'Paulina', locale: 'es_MX' }],
+    userHome: real, processHome: dot ? dotHome : real, setupOffer: false, env, sayAvailable: () => o.say !== false, listMacVoices: async () => [{ name: 'Paulina', locale: 'es_MX' }],
     say: async (req: any) => { sayCalls.push(req); return { ok: true, message: 'Speech completed.' }; },
     modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), spawn: () => fakeChild(), spawnQwen: () => { const c = fakeChild(); pythons.push(c); return c; },
     focusCheck: async () => 'focused', focusPollMs: 5, lockPollMs: 5, qwenTmpRoot: tmpdir(), resolveTerminal: async () => 'com.term', createWatcher: () => ({ start() {}, stop() {} }),

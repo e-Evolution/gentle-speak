@@ -24,6 +24,8 @@ export interface SpeakSettings {
   dotSpeech: boolean;
   /** S12: `"declined"` once the one-time Gentle Dot offer was refused; null means never asked or accepted. Optional in files. */
   dotOffer: 'declined' | null;
+  /** S15: `"declined"` once the one-time first-start setup offer was refused; null means never asked or accepted. Optional in files. */
+  setupOffer: 'declined' | null;
   /** S13: minutes without speech before the warm Qwen worker is closed (integer 1-60); null never. Optional in files; absent means 5. */
   qwenIdleMinutes: number | null;
   shortcuts: { speakLast: string; stop: string; toggle: string; cycleVoice: string; toggleCopy: string };
@@ -39,6 +41,7 @@ export const DEFAULT_SPEAK_SETTINGS: SpeakSettings = {
   macFallback: true,
   dotSpeech: false,
   dotOffer: null,
+  setupOffer: null,
   qwenIdleMinutes: 10,
   shortcuts: { speakLast: 'ctrl+alt+v', stop: 'ctrl+alt+.', toggle: 'ctrl+alt+m', cycleVoice: 'ctrl+alt+n', toggleCopy: 'ctrl+alt+c' },
 };
@@ -57,10 +60,11 @@ const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
 function validate(value: unknown): SpeakSettings | undefined {
-  if (!record(value) || !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts'].every(key => Object.hasOwn(value, key)) || Object.keys(value).some(key => !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts', 'summaryModel', 'copySpeech', 'macVoice', 'macFallback', 'dotSpeech', 'dotOffer', 'qwenIdleMinutes'].includes(key)) || value.schema !== SPEAK_SETTINGS_SCHEMA) return undefined;
+  if (!record(value) || !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts'].every(key => Object.hasOwn(value, key)) || Object.keys(value).some(key => !['schema', 'enabled', 'mode', 'voice', 'speed', 'shortcuts', 'summaryModel', 'copySpeech', 'macVoice', 'macFallback', 'dotSpeech', 'dotOffer', 'setupOffer', 'qwenIdleMinutes'].includes(key)) || value.schema !== SPEAK_SETTINGS_SCHEMA) return undefined;
   if (Object.hasOwn(value, 'copySpeech') && typeof value.copySpeech !== 'boolean') return undefined;
   if (Object.hasOwn(value, 'dotSpeech') && typeof value.dotSpeech !== 'boolean') return undefined;
   if (Object.hasOwn(value, 'dotOffer') && value.dotOffer !== null && value.dotOffer !== 'declined') return undefined;
+  if (Object.hasOwn(value, 'setupOffer') && value.setupOffer !== null && value.setupOffer !== 'declined') return undefined;
   if (Object.hasOwn(value, 'qwenIdleMinutes') && value.qwenIdleMinutes !== null && (typeof value.qwenIdleMinutes !== 'number' || !Number.isInteger(value.qwenIdleMinutes) || value.qwenIdleMinutes < 1 || value.qwenIdleMinutes > 60)) return undefined;
   if (Object.hasOwn(value, 'macFallback') && typeof value.macFallback !== 'boolean') return undefined;
   if (Object.hasOwn(value, 'macVoice') && value.macVoice !== null && (typeof value.macVoice !== 'string' || !/^[\p{L}\p{N} ._()'-]{1,64}$/u.test(value.macVoice))) return undefined;
@@ -77,7 +81,7 @@ function validate(value: unknown): SpeakSettings | undefined {
   const copyDefault = TOGGLE_COPY_DEFAULTS.find(key => ![...bound, cycle].includes(key));
   const shortcuts = [...bound, cycle, value.shortcuts.toggleCopy ?? (!Object.hasOwn(value.shortcuts, 'toggleCopy') ? copyDefault : undefined)];
   if (shortcuts.some(key => typeof key !== 'string' || !/^(?:(?:ctrl|alt|shift)\+)+(?:[a-z0-9]|[.,;\/])$/.test(key) || reserved.has(key)) || new Set(shortcuts).size !== shortcuts.length) return undefined;
-  return { enabled: value.enabled, mode: value.mode as SpeakMode, voice: value.voice, speed: value.speed, summaryModel: model as SpeakSettings['summaryModel'], copySpeech: value.copySpeech === true, macVoice: (value.macVoice as string | null | undefined) ?? null, macFallback: value.macFallback !== false, dotSpeech: value.dotSpeech === true, dotOffer: (value.dotOffer as 'declined' | null | undefined) ?? null, qwenIdleMinutes: Object.hasOwn(value, 'qwenIdleMinutes') ? value.qwenIdleMinutes as number | null : 10,
+  return { enabled: value.enabled, mode: value.mode as SpeakMode, voice: value.voice, speed: value.speed, summaryModel: model as SpeakSettings['summaryModel'], copySpeech: value.copySpeech === true, macVoice: (value.macVoice as string | null | undefined) ?? null, macFallback: value.macFallback !== false, dotSpeech: value.dotSpeech === true, dotOffer: (value.dotOffer as 'declined' | null | undefined) ?? null, setupOffer: (value.setupOffer as 'declined' | null | undefined) ?? null, qwenIdleMinutes: Object.hasOwn(value, 'qwenIdleMinutes') ? value.qwenIdleMinutes as number | null : 10,
     shortcuts: { speakLast: shortcuts[0] as string, stop: shortcuts[1] as string, toggle: shortcuts[2] as string, cycleVoice: shortcuts[3] as string, toggleCopy: shortcuts[4] as string } };
 }
 

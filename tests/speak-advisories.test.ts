@@ -113,7 +113,7 @@ function world(o: Opts = {}) {
     env: { PI_CODING_AGENT_DIR: shell, GENTLE_DOT_AGENT_HOME: dot, GENTLE_DOT_HOME: dotHomeDir }, ...homes, packageRoot: root,
     modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), spawn,
     focusCheck: async () => 'focused', focusPollMs: 5, lockPollMs: 5, sayAvailable: () => true, listMacVoices: o.listMac ?? (async () => [{ name: 'Paulina', locale: 'es_MX' }]),
-    resolveTerminal: async () => undefined, qwenTmpRoot: base,
+    resolveTerminal: async () => undefined, qwenTmpRoot: base, setupOffer: false,
   } as any);
   return { base, userHome, speakHome, dot, shell, dotHomeDir, dotSpeakDir, root, ctx, notes, selections, offered, statuses, children, events, commands, tools,
     menu: () => commands.get('speak').handler('', ctx),

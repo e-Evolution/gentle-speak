@@ -50,7 +50,7 @@ function world(o: Opts = {}) {
     ...(isDot ? { settingsHome: dotSpeakDir } : {}),
     modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), spawn,
     focusCheck: async () => { state.checks++; return state.focus as any; }, focusPollMs: 5, lockPollMs: 5, sayAvailable: () => false,
-    env, userHome, processHome: isDot ? join(userHome, '.gentle-dot', 'home') : userHome, packageRoot: '/pkg/gentle-speak', resolveTerminal: async () => 'com.t', createWatcher: ((w: any) => { watchers.push(w); return { start() {}, stop() {} }; }) as any,
+    setupOffer: false, env, userHome, processHome: isDot ? join(userHome, '.gentle-dot', 'home') : userHome, packageRoot: '/pkg/gentle-speak', resolveTerminal: async () => 'com.t', createWatcher: ((w: any) => { watchers.push(w); return { start() {}, stop() {} }; }) as any,
   } as any);
   const settle = () => events.get('agent_settled')!({ aborted: false }, ctx);
   const texts = () => children.filter(c => c.writes.length).map(c => JSON.parse(c.writes[0]).text);
@@ -176,7 +176,7 @@ test('the offer writes through a temp file and rename, never in place', async ()
   // Rebuild with an fs spy: the same tree, observing renames of Dot\'s settings.
   const spy = { ...fs, renameSync: (a: any, b: any) => { renames.push(`${a}=>${b}`); return fs.renameSync(a, b); } } as any;
   const events = new Map<string, Function>();
-  gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut() {}, registerTool() {} } as any, w.speakHome, { env: { PI_CODING_AGENT_DIR: w.shell }, userHome: w.userHome, processHome: w.userHome, dotFs: spy, packageRoot: '/pkg', sayAvailable: () => false, focusCheck: async () => 'focused', resolveTerminal: async () => undefined } as any);
+  gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut() {}, registerTool() {} } as any, w.speakHome, { setupOffer: false, env: { PI_CODING_AGENT_DIR: w.shell }, userHome: w.userHome, processHome: w.userHome, dotFs: spy, packageRoot: '/pkg', sayAvailable: () => false, focusCheck: async () => 'focused', resolveTerminal: async () => undefined } as any);
   await events.get('session_start')!({}, w.ctx); await quiet(20);
   assert.equal(renames.length, 2, 'Dot settings.json and Dot speak settings'); assert.match(renames.find(r => /gentle-dot\/agent/.test(r))!, new RegExp(`settings\\.json\\.[^/]+\\.tmp=>${w.dot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/settings\\.json$`));
   w.shutdown();
@@ -261,7 +261,7 @@ test('offer: a confirm that rejects is swallowed and a write failure is notified
   const f = world({ confirm: true, dotSettings: JSON.stringify({ packages: [] }) });
   const events = new Map<string, Function>();
   const failing = { ...fs, writeFileSync: (p: any, ...rest: any[]) => { if (String(p).includes('.tmp')) throw new Error('disk full'); return (fs.writeFileSync as any)(p, ...rest); } } as any;
-  gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut() {}, registerTool() {} } as any, f.speakHome, { env: { PI_CODING_AGENT_DIR: f.shell }, userHome: f.userHome, processHome: f.userHome, dotFs: failing, packageRoot: '/pkg', sayAvailable: () => false, focusCheck: async () => 'focused', resolveTerminal: async () => undefined } as any);
+  gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut() {}, registerTool() {} } as any, f.speakHome, { setupOffer: false, env: { PI_CODING_AGENT_DIR: f.shell }, userHome: f.userHome, processHome: f.userHome, dotFs: failing, packageRoot: '/pkg', sayAvailable: () => false, focusCheck: async () => 'focused', resolveTerminal: async () => undefined } as any);
   await events.get('session_start')!({}, f.ctx); await until(() => f.notes.length > 0, 'write failure notified'); await quiet(30);
   assert.deepEqual(f.notes, ['No pude actualizar el settings.json de Gentle Dot; nada cambió.']); f.shutdown();
 });
@@ -272,7 +272,7 @@ test('hermetic guard: with an injected HOME and fs, no fs call touches the real 
   const spy: any = {}; for (const k of ['readFileSync', 'writeFileSync', 'renameSync', 'copyFileSync', 'existsSync', 'unlinkSync', 'mkdirSync']) spy[k] = (...a: any[]) => { seen.push(String(a[0])); return (fs as any)[k](...a); };
   const w = world({ dotSettings: null, confirm: true });
   const events = new Map<string, Function>(), commands = new Map<string, any>();
-  gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand: (n: string, c: any) => commands.set(n, c), registerShortcut() {}, registerTool() {} } as any, w.speakHome, { env: {}, userHome: w.userHome, processHome: w.userHome, dotFs: spy, packageRoot: '/pkg', sayAvailable: () => false, focusCheck: async () => 'focused', resolveTerminal: async () => undefined } as any);
+  gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand: (n: string, c: any) => commands.set(n, c), registerShortcut() {}, registerTool() {} } as any, w.speakHome, { setupOffer: false, env: {}, userHome: w.userHome, processHome: w.userHome, dotFs: spy, packageRoot: '/pkg', sayAvailable: () => false, focusCheck: async () => 'focused', resolveTerminal: async () => undefined } as any);
   await events.get('session_start')!({}, w.ctx); await quiet(30);
   w.selections.push('Conectar Gentle Dot'); await commands.get('speak').handler('', w.ctx); await quiet(30);
   assert.ok(seen.length > 0, 'the injected fs was used');

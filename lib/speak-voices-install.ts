@@ -125,14 +125,15 @@ export async function migrateLegacyQwenVoices({ home, settingsDirs, table = LEGA
 export type DesignModelState = 'installed' | 'missing';
 /** Measured 2026-11-11 on the local Hugging Face cache snapshot of the repo (`du -skL`: 4 414 288 KiB); used only when the API cannot be asked. */
 export const QWEN_DESIGN_APPROX_BYTES = 4_414_288 * 1024;
-const DESIGN_REPO_DIR = `models--${QWEN_DESIGN_MODEL_ID.replace('/', '--')}`;
 
 /** `<HF_HOME>`: a user-set `HF_HOME`, else `<real home>/.cache/huggingface`; the same rule as the Qwen child's environment. */
 export const hfHomeOf = (env: NodeJS.ProcessEnv, home: string): string => qwenPythonEnv(env, home).HF_HOME as string;
 
-/** `installed` only when a cached snapshot has config.json, a speech_tokenizer dir and at least one non-empty safetensors file that resolves (a dangling link is an interrupted download). */
-export async function designModelStatus(hfHome: string): Promise<DesignModelState> {
-  const snapshots = join(hfHome, 'hub', DESIGN_REPO_DIR, 'snapshots');
+const repoDir = (repo: string) => `models--${repo.replace('/', '--')}`;
+
+/** T44: `installed` only when a cached snapshot of `repo` has config.json, a speech_tokenizer dir and at least one non-empty safetensors file that resolves (a dangling link is an interrupted download). Read-only. */
+export async function hfModelStatus(hfHome: string, repo: string): Promise<DesignModelState> {
+  const snapshots = join(hfHome, 'hub', repoDir(repo), 'snapshots');
   let names: string[];
   try { names = await readdir(snapshots); } catch { return 'missing'; }
   for (const name of names) {
@@ -144,17 +145,23 @@ export async function designModelStatus(hfHome: string): Promise<DesignModelStat
   }
   return 'missing';
 }
+/** The VoiceDesign cache state (S14). */
+export const designModelStatus = (hfHome: string): Promise<DesignModelState> => hfModelStatus(hfHome, QWEN_DESIGN_MODEL_ID);
+/** T44: the Base 0.6B cache state (the model speech clones with). */
+export const baseModelStatus = (hfHome: string): Promise<DesignModelState> => hfModelStatus(hfHome, QWEN_MODEL_ID);
 
-/** Total bytes of the repo from the public Hugging Face API (metadata only, nothing is downloaded); undefined when it cannot be read. */
-export async function designModelSize(fetchImpl: typeof fetch = globalThis.fetch, timeoutMs = 5000): Promise<number | undefined> {
+/** Total bytes of `repo` from the public Hugging Face API (metadata only, nothing is downloaded); undefined when it cannot be read. */
+export async function hfModelSize(repo: string, fetchImpl: typeof fetch = globalThis.fetch, timeoutMs = 5000): Promise<number | undefined> {
   try {
-    const response = await fetchImpl(`https://huggingface.co/api/models/${QWEN_DESIGN_MODEL_ID}?blobs=true`, { signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetchImpl(`https://huggingface.co/api/models/${repo}?blobs=true`, { signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) return undefined;
     const body: any = await response.json();
     const total = (Array.isArray(body?.siblings) ? body.siblings : []).reduce((sum: number, file: any) => sum + (typeof file?.size === 'number' && file.size > 0 ? file.size : 0), 0);
     return total > 0 ? total : undefined;
   } catch { return undefined; }
 }
+export const designModelSize = (fetchImpl: typeof fetch = globalThis.fetch, timeoutMs = 5000): Promise<number | undefined> => hfModelSize(QWEN_DESIGN_MODEL_ID, fetchImpl, timeoutMs);
+export const baseModelSize = (fetchImpl: typeof fetch = globalThis.fetch, timeoutMs = 5000): Promise<number | undefined> => hfModelSize(QWEN_MODEL_ID, fetchImpl, timeoutMs);
 
 /** The size as shown in the confirmation, always with its source. */
 export function describeDesignModelSize(bytes: number | undefined): string {
@@ -168,12 +175,16 @@ const defaultDesignRun: DesignRun = (command, args, { env, signal }) => new Prom
   execFile(command, args, { env, signal, timeout: 60 * 60_000, maxBuffer: 1024 * 1024 }, error => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0 }));
 });
 
-/** Downloads the VoiceDesign model into the Hugging Face cache with the worker's interpreter; the one online step (`HF_HUB_OFFLINE` unset). Requires `confirmed: true`. */
-export async function installDesignModel({ python, hfHome, home, confirmed, signal, run = defaultDesignRun }: { python: string; hfHome: string; home: string; confirmed: boolean; signal?: AbortSignal; run?: DesignRun }): Promise<void> {
+/** Downloads `repo` into the Hugging Face cache with the worker's interpreter; the one online step (`HF_HUB_OFFLINE` unset). Requires `confirmed: true`. */
+async function downloadHfModel({ repo, name, python, hfHome, home, confirmed, signal, run = defaultDesignRun }: { repo: string; name: string; python: string; hfHome: string; home: string; confirmed: boolean; signal?: AbortSignal; run?: DesignRun }): Promise<void> {
   if (confirmed !== true) throw new Error('Explicit caller confirmation is required.');
   const env = { ...qwenPythonEnv(process.env, home), HF_HOME: hfHome };
   delete env.HF_HUB_OFFLINE;
-  const code = `from huggingface_hub import snapshot_download; snapshot_download(${JSON.stringify(QWEN_DESIGN_MODEL_ID)})`;
-  if ((await run(python, [...QWEN_PYTHON_FLAGS, '-c', code], { env, signal })).code !== 0) throw new Error('Download failed: the VoiceDesign model could not be fetched');
-  if (await designModelStatus(hfHome) !== 'installed') throw new Error('Download did not complete: the VoiceDesign model is not installed; could not verify it');
+  const code = `from huggingface_hub import snapshot_download; snapshot_download(${JSON.stringify(repo)})`;
+  if ((await run(python, [...QWEN_PYTHON_FLAGS, '-c', code], { env, signal })).code !== 0) throw new Error(`Download failed: the ${name} model could not be fetched`);
+  if (await hfModelStatus(hfHome, repo) !== 'installed') throw new Error(`Download did not complete: the ${name} model is not installed; could not verify it`);
 }
+/** Downloads the VoiceDesign model (S14). */
+export const installDesignModel = (options: { python: string; hfHome: string; home: string; confirmed: boolean; signal?: AbortSignal; run?: DesignRun }): Promise<void> => downloadHfModel({ ...options, repo: QWEN_DESIGN_MODEL_ID, name: 'VoiceDesign' });
+/** T44: downloads the Base 0.6B model, the one speech clones with (the setup's explicit, confirmed download). */
+export const installBaseModel = (options: { python: string; hfHome: string; home: string; confirmed: boolean; signal?: AbortSignal; run?: DesignRun }): Promise<void> => downloadHfModel({ ...options, repo: QWEN_MODEL_ID, name: 'Base' });

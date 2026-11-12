@@ -40,6 +40,8 @@ This Git command is **not available yet** and follows the repository's current d
 
 ### First playback
 
+Setup in one step: `/speak` → **Instalar todo** lists everything that is missing (runtime, Piper `es_MX` and, on Apple Silicon, a gentle-speak Python env with `mlx-audio==0.4.4` and the Qwen Base model) with sizes, asks once and installs it in the background; the same offer appears once on the first terminal start (a decline is remembered). To check that everything works, run `/speak doctor` (or `/speak` → **Doctor**).
+
 1. In Gentle Shell's interactive parent TUI, run `/speak` → **Install voice and runtime**. Confirm the converted voice bundle (about 67 MB) and native runtime download **separately**; declining either performs no download for that artifact.
 2. Choose `es_MX` (default) or `es_ES` under `/speak`. They are separate converted Piper TTS bundles, not the Parakeet dictation model. Invalid artifacts are never silently replaced.
 3. Use `/speak` → **Toggle auto-speak**. The default `questions-and-results` mode reads eligible final questions and usable results; `all` reads other final prose. Code blocks, diffs, and tool output are excluded. `/speak` also changes speed (0.5–2).

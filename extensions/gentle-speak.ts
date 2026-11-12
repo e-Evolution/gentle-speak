@@ -9,7 +9,7 @@ import { filterSettledSpeech } from '../lib/speak-filter.ts';
 import { CUSTOM_VOICE_PREFIX, QWEN_DESIGN_MODEL_ID, VOICE_CATALOG, isCustomVoiceId, isLegacyQwenVoiceId } from '../lib/speak-voices.ts';
 import { CUSTOM_LABEL_MAX, CUSTOM_TRANSCRIPT_MAX, createCustomVoice, customCatalog, defaultPythonRun, deleteCustomVoice, listCustomVoices, readCustomVoice, runVoiceScript, slugifyVoiceId, type CustomVoice, type PythonRun } from '../lib/speak-custom-voices.ts';
 import { SPEAK_STATUS_KEY, formatSpeakStatus, nextAvailableVoice, voiceMenuEntries } from '../lib/speak-status.ts';
-import { describeDesignModelSize, designModelSize, designModelStatus, hfHomeOf, installDesignModel, migrateLegacyQwenVoices, resolveQwenPython, type LegacyQwenVoice } from '../lib/speak-voices-install.ts';
+import { baseModelSize, baseModelStatus, describeDesignModelSize, type DesignRun, designModelSize, designModelStatus, hfHomeOf, installBaseModel, installDesignModel, migrateLegacyQwenVoices, resolveQwenPython, type LegacyQwenVoice } from '../lib/speak-voices-install.ts';
 import { createCopiedSelectionWatcher, createOwnCopyGate, isSelectionTui, resolveTerminalBundleId } from '../lib/speak-clipboard.ts';
 import { createTerminalFocusTracker, type TerminalFocusTracker } from '../lib/speak-terminal-focus.ts';
 import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix, readFrontmostBundleId, type FocusState, type HerdrExec } from '../lib/speak-focus.ts';
@@ -18,9 +18,12 @@ import { realHome, settingsHome, sharedHome } from '../lib/speak-home.ts';
 import { createVoiceLock } from '../lib/speak-voice-lock.ts';
 import { connectDot, detectDot, disconnectDot, dotHome, isDotEngine, readDotSpeak, seedDotSettings, resolveDotSource, writeDotSpeak, type DotFs } from '../lib/speak-dot.ts';
 import { createQwenServiceSpawner, type QwenServiceSpawner, type QwenServiceSpawnerOptions } from '../lib/speak-qwen-client.ts';
-import { qwenServicePaths, stopQwenService } from '../lib/speak-qwen-service.ts';
+import { qwenBuildId, qwenServicePaths, qwenServiceVersion, stopQwenService } from '../lib/speak-qwen-service.ts';
 import { createSpeculativePlanner } from '../lib/speak-speculative.ts';
 import { createQwenSpeech, playbackFailure, qwenPythonEnv, spawnQwenPython, type QwenChild, type QwenPrepareHandle } from '../lib/speak-qwen.ts';
+import { QWEN_CREATE_VOICE_SUGGESTION, computeSetupPlan, describeSetupPlan, runSetup, summarizeSetup, type SetupEnv, type SetupInstallers, type SetupPlan } from '../lib/speak-setup.ts';
+import { ensurePythonEnv, detectPythonTooling, makeWhich, pythonEnvStatus, defaultRunTool, validatePythonEnv, type RunTool, type Which } from '../lib/speak-python-env.ts';
+import { formatDoctorReport, probeAudioDevice, probeQwenService, probeVoiceLock, runDoctor, type DoctorProbes } from '../lib/speak-doctor.ts';
 import { SPEAK_MODELS, SPEAK_TARGETS, installSpeakModel, installSpeakRuntime, readSpeakModelStatus, readSpeakRuntimeStatus, type SpeakTarget } from '../lib/speak-install.ts';
 
 type Child = Pick<ChildProcessWithoutNullStreams, 'stdin' | 'stdout' | 'stderr' | 'on' | 'kill'>;
@@ -76,6 +79,18 @@ type Dependencies = {
   installDesign: typeof installDesignModel;
   /** S14: runs `scripts/speak-design-voice.py` (design or import); tests inject a fake runner. */
   pythonRun: PythonRun;
+  /** T44: `<platform>-<arch>` of the host (tests); the Qwen setup parts exist only on `darwin-arm64`. Defaults to the real one. */
+  hostTarget?: string;
+  /** T44: the first-start setup offer (default on); tests that are not about it turn it off. */
+  setupOffer?: boolean;
+  /** T44: overrides of the setup probes and installers (tests inject fakes for uv, python, the HF API and the downloads). */
+  setup?: Partial<SetupEnv> & Partial<SetupInstallers>;
+  /** T44: runs uv / python / pip for the Python env (tests inject a fake toolbox); defaults to the real one. */
+  setupRun?: RunTool;
+  /** T44: runs the Base model download (tests). */
+  downloadRun?: DesignRun;
+  /** T44: overrides of the doctor probes (tests). */
+  doctor?: Partial<DoctorProbes>;
 };
 const defaults: Dependencies = {
   modelStatus: readSpeakModelStatus, runtimeStatus: readSpeakRuntimeStatus,
@@ -96,6 +111,7 @@ const defaults: Dependencies = {
   designSize: () => designModelSize(),
   installDesign: installDesignModel,
   pythonRun: defaultPythonRun,
+  setupOffer: true,
 };
 const COPY_WIDGET_KEY = 'gentle-speak-copy';
 const FOCUS_WIDGET_KEY = 'gentle-speak-focus';
@@ -104,6 +120,7 @@ const target = `${process.platform}-${process.arch}` as SpeakTarget;
 const worker = resolve(import.meta.dirname, '../scripts/speak-worker.cjs');
 const qwenWorker = resolve(import.meta.dirname, '../scripts/speak-qwen-worker.py');
 const qwenServiceScript = resolve(import.meta.dirname, '../scripts/speak-qwen-service.mjs');
+const audioProbeScript = resolve(import.meta.dirname, '../scripts/speak-audio-probe.cjs');
 const designScript = resolve(import.meta.dirname, '../scripts/speak-design-voice.py');
 const DEFAULT_SAMPLE = 'Encontré el problema. Era una carrera en el worker de audio, algo tonto en realidad. Ya está arreglado.';
 const CONSENT_TEXT = 'Es mi voz o tengo consentimiento explícito de la persona';
@@ -749,6 +766,119 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (yes) { connectDotNow(ctx); return; }
     try { const settings = readSpeakSettings(settingsDir); settings.dotOffer = 'declined'; writeSpeakSettings(settings, settingsDir); } catch { /* asked again next time */ }
   }
+  // ---- T44 (S15): setup (first-start offer and «Instalar todo») and `/speak doctor`. Nothing downloads without the one confirmation. ----
+  const hostTarget = deps.hostTarget ?? target;
+  const hostPlatform = deps.platform ?? process.platform;
+  const which: Which = deps.setup?.which ?? makeWhich(process.env, hostPlatform);
+  const hfHome = deps.hfHome ?? hfHomeOf(process.env, realHome(deps.userHome ? { userInfo: () => ({ homedir: deps.userHome as string }) } : {}));
+  const setupEnv = (): SetupEnv => ({
+    home, target: hostTarget, platform: hostPlatform, hfHome, which,
+    runtimeStatus: deps.runtimeStatus as SetupEnv['runtimeStatus'], modelStatus: deps.modelStatus as SetupEnv['modelStatus'],
+    pythonStatus: pythonEnvStatus, tooling: () => detectPythonTooling({ which, run: deps.setupRun }),
+    baseStatus: baseModelStatus, baseSize: () => baseModelSize(),
+    ...(deps.setup ?? {}),
+  });
+  const setupInstallers = (): SetupInstallers => ({
+    installRuntime: o => deps.installRuntime(o as any), installPiper: o => deps.installModel(o as any),
+    ensurePython: o => ensurePythonEnv({ ...o, which, run: deps.setupRun, env: qwenPythonEnv(process.env, realUserHome()) }), installBase: o => installBaseModel({ ...o, home: realUserHome(), run: deps.downloadRun }), resolvePython: resolveQwenPython,
+    ...(deps.setup ?? {}),
+  });
+  let setupRunning = false, setupOfferShown = false, setupConfirming = false, setupPlanToken: symbol | undefined;
+  /** One confirmation with every missing component, then everything installs in the background with progress notices and a final summary. */
+  async function setupFlow(ctx: ExtensionContext, { announceComplete }: { announceComplete: boolean }, live: () => boolean = () => !stopped): Promise<void> {
+    if (setupRunning || setupConfirming || !live()) return; // one confirmation at a time, whether it came from the first-start offer or from «Instalar todo»
+    const mine = setupPlanToken = Symbol('setup plan'); // a newer flow supersedes one that is still only computing its plan (its context may be gone)
+    let plan: SetupPlan, yes: boolean, confirming = false;
+    try {
+      plan = await computeSetupPlan(setupEnv());
+      if (setupPlanToken !== mine || !live()) return;
+      if (!plan.actionable.length) {
+        if (announceComplete) ctx.ui.notify(plan.missing.length ? describeSetupPlan(plan).replace('gentle-speak necesita instalar:\n', '').replace(/^Total:.*\n?/m, '') : `gentle-speak listo: no falta nada.${plan.ffmpeg.present ? '' : ` ffmpeg: ${plan.ffmpeg.hint}`}`, 'info');
+        return;
+      }
+      if (!announceComplete) setupOfferShown = true; // once on screen it is never shown again; a superseded plan that never reached the screen does not count
+      setupConfirming = confirming = true;
+      yes = await ctx.ui.confirm('Instalar todo', describeSetupPlan(plan));
+    } finally { if (setupPlanToken === mine) setupPlanToken = undefined; if (confirming) setupConfirming = false; }
+    if (stopped) return; // shut down while the human decided: nothing installs. A newer session_start does not drop an answer already on screen (T48).
+    if (!yes) {
+      if (!announceComplete) { try { const settings = readSpeakSettings(settingsDir); settings.setupOffer = 'declined'; writeSpeakSettings(settings, settingsDir); } catch { /* asked again next time */ } }
+      return;
+    }
+    if (setupRunning) return;
+    setupRunning = true;
+    const controller = new AbortController();
+    installs.add(controller);
+    ctx.ui.notify('Instalando gentle-speak en segundo plano…', 'info');
+    try {
+      const marks = new Map<string, number>();
+      const results = await runSetup({ plan, env: { home, target: hostTarget, hfHome }, installers: setupInstallers(), signal: controller.signal, onProgress: progress => {
+        if (stopped) return;
+        const label = plan.components.find(component => component.id === progress.component)?.label ?? progress.component;
+        if (progress.phase === 'start') ctx.ui.notify(`Instalando: ${label}…`, 'info');
+        else if (progress.phase === 'progress' && progress.message) ctx.ui.notify(`${label}: ${progress.message}`, 'info');
+        else if (progress.phase === 'progress' && progress.total) {
+          const step = Math.floor((progress.received ?? 0) / progress.total * 4);
+          if (step > (marks.get(progress.component) ?? 0) && step < 4) { marks.set(progress.component, step); ctx.ui.notify(`${label}: ${step * 25}%`, 'info'); }
+        }
+      } });
+      if (stopped) return;
+      const after = await computeSetupPlan(setupEnv());
+      const qwenReady = after.qwenSupported && after.components.filter(component => component.id === 'python' || component.id === 'qwen-base').every(component => component.state === 'installed');
+      ctx.ui.notify(summarizeSetup(results, after.ffmpeg, after.qwenSupported), results.every(result => result.status === 'installed') ? 'info' : 'warning');
+      if (qwenReady && Object.keys(await refreshCustom(ctx)).length === 0) ctx.ui.notify(QWEN_CREATE_VOICE_SUGGESTION, 'info');
+      await refreshRowPrimed(ctx);
+    } catch { if (!stopped) ctx.ui.notify('La instalación de gentle-speak falló.', 'error'); }
+    finally { controller.abort(); installs.delete(controller); setupRunning = false; }
+  }
+  /** The first-start offer: terminal TUI parent only, once per extension instance, never after a persisted decline, never blocking startup. */
+  async function offerSetup(ctx: ExtensionContext, generation: number) {
+    const live = () => !stopped && generation === offerGeneration;
+    if (deps.setupOffer === false || !live() || setupOfferShown || !parent(ctx) || readSpeakSettings(settingsDir).setupOffer === 'declined') return;
+    await setupFlow(ctx, { announceComplete: false }, live);
+  }
+  /** `/speak doctor`: every check bounded and read-only; the report is one plain-text notice, then an optional spoken test. */
+  async function doctorFlow(ctx: ExtensionContext) {
+    const settings = readSpeakSettings(settingsDir);
+    const python = () => resolveQwenPython(home);
+    const probes: DoctorProbes = {
+      platform: hostPlatform, target: hostTarget,
+      runtime: () => deps.runtimeStatus({ home, target }),
+      audio: async () => { const runtime = await deps.runtimeStatus({ home, target }); return probeAudioDevice({ script: audioProbeScript, runtimePath: runtime.path }); },
+      piper: async () => ({ es_MX: (await deps.modelStatus({ home, voice: 'es_MX' })).state, es_ES: (await deps.modelStatus({ home, voice: 'es_ES' })).state }),
+      python: async () => {
+        const interpreter = python();
+        if (!interpreter) return { recorded: false };
+        const exists = (await pythonEnvStatus(home)).state === 'installed';
+        if (!exists) return { recorded: true, python: interpreter, exists };
+        const valid = await validatePythonEnv({ python: interpreter, run: defaultRunTool, env: qwenPythonEnv(process.env, realUserHome()) });
+        return valid.ok ? { recorded: true, python: interpreter, exists, importOk: true, version: valid.version } : { recorded: true, python: interpreter, exists, importOk: false, message: valid.message };
+      },
+      base: () => baseModelStatus(hfHome), design: () => deps.designStatus(hfHome),
+      customVoices: () => listCustomVoices(home),
+      selectedVoice: async () => {
+        const id = settings.voice;
+        if (isCustomVoiceId(id)) { const voice = await readCustomVoice(home, id.slice(CUSTOM_VOICE_PREFIX.length)); return voice ? (python() ? { ok: true, detail: `${voice.label} (${id})` } : { ok: false, detail: `${id}: falta el entorno Python de Qwen`, hint: 'Ejecutá /speak → «Instalar todo».' }) : { ok: false, detail: `${id}: no existe o es inválida`, hint: 'Elegí otra voz con /speak o creala de nuevo.' }; }
+        if (isLegacyQwenVoiceId(id)) return { ok: false, detail: `${id}: ya no viene incluida`, hint: 'Creá tu voz con /speak → «Crear voz propia…».' };
+        if (VOICE_CATALOG[id]?.engine === 'system') return deps.sayAvailable() ? { ok: true, detail: 'Mac (say)' } : { ok: false, detail: 'la voz Mac no está disponible', hint: 'Elegí otra voz con /speak.' };
+        const ready = VOICE_CATALOG[id] && (await deps.modelStatus({ home, voice: id as keyof typeof SPEAK_MODELS })).state === 'installed';
+        return ready ? { ok: true, detail: labelOfVoice(id) } : { ok: false, detail: `${labelOfVoice(id)} no está instalada`, hint: 'Ejecutá /speak → «Instalar todo».' };
+      },
+      service: () => probeQwenService(home, { expected: { version: qwenServiceVersion(), build: qwenBuildId(qwenServiceScript, qwenWorker) } }),
+      lock: () => probeVoiceLock(home),
+      ffmpeg: () => which('ffmpeg'),
+      systemVoice: async () => { if (!deps.sayAvailable()) return { available: false, detail: '`say` no está disponible' }; const voices = await loadMacVoices(); return voices.length ? { available: true, detail: `${voices.length} voz/voces en español (elegida: ${pickMacVoice(voices, settings.macVoice) ?? 'auto'})` } : { available: false, detail: 'no hay voces en español instaladas' }; },
+      focus: async () => focusTracker?.hasEvents() ? 'terminal-events' : (await probeHerdrFocus({ env: deps.env, exec: deps.herdrExec, timeoutMs: 700 })) !== 'unknown' ? 'herdr' : 'unknown',
+      dot: () => detectDot(dotIo),
+      ...(deps.doctor ?? {}),
+    };
+    const report = await runDoctor(probes);
+    if (stopped) return;
+    ctx.ui.notify(formatDoctorReport(report), report.failed ? 'warning' : 'info');
+    if (stopped || !(await ctx.ui.confirm('Doctor', '¿Probar una frase?')) || stopped) return;
+    const outcome = await speak('Hola, gentle-speak funciona.', ctx);
+    if (!stopped) ctx.ui.notify(outcome.isError ? `La prueba falló: ${outcome.content[0].text}` : 'Prueba completada.', outcome.isError ? 'warning' : 'info');
+  }
   /**
    * T45 (S15): once, converts an install with the old built-in Qwen voices into custom voices and maps the old `qwen-<name>` setting in the terminal's and Dot's
    * settings. Terminal parent or Dot's root RPC session only; never a child, another RPC client, print or JSON. Idempotent; nothing is deleted.
@@ -769,7 +899,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     await refreshCustom(ctx); await refreshRowPrimed(ctx); syncFocus(ctx); await syncCopy(ctx);
     const generation = ++offerGeneration;
     if (offerTimer) clearTimeout(offerTimer);
-    offerTimer = setTimeout(() => { offerTimer = undefined; offerDot(ctx, generation).catch(() => { /* the offer is a convenience; it never breaks anything */ }); }, 0);
+    offerTimer = setTimeout(() => { offerTimer = undefined; offerDot(ctx, generation).catch(() => { /* the offer is a convenience; it never breaks anything */ }).then(() => offerSetup(ctx, generation)).catch(() => { /* idem */ }); }, 0);
     offerTimer.unref?.();
   });
   pi.on('session_shutdown', (_event, ctx) => {
@@ -898,15 +1028,18 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   }
   pi.registerCommand('speak', {
     description: 'Configure speech and explicitly install local voice and runtime (parent TUI only)',
-    async handler(_args, ctx) {
+    async handler(args, ctx) {
       if (stopped || !parent(ctx)) return;
+      if (String(args ?? '').trim().toLowerCase() === 'doctor') { await doctorFlow(ctx); return; }
       const settings = readSpeakSettings(settingsDir);
       const availability = await voiceAvailability(ctx); // refreshes the custom voices first
       const voices = voiceMenuEntries(fullCatalog(), availability);
       if (stopped) return;
-      const choice = await ctx.ui.select('Speech settings', ['Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Crear voz propia…', 'Importar mi grabación…', 'Borrar voz propia…', 'Mac voice', 'Toggle Mac fallback', IDLE_LABEL, ...(qwenServiceOn ? ['Detener servicio Qwen'] : []), 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
+      const choice = await ctx.ui.select('Speech settings', ['Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Crear voz propia…', 'Importar mi grabación…', 'Borrar voz propia…', 'Mac voice', 'Toggle Mac fallback', IDLE_LABEL, ...(qwenServiceOn ? ['Detener servicio Qwen'] : []), 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Instalar todo', 'Doctor', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
       if (!choice || choice === 'Cancel' || stopped) return;
       if (choice === 'Stop playback') { stopAll(); return; }
+      if (choice === 'Instalar todo') { await setupFlow(ctx, { announceComplete: true }); return; }
+      if (choice === 'Doctor') { await doctorFlow(ctx); return; }
       if (choice === 'Gentle Dot') { await dotMenu(ctx, voices); return; }
       if (choice === 'Crear voz propia…') { await designFlow(ctx); return; }
       if (choice === 'Importar mi grabación…') { await importFlow(ctx); return; }

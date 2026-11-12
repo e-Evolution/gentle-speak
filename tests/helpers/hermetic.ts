@@ -8,5 +8,7 @@ import { join } from 'node:path';
 export const hermetic = (home: string) => ({
   userHome: home,
   processHome: home,
+  /** T44: the first-start setup offer probes PATH tools; tests that are not about it keep it off (its own tests turn it on with fakes). */
+  setupOffer: false,
   env: { PI_CODING_AGENT_DIR: join(home, 'terminal-agent'), GENTLE_DOT_AGENT_HOME: join(home, 'dot-agent'), GENTLE_DOT_HOME: join(home, 'dot-home') } as Record<string, string | undefined>,
 });

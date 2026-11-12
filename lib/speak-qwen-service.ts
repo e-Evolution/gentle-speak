@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
 import { execFile, spawn as spawnChild } from 'node:child_process';
 import net from 'node:net';
@@ -9,6 +10,18 @@ export const QWEN_SERVICE_SCHEMA = 'gentle.speak.qwen-service/v1';
 export const QWEN_SERVICE_PROTOCOL_REV = 1;
 const PACKAGE_VERSION: string = (() => { try { return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version; } catch { return '0.0.0'; } })();
 export const qwenServiceVersion = (): string => `${PACKAGE_VERSION}+p${QWEN_SERVICE_PROTOCOL_REV}`;
+/**
+ * T50 (L98): the build id, the first 12 hex chars of a sha256 over the exact bytes of the service script then the worker script (each preceded by its byte length, so the
+ * split point is part of the hash). The package version alone never changed between builds, so an old service kept running; the build id changes with any code change.
+ * scripts/speak-qwen-service.mjs derives it the same way for its own script and worker (a test pins them equal). `undefined` when a script cannot be read.
+ */
+export function qwenBuildId(serviceScript: string, workerScript: string): string | undefined {
+  try {
+    const hash = createHash('sha256');
+    for (const file of [serviceScript, workerScript]) { const bytes = readFileSync(file); hash.update(`${bytes.length}:`); hash.update(bytes); }
+    return hash.digest('hex').slice(0, 12);
+  } catch { return undefined; }
+}
 
 export interface QwenServicePaths { dir: string; socket: string; pid: string; lock: string; log: string; restart: string }
 export const qwenServicePaths = (home: string): QwenServicePaths => ({ dir: home, socket: join(home, 'qwen.sock'), pid: join(home, 'qwen-service.pid'), lock: join(home, 'qwen-service.lock'), log: join(home, 'qwen-service.log'), restart: join(home, 'qwen-service.restart') });
@@ -80,7 +93,7 @@ export interface QwenServiceOptions {
   /** Tests: the current user id. */
   uid?: number;
 }
-export interface QwenServiceConnection { socket: net.Socket; version: string; pid: number; /** Bytes that arrived after the hello line. */ rest: string }
+export interface QwenServiceConnection { socket: net.Socket; version: string; /** The service's build id; absent for a service older than T50. */ build?: string; pid: number; /** Bytes that arrived after the hello line. */ rest: string }
 
 /** Creates the home directory when missing, refuses one the current user does not own, and makes it private (0700). */
 export function ensurePrivateHome(home: string, uid: number | undefined = process.getuid?.()): void {
@@ -107,7 +120,7 @@ function attempt(socketPath: string, timeoutMs = 3000): Promise<Attempt> {
       try {
         const hello = JSON.parse(buffer.slice(0, at));
         if (hello?.schema !== QWEN_SERVICE_SCHEMA || hello.type !== 'hello' || typeof hello.version !== 'string') throw new Error('not a hello');
-        settle({ ok: true, connection: { socket, version: hello.version, pid: Number.isSafeInteger(hello.pid) ? hello.pid : 0, rest: buffer.slice(at + 1) } });
+        settle({ ok: true, connection: { socket, version: hello.version, ...(typeof hello.build === 'string' ? { build: hello.build } : {}), pid: Number.isSafeInteger(hello.pid) ? hello.pid : 0, rest: buffer.slice(at + 1) } });
       } catch { settle({ ok: false, code: 'EPROTO' }); }
     });
     socket.on('close', () => settle({ ok: false, code: 'ECLOSED' }));
@@ -161,7 +174,7 @@ function startService(options: QwenServiceOptions, paths: QwenServicePaths, vers
  * Connects to the shared service, starting it when nobody runs it.
  * - Start races are settled by an exclusive `mkdir` lock; the loser waits and connects.
  * - A socket whose pid file names a dead process is stale: it is removed, then the service is started.
- * - An outdated service (handshake version differs) is asked to exit once its queue drains, then replaced (once).
+ * - An outdated service (handshake version or build id differs) is asked to exit once its queue drains, then replaced (once).
  * Rejects when the service cannot be reached within `timeoutMs`; the caller falls back to a local worker.
  */
 export async function connectQwenService(options: QwenServiceOptions): Promise<QwenServiceConnection> {
@@ -169,6 +182,10 @@ export async function connectQwenService(options: QwenServiceOptions): Promise<Q
   const paths = qwenServicePaths(options.home);
   const deadline = Date.now() + (options.timeoutMs ?? 20_000);
   ensurePrivateHome(options.home, options.uid ?? process.getuid?.());
+  // T50: the same package version and protocol with another build (or none: a pre-T50 service) is a different service. Unknown own build (unreadable scripts): no build check.
+  const build = qwenBuildId(options.serviceScript, options.script);
+  const identity = `${version}#${build ?? ''}`;
+  const current = (connection: QwenServiceConnection) => connection.version === version && (build === undefined || connection.build === build);
   let replaced = false;
   let ownedLock = false;
   try {
@@ -176,7 +193,7 @@ export async function connectQwenService(options: QwenServiceOptions): Promise<Q
       const result = await attempt(paths.socket, Math.max(200, Math.min(3000, deadline - Date.now())));
       if (result.ok) {
         const { connection } = result;
-        if (connection.version === version) return connection;
+        if (current(connection)) return connection;
         if (replaced) { connection.socket.destroy(); throw new Error('Qwen service version mismatch after restart'); }
         // Who is newer decides (a service of a newer version is never replaced by an older client), and replacements are rate-limited.
         const order = compareQwenServiceVersions(version, connection.version);
@@ -185,11 +202,11 @@ export async function connectQwenService(options: QwenServiceOptions): Promise<Q
         if (order !== undefined && order < 0) return refuse('newer and not compatible with this client') ;
         const stamp = readRestart(paths.restart);
         if (stamp && Date.now() - stamp.at < (options.restartWindowMs ?? QWEN_SERVICE_RESTART_WINDOW_MS)) {
-          if (stamp.version === version) { connection.socket.destroy(); await sleep(50); continue; } // someone already replaced it for our version: wait for that
+          if (stamp.version === identity) { connection.socket.destroy(); await sleep(50); continue; } // someone already replaced it for our version: wait for that
           return refuse('restarted recently by a client of another version');
         }
         replaced = true;
-        try { writeFileSync(paths.restart, JSON.stringify({ at: Date.now(), version }), { mode: 0o600 }); } catch { /* the rate limit is best effort */ }
+        try { writeFileSync(paths.restart, JSON.stringify({ at: Date.now(), version: identity }), { mode: 0o600 }); } catch { /* the rate limit is best effort */ }
         connection.socket.write(JSON.stringify({ schema: QWEN_SERVICE_SCHEMA, type: 'shutdown' }) + '\n');
         connection.socket.destroy();
         continue; // the old one stops listening at once and exits once its queue drains; the loop below waits for that
@@ -205,7 +222,7 @@ export async function connectQwenService(options: QwenServiceOptions): Promise<Q
       const started = startService(options, paths, version);
       while (Date.now() < deadline) {
         const next = await attempt(paths.socket, Math.max(200, Math.min(1000, deadline - Date.now())));
-        if (next.ok) { if (next.connection.version === version) return next.connection; next.connection.socket.destroy(); throw new Error('Qwen service version mismatch after restart'); }
+        if (next.ok) { if (current(next.connection)) return next.connection; next.connection.socket.destroy(); throw new Error('Qwen service version mismatch after restart'); }
         if (started.exited()) throw new Error('Qwen service exited at start (see qwen-service.log)');
         await sleep(40);
       }

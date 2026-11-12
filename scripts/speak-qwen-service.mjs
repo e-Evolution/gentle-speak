@@ -4,7 +4,7 @@
 //
 // Plain JavaScript on purpose: it is started with `node` from an installed package, where Node does not strip TypeScript.
 // Protocol: newline-delimited JSON, schema `gentle.speak.qwen-service/v1`.
-//   server -> client  hello {version, pid} (first line) | chunk {id, seq, wav, seconds} | done {id} | error {id, message} | warning {id, message?} | queued {id}
+//   server -> client  hello {version, build, pid} (first line) | chunk {id, seq, wav, seconds} | done {id} | error {id, message} | warning {id, message?} | queued {id}
 //   client -> server  synth {id, priority: 'speak'|'prepare', text, ref, refText, outDir, speed} | cancel {id} | shutdown {now?}
 // Request ids belong to one connection: the service maps them to its own ids for the Python worker, so clients never see each other's traffic.
 // The service never executes anything it is sent: it validates every field and only ever runs the one worker it was started with.
@@ -18,6 +18,8 @@
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 
 const SCHEMA = 'gentle.speak.qwen-service/v1';
@@ -37,10 +39,19 @@ const number = (value, fallback) => (value === 'never' ? null : Number.isFinite(
 const idleMs = number(args['idle-ms'], 10 * 60_000);
 /** The grace after the last client left (`null` never). */
 const graceMs = args['exit-idle-ms'] === undefined ? idleMs : number(args['exit-idle-ms'], idleMs);
+/** T50: the build id, derived exactly as lib/speak-qwen-service.ts qwenBuildId (sha256 over `<length>:<bytes>` of this script, then of the worker; first 12 hex). Sent in the hello. */
+function buildId() {
+  try {
+    const hash = crypto.createHash('sha256');
+    for (const file of [fileURLToPath(import.meta.url), script]) { const bytes = fs.readFileSync(file); hash.update(`${bytes.length}:`); hash.update(bytes); }
+    return hash.digest('hex').slice(0, 12);
+  } catch { return undefined; }
+}
 const log = (...parts) => process.stderr.write(`${new Date().toISOString()} [qwen-service ${process.pid}] ${parts.join(' ')}\n`);
 
 if (!home || !path.isAbsolute(home) || !python || !script || !version) { log('usage: --home <abs dir> --python <exe> --script <worker.py> --version <v>'); process.exit(2); }
 process.umask(0o077);
+const build = buildId(); // computed once at start: a service describes the code it was started from
 const socketPath = path.join(home, 'qwen.sock'), pidPath = path.join(home, 'qwen-service.pid'), customDir = path.join(home, 'voices', 'custom');
 
 /** The home directory must be ours and private; anything else is refused (the socket would be reachable by others). */
@@ -234,7 +245,7 @@ function onConnection(socket) {
       onRequest(conn, line);
     }
   });
-  conn.send({ type: 'hello', version, pid: process.pid });
+  conn.send({ type: 'hello', version, ...(build ? { build } : {}), pid: process.pid });
 }
 function onRequest(conn, line) {
   let message;
@@ -282,7 +293,7 @@ async function main() {
     fs.writeFileSync(pidPath, String(process.pid), { mode: 0o600 });
     heartbeat = setInterval(() => { for (const job of queue) job.conn.send({ type: 'queued', id: job.id }); }, HEARTBEAT_MS);
     heartbeat.unref();
-    log(`listening on ${socketPath} (version ${version}, grace ${graceMs})`);
+    log(`listening on ${socketPath} (version ${version}, build ${build ?? 'unknown'}, grace ${graceMs})`);
     settle();
   });
 }

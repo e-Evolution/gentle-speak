@@ -1,9 +1,12 @@
 {
-  "name": "gentle-speak",
+  "name": "@e-evolution/gentle-speak",
   "version": "0.1.0",
   "description": "Opt-in local text-to-speech for Pi and Gentle Shell",
   "type": "module",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "author": "Victor Perez <victor.perez@e-evolution.com> (http://www.e-evolution.com)",
   "repository": {
     "type": "git",

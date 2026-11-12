@@ -8,14 +8,17 @@ Opt-in, local text-to-speech for Gentle Shell (Pi): it reads the agent's questio
 
 ```bash
 # Once published (not published yet):
-gentle-shell install npm:@e-Evolution/gentle-speak
+gentle-shell install npm:@e-evolution/gentle-speak
+
+# Once the repository is public:
+gentle-shell install git:github.com/e-Evolution/gentle-speak
 
 # Today, from a local checkout:
 cd gentle-speak && npm ci
 gentle-shell install ./
 ```
 
-Run `/reload` if Gentle Shell was already open (or restart it). Pi installs packages without running install scripts, so setup happens on the **first terminal start**:
+If Gentle Shell was already open, restart it with `pi -r` (`/reload` can crash Gentle Shell 4.7.0, gentle-shell#2580). Pi installs packages without running install scripts, so setup happens on the **first terminal start**:
 
 1. gentle-speak shows **one confirmation** listing what is missing and its size, then installs it in the background and ends with «gentle-speak listo». Declining is remembered (`setupOffer: "declined"`).
 2. `/speak` → **Instalar todo** runs the same setup at any time.
@@ -183,7 +186,7 @@ gentle-speak can speak inside Gentle Dot's engine without changing Dot.
 - **Own settings.** `<Dot HOME>/.gentle-speak/speak-settings.json`, where Dot's HOME is `dirname(<Dot agent home>)/home` (`GENTLE_DOT_HOME` overrides). Dot speaks only if its own `enabled` is true. Runtime, models, voices, the Hugging Face cache, the Qwen service and the voice lock are shared, so nothing downloads twice and Dot never overlaps the terminal.
 - **Mute Dot's own voice.** Use Dot's **«Mute spoken replies»** button (speaker icon in the chat header); otherwise you hear every answer twice.
 - **What speaks.** Only Dot's root RPC session, with the same voice, mode, filter, speculation and voice lock, taking its turn at once and prefixing every text with `Dot: `. No SPEAK row, shortcuts or copy speech there.
-- **Accepted package sources**, nothing else: an absolute local directory whose `package.json` name is `gentle-speak`; `npm:gentle-speak[@version]`; or a git source of a repository named `gentle-speak`: `git:<host>/<owner>/gentle-speak[.git][@ref]` or `https://<host>/<owner>/gentle-speak[.git][@ref]`. Credentials, queries, fragments, ssh/file forms and other names are refused and nothing is written.
+- **Accepted package sources**, nothing else: an absolute local directory whose `package.json` name is `@e-evolution/gentle-speak` (or the legacy `gentle-speak`); `npm:@e-evolution/gentle-speak[@version]` (or the legacy `npm:gentle-speak[@version]`); or a git source of a repository named `gentle-speak`: `git:<host>/<owner>/gentle-speak[.git][@ref]` or `https://<host>/<owner>/gentle-speak[.git][@ref]`. Credentials, queries, fragments, ssh/file forms and other names are refused and nothing is written.
 
 ## Supported engines
 

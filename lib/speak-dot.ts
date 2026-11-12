@@ -94,15 +94,18 @@ export function terminalSource(io: DotIo & { packageRoot: string }): PackageEntr
 }
 
 /** This package's name: the only package.json `name` a local source may hold (checked against the real package.json by the tests). */
-export const SPEAK_PACKAGE_NAME = 'gentle-speak';
-const NPM_SPEAK_SPEC = /^npm:gentle-speak(?:@[A-Za-z0-9._~^<>=*|-]+)?$/;
+export const SPEAK_PACKAGE_NAME = '@e-evolution/gentle-speak';
+/** The unscoped name published before T53: existing installs and Dot connections keep working. */
+export const LEGACY_SPEAK_PACKAGE_NAME = 'gentle-speak';
+const SPEAK_PACKAGE_NAMES: readonly unknown[] = [SPEAK_PACKAGE_NAME, LEGACY_SPEAK_PACKAGE_NAME];
+const NPM_SPEAK_SPEC = /^npm:(?:@e-evolution\/)?gentle-speak(?:@[A-Za-z0-9._~^<>=*|-]+)?$/;
 /** R1: a local source must be absolute, an existing dir whose package.json `name` is this package; anything else must be a well-formed npm spec or a git source (`isGitSpeakSource`) for this package. */
 function validSource(source: string, io: DotIo): boolean {
   const fs = io.fs ?? nodeFs;
   if (/^npm:/i.test(source)) return NPM_SPEAK_SPEC.test(source);
   if (/^(?:git:|https:)/i.test(source)) return isGitSpeakSource(source);
   if (!isLocalPath(source) || !isAbsolute(source)) return false;
-  try { return JSON.parse(String(fs.readFileSync(join(source, 'package.json'), 'utf8')))?.name === SPEAK_PACKAGE_NAME; } catch { return false; }
+  try { return SPEAK_PACKAGE_NAMES.includes(JSON.parse(String(fs.readFileSync(join(source, 'package.json'), 'utf8')))?.name); } catch { return false; }
 }
 /**
  * The entry `connectDot` may write: `terminalSource`, but only when it is exactly a usable source (see `validSource`); undefined otherwise,

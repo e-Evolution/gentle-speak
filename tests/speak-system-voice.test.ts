@@ -284,20 +284,20 @@ test('T54-2 the PowerShell voice listing is bounded: on timeout the child is kil
   assert.deepEqual(f.calls[0].args, ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_LIST_SCRIPT]);
   assert.deepEqual(f.calls[0].killed, ['SIGTERM']);
   // A late exit after the timeout changes nothing.
-  f.calls[0].child.emit('exit', 0);
+  f.calls[0].child.emit('close', 0);
 });
 
 test('T54-2 the listing child answers in time: stdout is parsed; a failing child or a spawn error gives []', async () => {
   const ok = fakeListSpawn();
   const p = listSystemVoices({ platform: 'win32', which: have('powershell.exe'), spawn: ok.spawn, timeoutMs: 1000 });
   ok.calls[0].child.stdout.emit('data', 'Microsoft Sabina Desktop|es-MX\r\nMicrosoft David Desktop|en-US\r\n');
-  ok.calls[0].child.emit('exit', 0);
+  ok.calls[0].child.emit('close', 0);
   assert.deepEqual(await p, [{ name: 'Microsoft Sabina Desktop', locale: 'es-MX' }]);
   assert.deepEqual(ok.calls[0].killed, []);
   const bad = fakeListSpawn();
   const q = listSystemVoices({ platform: 'win32', which: have('powershell.exe'), spawn: bad.spawn, timeoutMs: 1000 });
   bad.calls[0].child.stdout.emit('data', 'Microsoft Sabina Desktop|es-MX');
-  bad.calls[0].child.emit('exit', 1);
+  bad.calls[0].child.emit('close', 1);
   assert.deepEqual(await q, []);
   const err = fakeListSpawn();
   const r = listSystemVoices({ platform: 'win32', which: have('powershell.exe'), spawn: err.spawn, timeoutMs: 1000 });
@@ -361,4 +361,62 @@ test('T54 regression: Linux detection order, SAPI argv and env, macOS say keep t
   m.calls[0].child.emit('exit', 0);
   assert.equal((await q).ok, true);
   assert.equal(m.calls.length, 1);
+});
+
+test('T55-1 the voice listing resolves on close: stdout after exit is parsed; exit alone does not resolve; timeout, spawn error and non-zero exit still give []', async () => {
+  const f = fakeListSpawn();
+  let resolved = false;
+  const p = listSystemVoices({ platform: 'win32', which: have('powershell.exe'), spawn: f.spawn, timeoutMs: 1000 }).then(v => { resolved = true; return v; });
+  const child = f.calls[0].child;
+  child.stdout.emit('data', 'Microsoft Sabina Desktop|es-MX\r\n');
+  child.emit('exit', 0);
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(resolved, false);
+  child.stdout.emit('data', 'Microsoft Helena Desktop|es-ES\r\n');
+  child.emit('close', 0);
+  assert.deepEqual(await p, [{ name: 'Microsoft Sabina Desktop', locale: 'es-MX' }, { name: 'Microsoft Helena Desktop', locale: 'es-ES' }]);
+  assert.deepEqual(f.calls[0].killed, []);
+  const bad = fakeListSpawn();
+  const q = listSystemVoices({ platform: 'win32', which: have('powershell.exe'), spawn: bad.spawn, timeoutMs: 1000 });
+  bad.calls[0].child.stdout.emit('data', 'Microsoft Sabina Desktop|es-MX');
+  bad.calls[0].child.emit('exit', 1);
+  bad.calls[0].child.emit('close', 1);
+  assert.deepEqual(await q, []);
+  const slow = fakeListSpawn();
+  assert.deepEqual(await listSystemVoices({ platform: 'win32', which: have('powershell.exe'), spawn: slow.spawn, timeoutMs: 5 }), []);
+  assert.deepEqual(slow.calls[0].killed, ['SIGTERM']);
+});
+
+test('T55-2 the spd-say -C cancel child is bounded and killed with SIGTERM; the speech outcome is not delayed by it; errors never break it', async () => {
+  const which = have('spd-say');
+  const hang = fakeSpawn();
+  const c = new AbortController();
+  const p = speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, signal: c.signal, spawn: hang.spawn, platform: 'linux', which, cancelTimeoutMs: 10 });
+  c.abort();
+  assert.deepEqual(await p, { ok: false, message: 'Speech cancelled.', cancelled: true });
+  assert.deepEqual(hang.calls[1].args, ['-C']);
+  assert.deepEqual(hang.calls[1].killed, []);
+  await new Promise(r => setTimeout(r, 60));
+  assert.deepEqual(hang.calls[1].killed, ['SIGTERM']);
+  // A cancel that exits in time is not killed.
+  const fine = fakeSpawn();
+  const d = new AbortController();
+  const q = speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, signal: d.signal, spawn: fine.spawn, platform: 'linux', which, cancelTimeoutMs: 10 });
+  d.abort(); await q;
+  fine.calls[1].child.emit('exit', 0);
+  await new Promise(r => setTimeout(r, 40));
+  assert.deepEqual(fine.calls[1].killed, []);
+  // A cancel child that errors or whose kill throws never breaks the outcome.
+  const odd = fakeSpawn();
+  const e = new AbortController();
+  const s = speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, signal: e.signal, spawn: odd.spawn, platform: 'linux', which, cancelTimeoutMs: 10 });
+  e.abort();
+  odd.calls[1].child.emit('error', new Error('x'));
+  odd.calls[1].child.kill = () => { throw new Error('gone'); };
+  assert.equal((await s).cancelled, true);
+  await new Promise(r => setTimeout(r, 40));
+  // The timeout outcome is returned at its own bound, whatever the cancel does.
+  const slow = fakeSpawn();
+  assert.deepEqual(await speakWithSystemVoice({ voice: 'es', text: 'x', speed: 1, spawn: slow.spawn, platform: 'linux', which, timeoutMs: 5, cancelTimeoutMs: 10_000 }), { ok: false, message: 'System voice timed out.' });
+  assert.deepEqual(slow.calls[1].args, ['-C']);
 });

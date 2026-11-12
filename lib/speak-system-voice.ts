@@ -74,7 +74,10 @@ export function buildSystemCommand({ engine, file, voice, speed }: { engine: Sys
   return { file, args: ['-v', voice || SYSTEM_DEFAULT_VOICE, '-s', String(rate), '--stdin'] };
 }
 
-export function speakWithSystemVoice({ voice, text, speed, signal, spawn, timeoutMs, ...env }: { voice: string; text: string; speed: number; signal?: AbortSignal; spawn?: SaySpawn; timeoutMs?: number } & SystemEnv): Promise<SayOutcome> {
+/** How long the `spd-say -C` cancel child may run before it is killed (T55). */
+export const SPD_CANCEL_TIMEOUT_MS = 2000;
+
+export function speakWithSystemVoice({ voice, text, speed, signal, spawn, timeoutMs, cancelTimeoutMs = SPD_CANCEL_TIMEOUT_MS, ...env }: { voice: string; text: string; speed: number; signal?: AbortSignal; spawn?: SaySpawn; timeoutMs?: number; cancelTimeoutMs?: number } & SystemEnv): Promise<SayOutcome> {
   const platform = env.platform ?? process.platform;
   if (platform === 'darwin') return speakWithSay({ voice, text, speed, signal, spawn, timeoutMs });
   if (signal?.aborted) return Promise.resolve({ ok: false, message: 'Speech cancelled.', cancelled: true });
@@ -83,7 +86,16 @@ export function speakWithSystemVoice({ voice, text, speed, signal, spawn, timeou
   if (!MAC_VOICE_NAME.test(voice)) return Promise.resolve({ ok: false, message: 'Invalid system voice name.' });
   const command = buildSystemCommand({ engine: found.engine, file: found.file, voice, speed });
   // T54: killing spd-say leaves what speech-dispatcher already queued; `spd-say -C` (cancel) empties that queue. It is server-wide (a second process cannot cancel only our messages), so it runs only on stop or timeout.
-  const onStop = found.engine === 'spd-say' ? () => { const child = (spawn ?? defaultSpawn)(found.file, ['-C']); child.on('error', () => {}); try { child.stdin.end(); } catch { /* nothing to close */ } } : undefined;
+  // T55: the cancel child is bounded too (SIGTERM at `cancelTimeoutMs`); it never delays or changes the stop outcome.
+  const onStop = found.engine === 'spd-say' ? () => {
+    const child = (spawn ?? defaultSpawn)(found.file, ['-C']);
+    const timer = setTimeout(() => { try { child.kill('SIGTERM'); } catch { /* already gone */ } }, cancelTimeoutMs);
+    timer.unref?.();
+    const done = () => clearTimeout(timer);
+    child.on('error', done);
+    child.on('exit', done);
+    try { child.stdin.end(); } catch { /* nothing to close */ }
+  } : undefined;
   return runSpeechChild({ file: command.file, args: command.args, env: command.env, text, signal, spawn, timeoutMs: timeoutMs ?? sayTimeoutMs(text, speed), name: 'System', onStop });
 }
 
@@ -116,13 +128,13 @@ export const systemVoiceProbeMs = (platform: string = process.platform): number 
 
 export interface ListChild {
   stdout?: { on(event: 'data', listener: (chunk: unknown) => void): unknown } | null;
-  on(event: 'exit' | 'error', listener: (...args: any[]) => void): unknown;
+  on(event: 'close' | 'error', listener: (...args: any[]) => void): unknown;
   kill(signal?: NodeJS.Signals): unknown;
 }
 export type ListSpawn = (file: string, args: string[]) => ListChild;
 const defaultListSpawn: ListSpawn = (file, args) => spawnChild(file, args, { stdio: ['ignore', 'pipe', 'ignore'] }) as unknown as ListChild;
 
-/** Runs a listing command: its stdout on exit 0; rejects on failure, spawn error or timeout, and kills the child when the timeout fires. */
+/** Runs a listing command: its stdout on exit 0, read after `close` so output still in the pipe is not lost (T55); rejects on failure, spawn error or timeout, and kills the child when the timeout fires. */
 const runList = (timeout: number, spawn: ListSpawn) => (file: string, args: string[]) => new Promise<string>((resolve, reject) => {
   let child: ListChild;
   try { child = spawn(file, args); } catch (error) { reject(error); return; }
@@ -138,7 +150,7 @@ const runList = (timeout: number, spawn: ListSpawn) => (file: string, args: stri
   const timer = setTimeout(() => finish(new Error('voice listing timed out'), true), timeout);
   child.stdout?.on('data', chunk => { if (out.length < (1 << 20)) out += String(chunk); });
   child.on('error', error => finish(error ?? new Error('voice listing failed')));
-  child.on('exit', (code: number | null) => finish(code === 0 ? undefined : new Error(`voice listing exited with ${code}`)));
+  child.on('close', (code: number | null) => finish(code === 0 ? undefined : new Error(`voice listing exited with ${code}`)));
 });
 
 /** Installed Spanish voices of the platform's engine; empty when it cannot be run or does not answer within its bound. */

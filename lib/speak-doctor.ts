@@ -4,6 +4,7 @@ import { isAbsolute, join } from 'node:path';
 import type { CustomVoiceList } from './speak-custom-voices.ts';
 import type { DotDetection } from './speak-dot.ts';
 import { ffmpegHint, ffmpegPurpose } from './speak-setup.ts';
+import { systemVoiceHint } from './speak-system-voice.ts';
 import { defaultIsPidAlive } from './speak-voice-lock.ts';
 
 /**
@@ -124,9 +125,8 @@ export async function runDoctor(probes: DoctorProbes): Promise<DoctorReport> {
     return path ? { status: 'ok', detail: 'encontrado' } : { status: 'fail', detail: `no está instalado (${ffmpegPurpose(qwen)})`, hint: ffmpegHint(probes.platform) };
   }));
   checks.push(await check('system', 'Voz del sistema', async () => {
-    if (probes.platform !== 'darwin') return na('solo en macOS (`say`)');
     const out = await probes.systemVoice();
-    return out.available ? { status: 'ok', detail: out.detail } : { status: 'fail', detail: out.detail, hint: 'Instalá una voz en español en Ajustes del Sistema → Accesibilidad → Contenido hablado.' };
+    return out.available ? { status: 'ok', detail: out.detail } : { status: 'fail', detail: out.detail, hint: systemVoiceHint(probes.platform) };
   }));
   checks.push(await check('focus', 'Fuente de foco', async () => {
     const out = await probes.focus();

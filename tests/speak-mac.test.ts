@@ -21,7 +21,7 @@ const VOICES = [{ name: 'Paulina', locale: 'es_MX' }, { name: 'Mónica', locale:
 const roots: string[] = [];
 test.afterEach(() => { for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true }); });
 
-interface Opts { voice?: string; patch?: Record<string, unknown>; say?: boolean; piper?: 'installed' | 'missing'; runtime?: 'installed' | 'missing'; qwen?: 'installed' | 'missing'; piperSpawnThrows?: boolean; qwenSpawnThrows?: boolean; focus?: () => string; mode?: string; header?: unknown; text?: string; voices?: typeof VOICES; listMac?: () => Promise<typeof VOICES>; voiceProbeMs?: number }
+interface Opts { voice?: string; patch?: Record<string, unknown>; say?: boolean; piper?: 'installed' | 'missing'; runtime?: 'installed' | 'missing'; qwen?: 'installed' | 'missing'; piperSpawnThrows?: boolean; qwenSpawnThrows?: boolean; focus?: () => string; mode?: string; header?: unknown; text?: string; voices?: typeof VOICES; listMac?: () => Promise<typeof VOICES>; voiceProbeMs?: number; platform?: string }
 function setup(o: Opts = {}) {
   const home = mkdtempSync(join(tmpdir(), 'speak-mac-')); roots.push(home);
   mkdirSync(join(home, 'voices', 'qwen3'), { recursive: true });
@@ -44,7 +44,7 @@ function setup(o: Opts = {}) {
     ui: { setStatus: (_k: string, t?: string) => statuses.push(t), notify: (t: string, l: string) => notes.push([t, l]), confirm: async () => false, select: async (_t: string, opts: string[]) => { offered.push(opts); return selections.shift(); }, input: async () => undefined, setWidget: (_k: string, f: any) => { if (typeof f === 'function') f({ getCopyOnSelect: () => true, hasActiveSelection: () => true, getScreenLines: () => [] }, {}); } } };
   const deps: any = {
     ...hermetic(home),
-    sayAvailable: () => o.say !== false, listMacVoices: o.listMac ?? (async () => o.voices ?? VOICES), ...(o.voiceProbeMs ? { voiceProbeMs: o.voiceProbeMs } : {}),
+    ...(o.platform ? { platform: o.platform } : {}), sayAvailable: () => o.say !== false, listMacVoices: o.listMac ?? (async () => o.voices ?? VOICES), ...(o.voiceProbeMs ? { voiceProbeMs: o.voiceProbeMs } : {}),
     say: (req: any) => new Promise(resolve => {
       sayCalls.push({ ...req, lockHeld: existsSync(join(home, 'voice.lock')) });
       if (sayMode === 'ok') resolve({ ok: true, message: 'Speech completed.' });
@@ -407,7 +407,7 @@ test('/speak lists Mac, offers Mac voice and Toggle Mac fallback', async () => {
   const s = setup({ voice: 'es_MX' });
   await s.commands.get('speak').handler('', s.ctx);
   assert.ok(s.offered[0].includes('Voice: Mac (mac) — installed'));
-  assert.ok(s.offered[0].includes('Mac voice')); assert.ok(s.offered[0].includes('Toggle Mac fallback'));
+  assert.ok(s.offered[0].includes('Voz del sistema')); assert.ok(s.offered[0].includes('Toggle Mac fallback'));
   const u = setup({ voice: 'es_MX', say: false });
   await u.commands.get('speak').handler('', u.ctx);
   assert.ok(u.offered[0].includes('Voice: Mac (mac) — not installed'));
@@ -415,12 +415,12 @@ test('/speak lists Mac, offers Mac voice and Toggle Mac fallback', async () => {
 
 test('/speak > Mac voice lists installed Spanish voices plus Auto, persists the choice and refreshes the row', async () => {
   const s = setup();
-  s.selections.push('Mac voice', 'Mónica');
+  s.selections.push('Voz del sistema', 'Mónica');
   await s.commands.get('speak').handler('', s.ctx);
   assert.deepEqual(s.offered[1], ['Auto', 'Paulina', 'Mónica', 'Eddy (Español (México))']);
   assert.equal(readSpeakSettings(s.home).macVoice, 'Mónica');
   assert.match(s.statuses.at(-1)!, / · Mac · Mónica · /);
-  s.selections.push('Mac voice', 'Auto');
+  s.selections.push('Voz del sistema', 'Auto');
   await s.commands.get('speak').handler('', s.ctx);
   assert.equal(readSpeakSettings(s.home).macVoice, null);
   s.shutdown();
@@ -429,7 +429,7 @@ test('/speak > Mac voice lists installed Spanish voices plus Auto, persists the 
 test('/speak > Mac voice with no voices installed changes nothing', async () => {
   const s = setup({ voices: [], patch: { macVoice: 'Paulina' } });
   const before = readFileSync(join(s.home, 'speak-settings.json'), 'utf8');
-  s.selections.push('Mac voice');
+  s.selections.push('Voz del sistema');
   await s.commands.get('speak').handler('', s.ctx);
   assert.equal(readFileSync(join(s.home, 'speak-settings.json'), 'utf8'), before);
   assert.equal(s.notes.some(([t]) => /nothing changed/.test(t)), true);
@@ -500,4 +500,55 @@ test('R4-001: a hanging voice-list probe is bounded; speech does not block and t
   assert.equal(s.sayCalls.length, 0);
   const again = await s.tool(); // the timeout was not cached: the next attempt lists again and falls back
   assert.equal(again.isError, undefined); assert.equal(calls, 2); assert.equal(s.sayCalls.length, 1);
+});
+
+// ---- T47 (S16): the system voice on Linux and Windows, same id and settings, platform label ----
+const LINUX_VOICES = [{ name: 'spanish', locale: 'es' }, { name: 'spanish-latam', locale: 'es-419' }];
+test('S16 label per platform: Mac on macOS, Sistema on Linux and Windows, in the row, the menu and the voice names', async () => {
+  const s = setup({ platform: 'linux', voices: LINUX_VOICES });
+  await s.events.get('session_start')!({}, s.ctx);
+  assert.match(s.statuses.at(-1)!, / · Sistema · spanish-latam · /);
+  await s.commands.get('speak').handler('', s.ctx);
+  assert.ok(s.offered[0].includes('Voice: Sistema (mac) — installed'));
+  assert.ok(s.offered[0].includes('Voz del sistema'));
+  assert.equal(s.offered[0].some(o => o === 'Mac voice'), false);
+  s.shutdown();
+  const w = setup({ platform: 'win32', voices: [{ name: 'Microsoft Sabina Desktop', locale: 'es-MX' }] });
+  await w.events.get('session_start')!({}, w.ctx);
+  assert.match(w.statuses.at(-1)!, / · Sistema · Microsoft Sabina Desktop · /);
+  w.shutdown();
+});
+
+test('S16 «Voz del sistema» lists the platform voices, persists macVoice and a Linux speech uses the picked voice', async () => {
+  const s = setup({ platform: 'linux', voices: LINUX_VOICES });
+  s.selections.push('Voz del sistema', 'spanish');
+  await s.commands.get('speak').handler('', s.ctx);
+  assert.deepEqual(s.offered[1], ['Auto', 'spanish', 'spanish-latam']);
+  assert.equal(readSpeakSettings(s.home).macVoice, 'spanish');
+  void s.tool('Hola Linux.'); await until(() => s.sayCalls.length === 1, 'say');
+  assert.equal(s.sayCalls[0].voice, 'spanish');
+  s.finishSay(); s.shutdown();
+});
+
+test('S16 Linux with nothing listed still speaks with the engine default «es»; Windows without voices does not speak', async () => {
+  const l = setup({ platform: 'linux', voices: [] });
+  void l.tool('Hola.'); await until(() => l.sayCalls.length === 1, 'say');
+  assert.equal(l.sayCalls[0].voice, 'es');
+  l.finishSay(); l.shutdown();
+  const w = setup({ platform: 'win32', voices: [] });
+  const out = await w.tool('Hola.');
+  assert.equal(out.isError, true);
+  assert.equal(w.sayCalls.length, 0);
+  w.shutdown();
+});
+
+test('S16 the fallback notice names the system voice off macOS and still the Mac voice on macOS', async () => {
+  const l = setup({ voice: 'es_MX', piper: 'missing', platform: 'linux', voices: LINUX_VOICES });
+  void l.tool('Hola.'); await until(() => l.sayCalls.length === 1, 'say');
+  assert.equal(l.notes.filter(([t]) => /speaking with the system voice/.test(t)).length, 1);
+  l.finishSay(); l.shutdown();
+  const m = setup({ voice: 'es_MX', piper: 'missing' });
+  void m.tool('Hola.'); await until(() => m.sayCalls.length === 1, 'say');
+  assert.equal(fallbackNotes(m).length, 1);
+  m.finishSay(); m.shutdown();
 });

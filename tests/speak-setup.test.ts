@@ -240,3 +240,11 @@ test('Base model detection (read-only): a complete snapshot is installed; missin
     })().finally(() => rmSync(hf, { recursive: true, force: true }));
   } catch (error) { rmSync(hf, { recursive: true, force: true }); throw error; }
 });
+
+test('T47 (S16): setup never plans a system package, on any platform; the system voice is only a doctor hint', async () => {
+  for (const [platform, target] of [['darwin', 'darwin-arm64'], ['linux', 'linux-x64'], ['win32', 'win32-x64']] as const) {
+    const plan = await computeSetupPlan(env({ platform, target }));
+    assert.equal([...plan.components, ...plan.actionable, ...plan.missing].some(c => /system|espeak|spd|speech|sapi/i.test(c.id)), false, platform);
+    assert.equal(/apt install speech-dispatcher|espeak/.test(describeSetupPlan(plan)), false, platform);
+  }
+});

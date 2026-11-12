@@ -304,7 +304,7 @@ test('the /speak menu lists every catalog voice with label, id and install state
     assert.equal(voices.some(option => option === 'Voice: es_MX' || option === 'Voice: es_ES'), false);
     assert.deepEqual(offered.slice(0, 1), ['Gentle Dot']);
     assert.equal(offered.includes('Hablar en Gentle Dot'), false);
-    assert.deepEqual(offered.slice(1).filter(option => !option.startsWith('Voice: ')), ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Instalar todo', 'Doctor', 'Toggle speak copied selection', 'Stop playback', 'Cancel'].flatMap(entry => entry === 'Speed' ? ['Crear voz propia…', 'Importar mi grabación…', 'Borrar voz propia…', 'Mac voice', 'Toggle Mac fallback', 'Mantener Qwen tras cerrar la última sesión', 'Detener servicio Qwen', entry] : [entry]));
+    assert.deepEqual(offered.slice(1).filter(option => !option.startsWith('Voice: ')), ['Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Instalar todo', 'Doctor', 'Toggle speak copied selection', 'Stop playback', 'Cancel'].flatMap(entry => entry === 'Speed' ? ['Crear voz propia…', 'Importar mi grabación…', 'Borrar voz propia…', 'Voz del sistema', 'Toggle Mac fallback', 'Mantener Qwen tras cerrar la última sesión', 'Detener servicio Qwen', entry] : [entry]));
   } finally { h.close(); }
 });
 

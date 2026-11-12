@@ -13,7 +13,8 @@ import { baseModelSize, baseModelStatus, describeDesignModelSize, type DesignRun
 import { createCopiedSelectionWatcher, createOwnCopyGate, isSelectionTui, resolveTerminalBundleId } from '../lib/speak-clipboard.ts';
 import { createTerminalFocusTracker, type TerminalFocusTracker } from '../lib/speak-terminal-focus.ts';
 import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix, readFrontmostBundleId, type FocusState, type HerdrExec } from '../lib/speak-focus.ts';
-import { MAC_VOICE_NAME, listSpanishSayVoices, pickMacVoice, sayAvailable, speakWithSay, type MacVoice } from '../lib/speak-say.ts';
+import { MAC_VOICE_NAME, type MacVoice, type speakWithSay } from '../lib/speak-say.ts';
+import { listSystemVoices, resolveSystemVoice, speakWithSystemVoice, systemVoiceAvailable, systemVoiceLabel, systemVoiceStatus, type SystemEnv } from '../lib/speak-system-voice.ts';
 import { realHome, settingsHome, sharedHome } from '../lib/speak-home.ts';
 import { createVoiceLock } from '../lib/speak-voice-lock.ts';
 import { connectDot, detectDot, disconnectDot, dotHome, isDotEngine, readDotSpeak, seedDotSettings, resolveDotSource, writeDotSpeak, type DotFs } from '../lib/speak-dot.ts';
@@ -48,12 +49,14 @@ type Dependencies = {
   /** `process.platform`; only macOS has the frontmost-app check. */
   platform?: string;
   lockPollMs: number;
-  /** S11: the Mac voice. Defaults check macOS and `/usr/bin/say`; tests inject fakes so nothing ever speaks aloud. */
+  /** S11/S16: the system voice (macOS `say`, Linux spd-say/espeak-ng, Windows SAPI). Defaults check the platform's engine; tests inject fakes so nothing ever speaks aloud. */
   sayAvailable: () => boolean;
   listMacVoices: () => Promise<MacVoice[]>;
   /** Upper bound of the `say -v '?'` probe; on timeout the voice list is unavailable for that attempt. */
   voiceProbeMs: number;
   say: typeof speakWithSay;
+  /** S16: tool lookups for the doctor's system-voice line (tests); defaults to the real PATH and `/usr/bin/say`. */
+  systemEnv?: Pick<SystemEnv, 'exists' | 'which'>;
   /** S12: the user's home (tests); Gentle Dot's engine home and the terminal agent dir derive from it and `env`. */
   userHome?: string;
   /** S12: fs used for Gentle Dot's settings.json (tests); defaults to node:fs. */
@@ -103,10 +106,10 @@ const defaults: Dependencies = {
   readFrontmost: async () => process.platform === 'darwin' ? readFrontmostBundleId({ timeoutMs: 900 }) : undefined,
   focusPollMs: 1000,
   lockPollMs: 100,
-  sayAvailable: () => sayAvailable(),
-  listMacVoices: () => listSpanishSayVoices(),
+  sayAvailable: () => systemVoiceAvailable(),
+  listMacVoices: () => listSystemVoices(),
   voiceProbeMs: 1500,
-  say: speakWithSay,
+  say: speakWithSystemVoice,
   designStatus: designModelStatus,
   designSize: () => designModelSize(),
   installDesign: installDesignModel,
@@ -229,9 +232,11 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     } catch { customVoices = {}; }
     return customVoices;
   }
-  const fullCatalog = (): Record<string, { label: string; engine: string }> => ({ ...VOICE_CATALOG, ...customVoices });
+  /** S16: the system voice (id `mac`) reads `Mac` on macOS and `Sistema` elsewhere. */
+  const sysPlatform = deps.platform ?? process.platform;
+  const fullCatalog = (): Record<string, { label: string; engine: string }> => ({ ...VOICE_CATALOG, mac: { ...VOICE_CATALOG.mac, label: systemVoiceLabel(sysPlatform) }, ...customVoices });
   const voiceEngine = (id: string): string | undefined => isCustomVoiceId(id) || isLegacyQwenVoiceId(id) ? 'qwen3' : VOICE_CATALOG[id]?.engine;
-  const labelOfVoice = (id: string): string => customVoices[id]?.label ?? VOICE_CATALOG[id]?.label ?? id;
+  const labelOfVoice = (id: string): string => customVoices[id]?.label ?? fullCatalog()[id]?.label ?? id;
   /**
    * The reference audio, transcript and interpreter of a Qwen voice, or why it is not usable. Qwen voices are only the user's own (`custom:<id>`, verified by
    * sha256 here, at use) and need only the Python record. An old `qwen-<name>` setting that was not migrated is a missing voice.
@@ -258,7 +263,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     try {
       const settings = readSpeakSettings(settingsDir);
       const label = labelOfVoice(settings.voice);
-      const voiceLabel = settings.voice === 'mac' ? `${label} · ${pickMacVoice(macVoices ?? [], settings.macVoice) ?? 'auto'}` : label;
+      const voiceLabel = settings.voice === 'mac' ? `${label} · ${resolveSystemVoice(macVoices ?? [], settings.macVoice, sysPlatform) ?? 'auto'}` : label;
       ctx.ui.setStatus(SPEAK_STATUS_KEY, formatSpeakStatus({ enabled: settings.enabled, voiceLabel, mode: settings.mode, summaryReady: settings.summaryModel !== null, copySpeech: settings.copySpeech, shortcuts: settings.shortcuts }));
     } catch { /* Status is cosmetic. */ }
   };
@@ -429,7 +434,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (!fallbackNotified) {
       fallbackNotified = true;
       const reason = isLegacyQwenVoiceId(settings.voice) ? 'no longer included; create your own with «Crear voz propia…»' : /not installed|Install and verify/.test(failure) ? 'not installed' : /Unsupported audio/.test(failure) ? 'unsupported platform' : failure.replace(/\.$/, '').slice(0, 60);
-      try { ctx.ui.notify(`gentle-speak: ${labelOfVoice(settings.voice)} unavailable (${reason}); speaking with the Mac voice.`, 'warning'); } catch { /* cosmetic */ }
+      try { ctx.ui.notify(`gentle-speak: ${labelOfVoice(settings.voice)} unavailable (${reason}); speaking with ${sysPlatform === 'darwin' ? 'the Mac voice' : 'the system voice'}.`, 'warning'); } catch { /* cosmetic */ }
     }
     return playMac(text, signal, settings, voice);
   }
@@ -439,7 +444,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     settings.macFallback && VOICE_CATALOG[settings.voice]?.engine !== 'system' && !stopped && !signal?.aborted && speaker(ctx) && deps.sayAvailable();
   async function resolveMacVoice(settings: ReturnType<typeof readSpeakSettings>): Promise<string | undefined> {
     if (!deps.sayAvailable()) return undefined;
-    return pickMacVoice(await loadMacVoices(), settings.macVoice);
+    return resolveSystemVoice(await loadMacVoices(), settings.macVoice, sysPlatform);
   }
   function playMac(text: string, signal: AbortSignal | undefined, settings: ReturnType<typeof readSpeakSettings>, voice: string) {
     return playLocked(signal, () => result('Speech cancelled.', true), async held => {
@@ -450,7 +455,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   async function speakMac(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, settings: ReturnType<typeof readSpeakSettings>) {
     const voice = await resolveMacVoice(settings);
     if (stopped || signal?.aborted || !speaker(ctx)) return result('Speech cancelled.', true);
-    if (!voice) return result('The Mac voice is not available: it needs macOS with /usr/bin/say and a Spanish voice installed.', true);
+    if (!voice) return result(sysPlatform === 'darwin' ? 'The Mac voice is not available: it needs macOS with /usr/bin/say and a Spanish voice installed.' : sysPlatform === 'linux' ? 'The system voice is not available: it needs spd-say (speech-dispatcher) or espeak-ng.' : 'The system voice is not available: it needs Windows SAPI with a Spanish voice installed.', true);
     return playMac(text, signal, settings, voice);
   }
   async function speakEngine(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, settings: ReturnType<typeof readSpeakSettings>, prepared: Prepared | undefined) {
@@ -683,7 +688,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if ((await voiceAvailability(ctx))[id]) return !stopped;
     if (isCustomVoiceId(id)) { if (!stopped) ctx.ui.notify(`La voz propia "${id}" no está disponible o es inválida (¿falta el entorno de Qwen?), así que no cambié nada.`, 'warning'); return false; }
     const voice = VOICE_CATALOG[id];
-    if (voice.engine === 'system') { if (!stopped) ctx.ui.notify('The Mac voice is not available: it needs macOS with /usr/bin/say. Nothing changed.', 'warning'); return false; }
+    if (voice.engine === 'system') { if (!stopped) ctx.ui.notify(sysPlatform === 'darwin' ? 'The Mac voice is not available: it needs macOS with /usr/bin/say. Nothing changed.' : 'The system voice is not available on this machine. Nothing changed.', 'warning'); return false; }
     if (!stopped) ctx.ui.notify(`Voice "${voice.label}" is selected but not installed yet. Run /speak → Install voice and runtime to download it.`, 'warning');
     return !stopped;
   }
@@ -860,14 +865,14 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
         const id = settings.voice;
         if (isCustomVoiceId(id)) { const voice = await readCustomVoice(home, id.slice(CUSTOM_VOICE_PREFIX.length)); return voice ? (python() ? { ok: true, detail: `${voice.label} (${id})` } : { ok: false, detail: `${id}: falta el entorno Python de Qwen`, hint: 'Ejecutá /speak → «Instalar todo».' }) : { ok: false, detail: `${id}: no existe o es inválida`, hint: 'Elegí otra voz con /speak o creala de nuevo.' }; }
         if (isLegacyQwenVoiceId(id)) return { ok: false, detail: `${id}: ya no viene incluida`, hint: 'Creá tu voz con /speak → «Crear voz propia…».' };
-        if (VOICE_CATALOG[id]?.engine === 'system') return deps.sayAvailable() ? { ok: true, detail: 'Mac (say)' } : { ok: false, detail: 'la voz Mac no está disponible', hint: 'Elegí otra voz con /speak.' };
+        if (VOICE_CATALOG[id]?.engine === 'system') return deps.sayAvailable() ? { ok: true, detail: sysPlatform === 'darwin' ? 'Mac (say)' : 'Sistema' } : { ok: false, detail: sysPlatform === 'darwin' ? 'la voz Mac no está disponible' : 'la voz del sistema no está disponible', hint: 'Elegí otra voz con /speak.' };
         const ready = VOICE_CATALOG[id] && (await deps.modelStatus({ home, voice: id as keyof typeof SPEAK_MODELS })).state === 'installed';
         return ready ? { ok: true, detail: labelOfVoice(id) } : { ok: false, detail: `${labelOfVoice(id)} no está instalada`, hint: 'Ejecutá /speak → «Instalar todo».' };
       },
       service: () => probeQwenService(home, { expected: { version: qwenServiceVersion(), build: qwenBuildId(qwenServiceScript, qwenWorker) } }),
       lock: () => probeVoiceLock(home),
       ffmpeg: () => which('ffmpeg'),
-      systemVoice: async () => { if (!deps.sayAvailable()) return { available: false, detail: '`say` no está disponible' }; const voices = await loadMacVoices(); return voices.length ? { available: true, detail: `${voices.length} voz/voces en español (elegida: ${pickMacVoice(voices, settings.macVoice) ?? 'auto'})` } : { available: false, detail: 'no hay voces en español instaladas' }; },
+      systemVoice: async () => { const sysEnv: SystemEnv = { platform: sysPlatform, ...deps.systemEnv }; if (!deps.sayAvailable()) return systemVoiceStatus({ platform: sysPlatform, exists: () => false, which: () => undefined }, [], null); return systemVoiceStatus(sysEnv, await loadMacVoices(), settings.macVoice); },
       focus: async () => focusTracker?.hasEvents() ? 'terminal-events' : (await probeHerdrFocus({ env: deps.env, exec: deps.herdrExec, timeoutMs: 700 })) !== 'unknown' ? 'herdr' : 'unknown',
       dot: () => detectDot(dotIo),
       ...(deps.doctor ?? {}),
@@ -1035,7 +1040,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       const availability = await voiceAvailability(ctx); // refreshes the custom voices first
       const voices = voiceMenuEntries(fullCatalog(), availability);
       if (stopped) return;
-      const choice = await ctx.ui.select('Speech settings', ['Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Crear voz propia…', 'Importar mi grabación…', 'Borrar voz propia…', 'Mac voice', 'Toggle Mac fallback', IDLE_LABEL, ...(qwenServiceOn ? ['Detener servicio Qwen'] : []), 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Instalar todo', 'Doctor', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
+      const choice = await ctx.ui.select('Speech settings', ['Gentle Dot', 'Toggle auto-speak', 'Mode: all', 'Mode: questions-and-results', 'Mode: summary', 'Summary model', ...voices.map(entry => entry.text), 'Crear voz propia…', 'Importar mi grabación…', 'Borrar voz propia…', 'Voz del sistema', 'Toggle Mac fallback', IDLE_LABEL, ...(qwenServiceOn ? ['Detener servicio Qwen'] : []), 'Speed', 'Key: speakLast', 'Key: stop', 'Key: toggle', 'Key: cycleVoice', 'Key: toggleCopy', 'Install voice and runtime', 'Instalar todo', 'Doctor', 'Toggle speak copied selection', 'Stop playback', 'Cancel']);
       if (!choice || choice === 'Cancel' || stopped) return;
       if (choice === 'Stop playback') { stopAll(); return; }
       if (choice === 'Instalar todo') { await setupFlow(ctx, { announceComplete: true }); return; }
@@ -1085,11 +1090,11 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
         if (!(await confirmVoicePick(ctx, picked.id))) return;
         settings.voice = picked.id;
       }
-      else if (choice === 'Mac voice') {
+      else if (choice === 'Voz del sistema') {
         const installed = deps.sayAvailable() ? [...new Set((await loadMacVoices(true)).map(voice => voice.name))].filter(name => MAC_VOICE_NAME.test(name)) : [];
         if (stopped) return;
-        if (!installed.length) { ctx.ui.notify('No Spanish Mac voice is installed (or say is unavailable); nothing changed.', 'warning'); return; }
-        const selected = await ctx.ui.select('Mac voice', ['Auto', ...installed]);
+        if (!installed.length) { ctx.ui.notify('No Spanish system voice is installed (or the engine is unavailable); nothing changed.', 'warning'); return; }
+        const selected = await ctx.ui.select('Voz del sistema', ['Auto', ...installed]);
         if (!selected || stopped || (selected !== 'Auto' && !installed.includes(selected))) return;
         settings.macVoice = selected === 'Auto' ? null : selected;
       }
@@ -1113,7 +1118,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       try {
         writeSpeakSettings(settings, settingsDir);
         if (choice === IDLE_LABEL) qwen.setIdleMs(idleMsOf(settings.qwenIdleMinutes)); // live: no session restart
-        if (choice.startsWith('Voice: ') || choice === 'Mac voice' || choice === 'Speed' || choice.startsWith('Mode: ')) cancelSpeculation(); // the next stream starts fresh with the new settings
+        if (choice.startsWith('Voice: ') || choice === 'Voz del sistema' || choice === 'Speed' || choice.startsWith('Mode: ')) cancelSpeculation(); // the next stream starts fresh with the new settings
         if (choice === 'Toggle speak copied selection') {
           await afterCopyToggle(ctx, settings.copySpeech);
           return;

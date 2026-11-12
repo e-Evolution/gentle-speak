@@ -77,6 +77,10 @@ Every Gentle Shell session and Gentle Dot share **one** local Qwen service, so t
 
 While the answer is being written, a Qwen voice already synthesizes its completed sentences (at most 500 characters ahead); nothing plays before the answer is final. When the run settles, the audio that matches the final spoken text plays at once and only the rest is synthesized. It applies to automatic speech in the interactive parent TUI, not to `summary` mode, Piper voices, copied-selection speech or the speak-last key. Tool-call turns, stop, toggle off, a voice change and shutdown delete the prepared audio. When focus is unknown and the project prefix applies, prepared audio is discarded and the prefixed text is synthesized normally, because prepared audio has no prefix. An unfocused pane keeps only the latest result, prepared audio included.
 
+#### System voice (extra voice and fallback)
+
+T47 (S16): the voice below, id `mac`, is the **system voice** on every platform: macOS `say`, Linux `spd-say` (speech-dispatcher) or `espeak-ng`/`espeak`, Windows SAPI through PowerShell. It reads `Mac` on macOS and `Sistema` elsewhere, and `/speak` → `Voz del sistema` lists the platform's Spanish voices. The text is always on stdin; the rest of this section describes macOS. **Linux and Windows are unverified live (fakes only).** On Linux install `sudo apt install speech-dispatcher espeak-ng`; Windows needs nothing.
+
 #### Mac voice (extra voice and fallback)
 
 macOS only, nothing to download or install: the `Mac` voice speaks through `/usr/bin/say`, with the text on stdin (never in the command line), so it needs neither the Piper/Qwen runtime nor node-cpal. It takes the same voice lock, deferral and stop key as every voice, never speculates, and speed maps to the say rate `round(185 × speed)` words per minute.

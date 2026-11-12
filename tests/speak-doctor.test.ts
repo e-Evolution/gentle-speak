@@ -115,11 +115,16 @@ test('ffmpeg: found passes; missing fails with brew install ffmpeg on macOS and 
   assert.match(get(await runDoctor(healthy({ ffmpeg: () => undefined, platform: 'linux', target: 'linux-x64' })), 'ffmpeg').hint!, /apt install ffmpeg/);
 });
 
-test('system voice (say): voices found pass; none or unavailable fail; not applicable off macOS', async () => {
+test('system voice: voices found pass; none or unavailable fail with the platform hint', async () => {
   assert.match(get(await runDoctor(healthy()), 'system').detail, /Paulina/);
   const none = get(await runDoctor(healthy({ systemVoice: async () => ({ available: false, detail: 'no hay voces en español instaladas' }) })), 'system');
   assert.equal(none.status, 'fail'); assert.match(none.hint!, /Contenido hablado/);
-  assert.equal(get(await runDoctor(healthy({ platform: 'linux', target: 'linux-x64' })), 'system').status, 'na');
+  const linuxMissing = get(await runDoctor(healthy({ platform: 'linux', target: 'linux-x64', systemVoice: async () => ({ available: false, detail: 'falta `spd-say` (speech-dispatcher) o `espeak-ng`' }) })), 'system');
+  assert.equal(linuxMissing.status, 'fail'); assert.match(linuxMissing.hint!, /sudo apt install speech-dispatcher espeak-ng/);
+  const linuxOk = get(await runDoctor(healthy({ platform: 'linux', target: 'linux-x64', systemVoice: async () => ({ available: true, detail: 'espeak-ng: 2 voz/voces en español (elegida: spanish-latam)' }) })), 'system');
+  assert.equal(linuxOk.status, 'ok'); assert.match(linuxOk.detail, /espeak-ng/);
+  const win = get(await runDoctor(healthy({ platform: 'win32', target: 'win32-x64', systemVoice: async () => ({ available: false, detail: 'SAPI: no hay voces en español instaladas' }) })), 'system');
+  assert.equal(win.status, 'fail'); assert.match(win.hint!, /integrada en Windows/);
 });
 
 test('focus source: terminal events, Herdr, or unknown (never a failure)', async () => {

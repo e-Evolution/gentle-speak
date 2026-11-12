@@ -195,8 +195,8 @@ test('R4-001: a failed or empty re-list (the voice picker) keeps the last good l
   let phase: 'good' | 'empty' | 'throw' = 'good';
   const w = world({ voice: 'mac', listMac: async () => { if (phase === 'throw') throw new Error('say failed'); return phase === 'good' ? VOICES : []; } });
   await w.events.get('session_start')!({}, w.ctx);
-  phase = 'empty'; w.selections.push('Mac voice', 'Mónica'); await w.menu(); // the picker re-lists: empty, so the cached list is offered
+  phase = 'empty'; w.selections.push('Voz del sistema', 'Mónica'); await w.menu(); // the picker re-lists: empty, so the cached list is offered
   assert.ok(w.offered.some(o => o[0] === 'Auto' && o.includes('Paulina') && o.includes('Mónica')), `picker offered ${JSON.stringify(w.offered)}`);
-  phase = 'throw'; w.offered.length = 0; w.selections.push('Mac voice', 'Auto'); await w.menu();
+  phase = 'throw'; w.offered.length = 0; w.selections.push('Voz del sistema', 'Auto'); await w.menu();
   assert.ok(w.offered.some(o => o[0] === 'Auto' && o.includes('Paulina')), 'a throwing probe also keeps the cache');
 });

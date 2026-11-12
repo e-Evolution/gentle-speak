@@ -14,7 +14,7 @@ export interface SayChild {
   on(event: 'exit' | 'error', listener: (...args: any[]) => void): unknown;
   kill(signal?: NodeJS.Signals): unknown;
 }
-export type SaySpawn = (file: string, args: string[]) => SayChild;
+export type SaySpawn = (file: string, args: string[], options?: { env?: Record<string, string> }) => SayChild;
 export interface SayOutcome { ok: boolean; message: string; cancelled?: boolean }
 
 /** `Paulina             es_MX    # Hola…` and `Eddy (Español (México)) es_MX    # …`: the locale is the last token before `#`. */
@@ -60,15 +60,15 @@ export function sayAvailable(platform: string = process.platform, exists: (path:
 /** Proportional to the text length (slower speeds take longer), with a fixed start-up allowance. */
 export const sayTimeoutMs = (text: string, speed: number): number => 10_000 + Math.ceil(text.length * 120 / Math.max(speed, 0.5));
 
-const defaultSpawn: SaySpawn = (file, args) => spawnChild(file, args, { stdio: ['pipe', 'ignore', 'ignore'] }) as unknown as SayChild;
+const defaultSpawn: SaySpawn = (file, args, options) => spawnChild(file, args, { stdio: ['pipe', 'ignore', 'ignore'], ...(options?.env ? { env: { ...process.env, ...options.env } } : {}) }) as unknown as SayChild;
 
-export function speakWithSay({ voice, text, speed, signal, spawn = defaultSpawn, timeoutMs }: { voice: string; text: string; speed: number; signal?: AbortSignal; spawn?: SaySpawn; timeoutMs?: number }): Promise<SayOutcome> {
+/** One speech process (S11/S16): text on stdin only, killed on abort or timeout, never throws. `name` labels the failures (`Mac`, `System`). */
+export function runSpeechChild({ file, args, env, text, signal, spawn = defaultSpawn, timeoutMs, name }: { file: string; args: string[]; env?: Record<string, string>; text: string; signal?: AbortSignal; spawn?: SaySpawn; timeoutMs: number; name: string }): Promise<SayOutcome> {
   return new Promise<SayOutcome>(resolve => {
     if (signal?.aborted) { resolve({ ok: false, message: 'Speech cancelled.', cancelled: true }); return; }
-    if (!MAC_VOICE_NAME.test(voice)) { resolve({ ok: false, message: 'Invalid Mac voice name.' }); return; }
     let child: SayChild;
-    try { child = spawn(SAY_PATH, ['-v', voice, '-r', String(Math.round(SAY_BASE_RATE * speed)), '-f', '-']); }
-    catch { resolve({ ok: false, message: 'Mac voice could not start.' }); return; }
+    try { child = env ? spawn(file, args, { env }) : spawn(file, args); }
+    catch { resolve({ ok: false, message: `${name} voice could not start.` }); return; }
     let settled = false;
     const finish = (outcome: SayOutcome, kill = false) => {
       if (settled) return;
@@ -79,11 +79,17 @@ export function speakWithSay({ voice, text, speed, signal, spawn = defaultSpawn,
       resolve(outcome);
     };
     const abort = () => finish({ ok: false, message: 'Speech cancelled.', cancelled: true }, true);
-    const timer = setTimeout(() => finish({ ok: false, message: 'Mac voice timed out.' }, true), timeoutMs ?? sayTimeoutMs(text, speed));
+    const timer = setTimeout(() => finish({ ok: false, message: `${name} voice timed out.` }, true), timeoutMs);
     signal?.addEventListener('abort', abort, { once: true });
-    child.on('error', () => finish({ ok: false, message: 'Mac voice failed.' }));
-    child.on('exit', (code: number | null) => finish(code === 0 ? { ok: true, message: 'Speech completed.' } : { ok: false, message: 'Mac voice failed.' }));
-    try { child.stdin.on?.('error', () => finish({ ok: false, message: 'Mac voice failed.' }, true)); child.stdin.write(text); child.stdin.end(); }
-    catch { finish({ ok: false, message: 'Mac voice failed.' }, true); }
+    child.on('error', () => finish({ ok: false, message: `${name} voice failed.` }));
+    child.on('exit', (code: number | null) => finish(code === 0 ? { ok: true, message: 'Speech completed.' } : { ok: false, message: `${name} voice failed.` }));
+    try { child.stdin.on?.('error', () => finish({ ok: false, message: `${name} voice failed.` }, true)); child.stdin.write(text); child.stdin.end(); }
+    catch { finish({ ok: false, message: `${name} voice failed.` }, true); }
   });
+}
+
+export function speakWithSay({ voice, text, speed, signal, spawn = defaultSpawn, timeoutMs }: { voice: string; text: string; speed: number; signal?: AbortSignal; spawn?: SaySpawn; timeoutMs?: number }): Promise<SayOutcome> {
+  if (signal?.aborted) return Promise.resolve({ ok: false, message: 'Speech cancelled.', cancelled: true });
+  if (!MAC_VOICE_NAME.test(voice)) return Promise.resolve({ ok: false, message: 'Invalid Mac voice name.' });
+  return runSpeechChild({ file: SAY_PATH, args: ['-v', voice, '-r', String(Math.round(SAY_BASE_RATE * speed)), '-f', '-'], text, signal, spawn, timeoutMs: timeoutMs ?? sayTimeoutMs(text, speed), name: 'Mac' });
 }

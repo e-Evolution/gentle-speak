@@ -1,3 +1,16 @@
+/**
+ * Copyright (C) 2026, e-Evolution Consultants S.A. , http://www.e-evolution.com
+ * SPDX-License-Identifier: MIT
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the MIT License. See the LICENSE file in the root of
+ * this project for the full license text.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * MIT License for more details.
+ * Email: victor.perez@e-evolution.com, http://www.e-evolution.com , http://github.com/e-Evolution
+ * Created by victor.perez@e-evolution.com , www.e-evolution.com
+ */
 import { DEFAULT_SPEAK_SETTINGS, type SpeakMode } from './speak-settings.ts';
 
 /** Minimal read-only shape of Pi's settled-run messages; unknown content is never voiced. */

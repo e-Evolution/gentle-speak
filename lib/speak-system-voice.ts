@@ -1,4 +1,17 @@
 /**
+ * Copyright (C) 2026, e-Evolution Consultants S.A. , http://www.e-evolution.com
+ * SPDX-License-Identifier: MIT
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the MIT License. See the LICENSE file in the root of
+ * this project for the full license text.
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * MIT License for more details.
+ * Email: victor.perez@e-evolution.com, http://www.e-evolution.com , http://github.com/e-Evolution
+ * Created by victor.perez@e-evolution.com , www.e-evolution.com
+ */
+/**
  * System voice (S11, S16): the operating system's own speech, no download. macOS `say` (speak-say.ts), Linux `spd-say` or `espeak-ng`/`espeak`, Windows SAPI
  * through PowerShell. Same rules on every platform: the text goes on stdin only (never argv, never inside a script), the process is killed on abort or timeout.
  * Linux and Windows are written from the tools' documentation and tested with fakes only: unverified live.

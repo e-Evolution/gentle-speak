@@ -4,6 +4,11 @@
   "description": "Opt-in local text-to-speech for Pi and Gentle Shell",
   "type": "module",
   "license": "MIT",
+  "author": "Victor Perez <victor.perez@e-evolution.com> (http://www.e-evolution.com)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/e-Evolution/gentle-speak.git"
+  },
   "keywords": [
     "pi-package",
     "gentle-shell-extension",

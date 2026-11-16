@@ -12,6 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { NO_POSIX_MODES, POSIX_MODES } from './helpers/platform.ts';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -87,17 +88,17 @@ function modeWorld() {
   return { dotHome, dir: join(dotHome, '.gentle-speak'), io: { env: { GENTLE_DOT_HOME: dotHome, GENTLE_DOT_AGENT_HOME: join(base, 'agent') }, home } };
 }
 const valid = () => ({ ...DEFAULT_SPEAK_SETTINGS, enabled: true });
-test('R1-dot-speak-dir-mode: a new Dot speak dir is 0700', () => {
+test('R1-dot-speak-dir-mode: a new Dot speak dir is 0700', { skip: !POSIX_MODES && NO_POSIX_MODES }, () => {
   const w = modeWorld(); writeDotSpeak(valid(), w.io);
   assert.equal(mode(w.dir), 0o700); assert.equal(mode(w.dotHome), 0o755);
 });
-test('R1-dot-speak-dir-mode: an existing 0755 dir holding only our settings file becomes 0700; Dot\'s own home is never touched', () => {
+test('R1-dot-speak-dir-mode: an existing 0755 dir holding only our settings file becomes 0700; Dot\'s own home is never touched', { skip: !POSIX_MODES && NO_POSIX_MODES }, () => {
   const w = modeWorld(); mkdirSync(w.dir); writeFileSync(join(w.dir, 'speak-settings.json'), settingsFile({})); chmodSync(w.dir, 0o755);
   writeDotSpeak(valid(), w.io);
   assert.equal(mode(w.dir), 0o700); assert.equal(mode(w.dotHome), 0o755);
   assert.equal(mode(join(w.dir, 'speak-settings.json')), 0o600);
 });
-test('R1-dot-speak-dir-mode: an existing empty dir is ours too; one that holds another file keeps its mode', () => {
+test('R1-dot-speak-dir-mode: an existing empty dir is ours too; one that holds another file keeps its mode', { skip: !POSIX_MODES && NO_POSIX_MODES }, () => {
   const empty = modeWorld(); mkdirSync(empty.dir); chmodSync(empty.dir, 0o755); writeDotSpeak(valid(), empty.io);
   assert.equal(mode(empty.dir), 0o700);
   const foreign = modeWorld(); mkdirSync(foreign.dir); writeFileSync(join(foreign.dir, 'notes.txt'), 'x'); chmodSync(foreign.dir, 0o755);

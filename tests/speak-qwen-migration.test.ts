@@ -12,14 +12,16 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { NO_UNIX_SOCKETS, UNIX_SOCKETS } from './helpers/platform.ts';
+import { assertMode } from './helpers/platform.ts';
 // T45 / S15: no bundled Qwen voices. The public catalog has none; an existing install is converted once into custom voices; old `qwen-<name>` settings
 // keep loading; custom voices need only a Python record (not the old manifest). All fakes; scratch lives under mkdtemp and is removed.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import * as voicesModule from '../lib/speak-voices.ts';
 import { QWEN_MODEL_ID, VOICE_CATALOG } from '../lib/speak-voices.ts';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA, parseSpeakSettingsFile, readSpeakSettings } from '../lib/speak-settings.ts';
@@ -60,7 +62,7 @@ function world(names?: string[], opts?: Parameters<typeof legacyInstall>[2]) {
 }
 const tree = (dir: string): Record<string, string> => {
   const out: Record<string, string> = {};
-  const walk = (d: string) => { for (const e of readdirSync(d, { withFileTypes: true })) { const p = join(d, e.name); if (e.isDirectory()) walk(p); else out[p.slice(dir.length)] = sha256(readFileSync(p)); } };
+  const walk = (d: string) => { for (const e of readdirSync(d, { withFileTypes: true })) { const p = join(d, e.name); if (e.isDirectory()) walk(p); else out[p.slice(dir.length).split(sep).join('/')] = sha256(readFileSync(p)); } }; // T62: '/'-separated keys on every OS
   if (existsSync(dir)) walk(dir);
   return out;
 };
@@ -119,7 +121,7 @@ test('the migration maps voice qwen-<name> to custom:<name> in the terminal and 
   assert.deepEqual(JSON.parse(readFileSync(join(w.home, 'speak-settings.json'), 'utf8')), { ...before, voice: 'custom:intima' });
   assert.deepEqual(JSON.parse(readFileSync(join(w.dotDir, 'speak-settings.json'), 'utf8')), { ...beforeDot, voice: 'custom:brisa' });
   assert.equal(readSpeakSettings(w.home).voice, 'custom:intima'); assert.equal(readSpeakSettings(w.dotDir).voice, 'custom:brisa');
-  assert.equal(statSync(join(w.home, 'speak-settings.json')).mode & 0o777, 0o600);
+  assertMode(join(w.home, 'speak-settings.json'), 0o600);
   assert.deepEqual(readdirSync(w.dotDir), ['speak-settings.json'], 'atomic write leaves no temp file');
 });
 
@@ -242,7 +244,7 @@ function harness(o: Opts = {}) {
     sessionManager: { getHeader: () => ({ type: 'session', ...o.header }), getBranch: () => [] },
     ui: { setStatus() {}, setWidget() {}, setTitle() {}, input: async () => undefined, notify: (t: string) => notes.push(t), confirm: async () => false, select: async () => undefined } };
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut() {}, registerTool: (t: any) => tools.set(t.name, t) } as any, undefined, {
-    userHome: real, processHome: dot ? dotHome : real, setupOffer: false, env, sayAvailable: () => o.say !== false, listMacVoices: async () => [{ name: 'Paulina', locale: 'es_MX' }],
+    userHome: real, processHome: dot ? dotHome : real, setupOffer: false, env, platform: 'darwin' /* T62: the Mac fallback notice is the macOS one on every host */, sayAvailable: () => o.say !== false, listMacVoices: async () => [{ name: 'Paulina', locale: 'es_MX' }],
     say: async (req: any) => { sayCalls.push(req); return { ok: true, message: 'Speech completed.' }; },
     modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), spawn: () => fakeChild(), spawnQwen: () => { const c = fakeChild(); pythons.push(c); return c; },
     focusCheck: async () => 'focused', focusPollMs: 5, lockPollMs: 5, qwenTmpRoot: tmpdir(), resolveTerminal: async () => 'com.term', createWatcher: () => ({ start() {}, stop() {} }),
@@ -336,7 +338,7 @@ test('PRESERVE: the Mac voice speaks in the terminal and, with the Dot prefix, i
 });
 
 // ---- the service ----
-test('the shared service validates refs under voices/custom only: voices/qwen3 is no longer accepted', async () => {
+test('the shared service validates refs under voices/custom only: voices/qwen3 is no longer accepted', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const { qwenFixture, rawClient } = await import('./helpers/qwen-service-fixture.ts');
   const { connectQwenService } = await import('../lib/speak-qwen-service.ts');
   const fx = qwenFixture();

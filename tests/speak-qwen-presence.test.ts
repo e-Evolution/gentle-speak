@@ -12,6 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { NO_UNIX_SOCKETS, UNIX_SOCKETS } from './helpers/platform.ts';
 // T40 / S13 (L83): the shared service stays loaded while sessions are open, sessions keep one presence connection, and a grace
 // countdown starts at the LAST disconnect. Real unix sockets in a temp shared home; the Python is a fake.
 import assert from 'node:assert/strict';
@@ -40,7 +41,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const base = (fx: Fx) => ({ python: fx.options().python, ref: fx.ref, refText: 'ref', speed: 1 });
 
 // ---- 1. loaded while sessions are open ----
-test('a connected client with no requests keeps the service and its Python loaded past the idle time, and the next request does not reload', async () => {
+test('a connected client with no requests keeps the service and its Python loaded past the idle time, and the next request does not reload', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const c = await client(fx, { idleMs: 300 });
@@ -57,7 +58,7 @@ test('a connected client with no requests keeps the service and its Python loade
 });
 
 // ---- 3. grace counts from the last disconnect ----
-test('grace is measured from the last disconnect, not from the last request; unload + exit remove socket and pid', async () => {
+test('grace is measured from the last disconnect, not from the last request; unload + exit remove socket and pid', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const a = await client(fx, { idleMs: 1200 }), b = await client(fx, { idleMs: 1200 });
@@ -82,7 +83,7 @@ test('grace is measured from the last disconnect, not from the last request; unl
 });
 
 // ---- 4. a new connection cancels the grace ----
-test('a new connection during the grace cancels it, and the countdown restarts at the next last disconnect', async () => {
+test('a new connection during the grace cancels it, and the countdown restarts at the next last disconnect', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const a = await client(fx, { idleMs: 1200 });
@@ -101,7 +102,7 @@ test('a new connection during the grace cancels it, and the countdown restarts a
 });
 
 // ---- 6. never / test override ----
-test('never: the service stays after the last disconnect; --exit-idle-ms still overrides the grace for tests', async () => {
+test('never: the service stays after the last disconnect; --exit-idle-ms still overrides the grace for tests', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const a = await client(fx, { idleMs: null });
@@ -117,7 +118,7 @@ test('never: the service stays after the last disconnect; --exit-idle-ms still o
 });
 
 // ---- 2. presence connection ----
-test('a service session keeps one connection across the T37 idle close of its worker, and closes it cleanly on close()', async () => {
+test('a service session keeps one connection across the T37 idle close of its worker, and closes it cleanly on close()', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const spawner = createQwenServiceSpawner({ ...fx.options({ idleMs: 500, exitIdleMs: undefined }), spawnLocal: () => { throw new Error('no local'); } });
@@ -136,7 +137,7 @@ test('a service session keeps one connection across the T37 idle close of its wo
   } finally { await fx.close(); }
 });
 
-test('a dropped presence connection reconnects at the next need, restarting the service once if it is gone', async () => {
+test('a dropped presence connection reconnects at the next need, restarting the service once if it is gone', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const spawner = createQwenServiceSpawner({ ...fx.options({ idleMs: null, exitIdleMs: undefined }), spawnLocal: () => { throw new Error('no local'); } });
@@ -175,7 +176,7 @@ const fakeAudio = () => {
     stdin: { write: (line: string) => { const m = JSON.parse(line); if (m.type === 'play') setImmediate(() => child.stdout.emit('data', JSON.stringify({ schema: 'gentle.speak/v1', type: 'done', id: m.id }) + '\n')); return true; }, end() {} } });
   return child;
 };
-test('the extension holds the connection from its first speech until session_shutdown', async () => {
+test('the extension holds the connection from its first speech until session_shutdown', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     writeEntry(join(fx.home, 'voices', 'custom'), 'intima', { wav: Buffer.from('RIFF') }); // T45: the user's own voice

@@ -12,6 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { NO_UNIX_SOCKETS, UNIX_SOCKETS } from './helpers/platform.ts';
 // T39 / S13: the T38 review advisories (CR text, idle exit, version ping-pong, blocking ps) plus preserve tests for T38 behavior.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -35,7 +36,7 @@ async function client(fx: Fx, extra = {}) {
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // ---- R3-ctrl-chars-reject-cr ------------------------------------------------------------------------------------------------------------
-test('R3-ctrl-chars: CRLF, CR, tabs and form feeds are legitimate text: accepted and normalized; real control characters are still rejected', async () => {
+test('R3-ctrl-chars: CRLF, CR, tabs and form feeds are legitimate text: accepted and normalized; real control characters are still rejected', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const c = await client(fx); const dir = fx.outDir();
@@ -73,7 +74,7 @@ test('R3-ctrl-chars: the client normalizes CR text before it reaches the service
 });
 
 // ---- R3-exit-idle-doc-mismatch ----------------------------------------------------------------------------------------------------------
-test('R3-exit-idle: with no --exit-idle-ms the service exits idleMs after the last request when nobody is connected (S13/L77)', async () => {
+test('R3-exit-idle: with no --exit-idle-ms the service exits idleMs after the last request when nobody is connected (S13/L77)', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const c = await client(fx, { idleMs: 700, exitIdleMs: undefined });
@@ -90,7 +91,7 @@ test('R3-exit-idle: with no --exit-idle-ms the service exits idleMs after the la
   } finally { await fx.close(); }
 });
 
-test('R3-exit-idle: a connected client keeps the service up however long it is idle, and the grace starts when it leaves', async () => {
+test('R3-exit-idle: a connected client keeps the service up however long it is idle, and the grace starts when it leaves', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const c = await client(fx, { idleMs: 600, exitIdleMs: undefined });
@@ -104,7 +105,7 @@ test('R3-exit-idle: a connected client keeps the service up however long it is i
   } finally { await fx.close(); }
 });
 
-test('R3-exit-idle: with idle "never" the service does not exit on its own', async () => {
+test('R3-exit-idle: with idle "never" the service does not exit on its own', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const c = await client(fx, { idleMs: null, exitIdleMs: undefined });
@@ -125,7 +126,7 @@ test('R3-version: version ordering compares package version then protocol revisi
   assert.equal(compareQwenServiceVersions('old', '1.0.0+p1'), undefined);
 });
 
-test('R3-version: a newer client replaces an older service', async () => {
+test('R3-version: a newer client replaces an older service', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const old = await connectQwenService(fx.options({ version: '1.0.0+p1' })); old.socket.destroy();
@@ -136,7 +137,7 @@ test('R3-version: a newer client replaces an older service', async () => {
   } finally { await fx.close(); }
 });
 
-test('R3-version: an older client never replaces a newer service; with a compatible protocol it uses it', async () => {
+test('R3-version: an older client never replaces a newer service; with a compatible protocol it uses it', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const newer = await connectQwenService(fx.options({ version: '2.0.0+p1' })); newer.socket.destroy();
@@ -155,7 +156,7 @@ test('R3-version: an older client never replaces a newer service; with a compati
   } finally { await fx.close(); }
 });
 
-test('R3-version: an older client with an incompatible protocol fails (so the session falls back to its local worker) without killing the service', async () => {
+test('R3-version: an older client with an incompatible protocol fails (so the session falls back to its local worker) without killing the service', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const newer = await connectQwenService(fx.options({ version: '2.0.0+p2' })); newer.socket.destroy();
@@ -173,7 +174,7 @@ test('R3-version: an older client with an incompatible protocol fails (so the se
   } finally { await fx.close(); }
 });
 
-test('R3-version: restarts are rate-limited: two clients with different unordered versions do not take turns replacing the service', async () => {
+test('R3-version: restarts are rate-limited: two clients with different unordered versions do not take turns replacing the service', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const a = await connectQwenService(fx.options({ version: 'alpha' })); a.socket.destroy();
@@ -187,7 +188,7 @@ test('R3-version: restarts are rate-limited: two clients with different unordere
 });
 
 // ---- R4-sync-ps-in-connect-loop ----------------------------------------------------------------------------------------------------------
-test('R4-ps: the pid check does not block the event loop and runs at most once per attempt', async () => {
+test('R4-ps: the pid check does not block the event loop and runs at most once per attempt', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   const sleeper = spawn('sleep', ['30'], { stdio: 'ignore' });
   try {
@@ -208,7 +209,7 @@ test('R4-ps: the pid check does not block the event loop and runs at most once p
   } finally { sleeper.kill(); await fx.close(); }
 });
 
-test('R4-ps: a hung ps is bounded and counted as not-ours, so a recycled pid is replaced', async () => {
+test('R4-ps: a hung ps is bounded and counted as not-ours, so a recycled pid is replaced', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   const sleeper = spawn('sleep', ['30'], { stdio: 'ignore' });
   try {
@@ -223,7 +224,7 @@ test('R4-ps: a hung ps is bounded and counted as not-ours, so a recycled pid is 
 });
 
 // ---- preserve (T38) ----------------------------------------------------------------------------------------------------------------------
-test('preserve: a recycled pid (live, not the service) in the pid file is stale: the next client starts a service; same-version clients reuse it', async () => {
+test('preserve: a recycled pid (live, not the service) in the pid file is stale: the next client starts a service; same-version clients reuse it', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   const sleeper = spawn('sleep', ['30'], { stdio: 'ignore' });
   try {
@@ -236,7 +237,7 @@ test('preserve: a recycled pid (live, not the service) in the pid file is stale:
   } finally { sleeper.kill(); await fx.close(); }
 });
 
-test('preserve: two sessions share one Python, speak outranks prepare, and the Python stays loaded while the sessions are connected (no idle close, T40)', async () => {
+test('preserve: two sessions share one Python, speak outranks prepare, and the Python stays loaded while the sessions are connected (no idle close, T40)', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const a = await client(fx, { idleMs: 300 }), b = await client(fx, { idleMs: 300 }); const dir = fx.outDir();

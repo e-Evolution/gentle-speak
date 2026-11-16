@@ -191,7 +191,9 @@ test('the offer writes through a temp file and rename, never in place', async ()
   const events = new Map<string, Function>();
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut() {}, registerTool() {} } as any, w.speakHome, { setupOffer: false, env: { PI_CODING_AGENT_DIR: w.shell }, userHome: w.userHome, processHome: w.userHome, dotFs: spy, packageRoot: '/pkg', sayAvailable: () => false, focusCheck: async () => 'focused', resolveTerminal: async () => undefined } as any);
   await events.get('session_start')!({}, w.ctx); await quiet(20);
-  assert.equal(renames.length, 2, 'Dot settings.json and Dot speak settings'); assert.match(renames.find(r => /gentle-dot\/agent/.test(r))!, new RegExp(`settings\\.json\\.[^/]+\\.tmp=>${w.dot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/settings\\.json$`));
+  assert.equal(renames.length, 2, 'Dot settings.json and Dot speak settings'); // T62: paths are compared with the host separator (`\\` on Windows).
+  const dotRename = renames.find(r => r.includes(join('gentle-dot', 'agent'))); assert.ok(dotRename, renames.join(' | '));
+  assert.match(dotRename, new RegExp(`settings\\.json\\.[^/\\\\]+\\.tmp=>${join(w.dot, 'settings.json').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
   w.shutdown();
 });
 

@@ -31,6 +31,9 @@ import path from 'node:path';
  *   `reclaimGraceMs`.
  * - `acquire` never rejects with a raw fs error: races (ENOENT, EEXIST, ENOTEMPTY, EINVAL, EBUSY) mean "poll again";
  *   anything else rejects with a `VoiceLockError` carrying the cause.
+ * - T62: Windows refuses a rename onto an existing (or delete-pending) directory with EPERM or EACCES instead of
+ *   ENOTEMPTY/EEXIST, so there the install rename treats those codes as "somebody else holds it". Every other step keeps
+ *   the rule above, so a real permission problem (the temp dir cannot be created or written) still rejects.
  */
 export interface VoiceLockOptions {
   dir: string;
@@ -40,6 +43,8 @@ export interface VoiceLockOptions {
   now?: () => number;
   pid?: number;
   isPidAlive?: (pid: number) => boolean;
+  /** `process.platform` (tests); only `win32` changes anything: see the T62 note above. */
+  platform?: string;
   /** Test seams: `beforeAct` runs right before a destructive step (between check and act); `onWait` before each poll wait. */
   hooks?: { beforeAct?: (kind: 'release' | 'reclaim') => void; onWait?: () => void };
 }
@@ -62,6 +67,8 @@ const lockError = (cause: unknown) => Object.assign(new Error('voice lock unavai
 const TRANSIENT = new Set(['ENOENT', 'EEXIST', 'ENOTEMPTY', 'EINVAL', 'EBUSY']);
 const isTransient = (e: any) => TRANSIENT.has(e?.code);
 const taken = (e: any) => e?.code === 'ENOTEMPTY' || e?.code === 'EEXIST';
+/** How Windows reports a rename onto a directory that exists or is still being deleted (T62). */
+const WINDOWS_RENAME_TAKEN = new Set(['EPERM', 'EACCES']);
 
 interface Owner { pid: number; at?: number; token?: string }
 
@@ -72,6 +79,7 @@ export function createVoiceLock(opts: VoiceLockOptions): VoiceLock {
   const now = opts.now ?? Date.now;
   const pid = opts.pid ?? process.pid;
   const isAlive = opts.isPidAlive ?? defaultIsPidAlive;
+  const windows = (opts.platform ?? process.platform) === 'win32';
   const lockPath = path.join(opts.dir, 'voice.lock');
   const mutexPath = path.join(opts.dir, 'voice.reclaim');
   const token = randomUUID();
@@ -112,7 +120,10 @@ export function createVoiceLock(opts: VoiceLockOptions): VoiceLock {
       fs.mkdirSync(tmp);
       fs.writeFileSync(path.join(tmp, 'owner.json'), JSON.stringify({ pid, at: now(), token: ownerToken }));
       if (withMarker) fs.writeFileSync(path.join(tmp, `token-${ownerToken}`), '');
-      fs.renameSync(tmp, target);
+      try { fs.renameSync(tmp, target); } catch (e: any) {
+        if (windows && WINDOWS_RENAME_TAKEN.has(e?.code)) return false;
+        throw e;
+      }
       moved = true;
       return true;
     } catch (e) {

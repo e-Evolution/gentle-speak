@@ -22,7 +22,8 @@ import { join } from 'node:path';
 import { createQwenSpeech } from '../lib/speak-qwen.ts';
 
 const QS = 'gentle.speak.qwen/v1';
-const until = async (predicate: () => boolean) => { for (let i = 0; i < 300 && !predicate(); i++) await new Promise(r => setImmediate(r)); assert.ok(predicate(), 'condition not reached'); };
+// T62: bounded by wall-clock time, not by a count of event-loop turns: real fs work (custom-voice sha256, mkdtemp) can outlast a fixed number of turns on a loaded CI runner.
+const until = async (predicate: () => boolean) => { const end = Date.now() + 5000; while (!predicate() && Date.now() < end) await new Promise(r => setImmediate(r)); assert.ok(predicate(), 'condition not reached'); };
 function child(hints: boolean) {
   const writes: any[] = [], cancels: number[] = [];
   const c: any = Object.assign(new EventEmitter(), { stdin: { write: (l: string) => { writes.push(JSON.parse(l)); return true; }, end() {} }, stdout: new EventEmitter(), stderr: new EventEmitter(), kill() { return true; }, ...(hints ? { hints: true, cancelRequest: (id: number) => cancels.push(id) } : {}) });

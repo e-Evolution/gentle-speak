@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA } from '../lib/speak-settings.ts';
 import { realHome } from '../lib/speak-home.ts';
@@ -45,8 +45,8 @@ test('real home from the process: with HOME overridden, library defaults still u
   assert.equal(dotAgentHome({ env: {} }), join(real, '.gentle-dot', 'agent'));
   assert.equal(sessionAgentDir({ env: {} }), join(real, '.pi', 'agent'));
   assert.equal(isDotEngine({ env: { PI_CODING_AGENT_DIR: join(real, '.gentle-dot', 'agent') } }), true);
-  assert.equal(dotAgentHome({ env: { GENTLE_DOT_AGENT_HOME: '/explicit/dot' } }), '/explicit/dot', 'explicit env keeps its priority');
-  assert.equal(dotAgentHome({ env: {}, home: '/injected' }), '/injected/.gentle-dot/agent', 'explicit injection keeps its priority');
+  assert.equal(dotAgentHome({ env: { GENTLE_DOT_AGENT_HOME: '/explicit/dot' } }), resolve('/explicit/dot'), 'explicit env keeps its priority');
+  assert.equal(dotAgentHome({ env: {}, home: '/injected' }), resolve('/injected/.gentle-dot/agent'), 'explicit injection keeps its priority');
 });
 
 test('connect expands `~` against the real home, not $HOME', () => {
@@ -62,7 +62,7 @@ test('Python worker env: HOME is the real home (user site-packages), flags and o
   spawnQwenPython('/py/python3', '/s/worker.py', { spawn: fake, env: { HOME: '/fake/home', PATH: '/bin', KEEP: '1' }, home: '/real/user' });
   assert.equal(calls[0].file, '/py/python3');
   assert.deepEqual(calls[0].args, [...QWEN_PYTHON_FLAGS, '/s/worker.py']); assert.ok(calls[0].args.includes('-E') && calls[0].args.includes('-P'));
-  assert.deepEqual(calls[0].options.env, { HOME: '/real/user', PATH: '/bin', KEEP: '1', HF_HOME: '/real/user/.cache/huggingface', HF_HUB_OFFLINE: '1', PYTHONIOENCODING: 'utf-8' });
+  assert.deepEqual(calls[0].options.env, { HOME: '/real/user', PATH: '/bin', KEEP: '1', HF_HOME: join('/real/user', '.cache', 'huggingface'), HF_HUB_OFFLINE: '1', PYTHONIOENCODING: 'utf-8' });
   assert.deepEqual(calls[0].options.stdio, ['pipe', 'pipe', 'pipe']);
 });
 
@@ -71,7 +71,7 @@ test('Python worker env: HF_HOME pins the real Hugging Face cache even when XDG_
   const calls: Array<{ options: any }> = [];
   const fake = ((_file: string, _args: string[], options: any) => { calls.push({ options }); return new EventEmitter(); }) as any;
   spawnQwenPython('/py/python3', '/s/worker.py', { spawn: fake, env: { HOME: '/dot/home', XDG_CACHE_HOME: '/dot/home/.cache' }, home: '/real/user' });
-  assert.equal(calls[0].options.env.HF_HOME, '/real/user/.cache/huggingface');
+  assert.equal(calls[0].options.env.HF_HOME, join('/real/user', '.cache', 'huggingface'));
   assert.equal(calls[0].options.env.XDG_CACHE_HOME, '/dot/home/.cache');
 });
 

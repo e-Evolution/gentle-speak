@@ -27,7 +27,8 @@ import { writeEntry } from './helpers/custom-voice-fixture.ts';
 
 const QS = 'gentle.speak.qwen/v1', AS = 'gentle.speak/v1';
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-const until = async (predicate: () => boolean) => { for (let i = 0; i < 300 && !predicate(); i++) await new Promise(r => setImmediate(r)); assert.ok(predicate(), 'condition not reached'); };
+// T62: bounded by wall-clock time, not by a count of event-loop turns: real fs work (custom-voice sha256, mkdtemp) can outlast a fixed number of turns on a loaded CI runner.
+const until = async (predicate: () => boolean) => { const end = Date.now() + 5000; while (!predicate() && Date.now() < end) await new Promise(r => setImmediate(r)); assert.ok(predicate(), 'condition not reached'); };
 function fakeChild() {
   const writes: any[] = [];
   const state = { dead: false, ended: 0 };

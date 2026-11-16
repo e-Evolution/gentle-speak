@@ -12,11 +12,12 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { assertMode } from './helpers/platform.ts';
 import assert from 'node:assert/strict';
-import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA, parseSpeakSettingsFile } from '../lib/speak-settings.ts';
 import { settingsHome, sharedHome } from '../lib/speak-home.ts';
@@ -35,16 +36,17 @@ const file = (settings: Record<string, unknown>) => JSON.stringify({ schema: SPE
 
 test('homes: in a terminal both resolve to the same directory', () => {
   const io = { userInfo: () => ({ homedir: '/real' }), homedir: () => '/real' };
-  assert.equal(settingsHome(io), '/real/.gentle-speak'); assert.equal(sharedHome(io), '/real/.gentle-speak');
+  // T62: expectations go through node:path like the code under test, so they hold with `\\` and drive letters on Windows.
+  assert.equal(settingsHome(io), join('/real', '.gentle-speak')); assert.equal(sharedHome(io), join('/real', '.gentle-speak'));
 });
 test('homes: with $HOME overridden (Dot) the settings follow $HOME and the shared home stays the real one', () => {
   const io = { userInfo: () => ({ homedir: '/real' }), homedir: () => '/real/.gentle-dot/home' };
-  assert.equal(settingsHome(io), '/real/.gentle-dot/home/.gentle-speak'); assert.equal(sharedHome(io), '/real/.gentle-speak');
+  assert.equal(settingsHome(io), join('/real', '.gentle-dot', 'home', '.gentle-speak')); assert.equal(sharedHome(io), join('/real', '.gentle-speak'));
 });
 test('dotHome: GENTLE_DOT_HOME wins, else dirname(<Dot agent home>)/home', () => {
-  assert.equal(dotHome({ env: {}, home: '/real' }), '/real/.gentle-dot/home');
-  assert.equal(dotHome({ env: { GENTLE_DOT_AGENT_HOME: '/data/dot/agent' }, home: '/real' }), '/data/dot/home');
-  assert.equal(dotHome({ env: { GENTLE_DOT_AGENT_HOME: '/data/dot/agent', GENTLE_DOT_HOME: '/elsewhere/h' }, home: '/real' }), '/elsewhere/h');
+  assert.equal(dotHome({ env: {}, home: '/real' }), resolve('/real/.gentle-dot/home'));
+  assert.equal(dotHome({ env: { GENTLE_DOT_AGENT_HOME: '/data/dot/agent' }, home: '/real' }), resolve('/data/dot/home'));
+  assert.equal(dotHome({ env: { GENTLE_DOT_AGENT_HOME: '/data/dot/agent', GENTLE_DOT_HOME: '/elsewhere/h' }, home: '/real' }), resolve('/elsewhere/h'));
 });
 test('old terminal settings with dotSpeech/dotOffer still load', () => {
   const s = parseSpeakSettingsFile(file({ dotSpeech: true, dotOffer: 'declined' }));
@@ -118,7 +120,7 @@ test('connect seeds Dot settings from the terminal (0600 file, 0700 dir, copySpe
   const s = w.readDot();
   assert.equal(s.enabled, true); assert.equal(s.copySpeech, false); assert.equal(s.voice, 'es_ES'); assert.equal(s.mode, 'all'); assert.equal(s.speed, 1.25);
   assert.equal(s.macVoice, 'Paulina'); assert.equal(s.macFallback, false); assert.equal(s.summaryModel, null);
-  assert.equal(statSync(w.dotSpeakFile).mode & 0o777, 0o600); assert.equal(statSync(w.dotSpeakDir).mode & 0o777, 0o700);
+  assertMode(w.dotSpeakFile, 0o600); assertMode(w.dotSpeakDir, 0o700);
   assert.deepEqual(readdirSync(w.dotSpeakDir), ['speak-settings.json'], 'no temp file left');
   assert.equal(w.backups().length, 1); assert.deepEqual(JSON.parse(w.dotAgentFile()).packages, ['npm:pi-btw', 'npm:gentle-speak@0.3.0']);
   assert.equal(parseSpeakSettingsFile(readFileSync(w.dotSpeakFile, 'utf8'))?.enabled, true);

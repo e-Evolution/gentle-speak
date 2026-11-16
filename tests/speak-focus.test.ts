@@ -12,6 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { EXEC_BIT } from './helpers/platform.ts';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -61,7 +62,7 @@ test('probe: HERDR_BIN_PATH that does not exist, is not executable or is not a r
   const fx = binFixture();
   try {
     assert.equal(await runBin(join(fx.dir, 'missing', 'herdr')), 'herdr', 'missing');
-    assert.equal(await runBin(fx.make('noexec/herdr', 0o644)), 'herdr', 'not executable');
+    if (EXEC_BIT) assert.equal(await runBin(fx.make('noexec/herdr', 0o644)), 'herdr', 'not executable'); // T62: NO_EXEC_BIT on Windows
     mkdirSync(join(fx.dir, 'dir', 'herdr'), { recursive: true });
     assert.equal(await runBin(join(fx.dir, 'dir', 'herdr')), 'herdr', 'directory');
     const target = fx.make('real/tool', 0o755);

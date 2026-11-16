@@ -12,6 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { NO_UNIX_SOCKETS, UNIX_SOCKETS } from './helpers/platform.ts';
 // T38: the extension wired to the shared service: two sessions, one Python; the /speak action that stops it; the injected-worker path unchanged.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -43,7 +44,7 @@ function prepare(fx: ReturnType<typeof qwenFixture>) {
 }
 const serviceOptions = (fx: ReturnType<typeof qwenFixture>) => { const { python: _p, idleMs: _i, ...rest } = fx.options(); return rest; };
 
-test('two extension sessions speak through one shared Python, and /speak can stop the service', async () => {
+test('two extension sessions speak through one shared Python, and /speak can stop the service', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     prepare(fx);

@@ -51,7 +51,7 @@ test('npm pack includes a decodable PNG preview rather than just an image metada
   assert.ok(png.readUInt32BE(16) >= 128);
   assert.ok(png.readUInt32BE(20) >= 64);
   assert.equal(png.toString('ascii', png.length - 8, png.length - 4), 'IEND');
-  const [pack] = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json'], { cwd: new URL('.', root), encoding: 'utf8' }));
+  const [pack] = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json'], { cwd: new URL('.', root), encoding: 'utf8', shell: process.platform === 'win32' /* T62: npm is npm.cmd there, which needs a shell */ }));
   const files = new Set(pack.files.map((file: { path: string }) => file.path));
   for (const path of ['assets/preview.png', 'README.md', 'CHANGELOG.md', 'LICENSE', 'extensions/gentle-speak.ts']) assert.ok(files.has(path), `missing ${path}`);
   assert.ok(pack.size > png.length);

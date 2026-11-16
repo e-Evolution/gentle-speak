@@ -23,5 +23,10 @@ export const hermetic = (home: string) => ({
   processHome: home,
   /** T44: the first-start setup offer probes PATH tools; tests that are not about it keep it off (its own tests turn it on with fakes). */
   setupOffer: false,
+  /**
+   * T62: the host platform is an input too. The default is macOS (the platform these wiring tests describe), so a Linux or Windows CI host runs
+   * the same checks; a test about another platform overrides it after the spread.
+   */
+  platform: 'darwin',
   env: { PI_CODING_AGENT_DIR: join(home, 'terminal-agent'), GENTLE_DOT_AGENT_HOME: join(home, 'dot-agent'), GENTLE_DOT_HOME: join(home, 'dot-home') } as Record<string, string | undefined>,
 });

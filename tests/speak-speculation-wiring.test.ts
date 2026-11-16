@@ -25,7 +25,8 @@ import { writeEntry } from './helpers/custom-voice-fixture.ts';
 
 // S10 wiring: message_update drives speculative synthesis, agent_settled plays the prepared WAVs. All fakes; no model, no audio.
 const QS = 'gentle.speak.qwen/v1', AS = 'gentle.speak/v1';
-const until = async (predicate: () => boolean, what = 'condition') => { for (let i = 0; i < 400 && !predicate(); i++) await new Promise(r => setImmediate(r)); assert.ok(predicate(), `not reached: ${what}`); };
+// T62: bounded by wall-clock time, not by a count of event-loop turns: real fs work (custom-voice sha256, mkdtemp) can outlast a fixed number of turns on a loaded CI runner.
+const until = async (predicate: () => boolean, what = 'condition') => { const end = Date.now() + 5000; while (!predicate() && Date.now() < end) await new Promise(r => setImmediate(r)); assert.ok(predicate(), `not reached: ${what}`); };
 const quiet = async () => { for (let i = 0; i < 40; i++) await new Promise(r => setImmediate(r)); };
 function fakeChild() {
   const writes: any[] = [];

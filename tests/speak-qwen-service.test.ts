@@ -12,6 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { NO_UNIX_SOCKETS, UNIX_SOCKETS } from './helpers/platform.ts';
 // T38 / S13: the shared Qwen service. Real unix sockets and a real detached service process, in a temp shared home; the Python is a fake.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -33,7 +34,7 @@ async function client(fx: ReturnType<typeof qwenFixture>, extra = {}) {
   return rawClient(connection.socket, connection.rest);
 }
 
-test('two clients share ONE Python worker and the model loads once', async () => {
+test('two clients share ONE Python worker and the model loads once', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const spawnLocal = () => { throw new Error('the local worker must not be used'); };
@@ -48,7 +49,7 @@ test('two clients share ONE Python worker and the model loads once', async () =>
   } finally { await fx.close(); }
 });
 
-test('request isolation: equal ids on two connections never cross', async () => {
+test('request isolation: equal ids on two connections never cross', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const a = await client(fx), b = await client(fx);
@@ -62,7 +63,7 @@ test('request isolation: equal ids on two connections never cross', async () => 
   } finally { await fx.close(); }
 });
 
-test('speak outranks queued prepares; a queued prepare can be cancelled; nothing is preempted', async () => {
+test('speak outranks queued prepares; a queued prepare can be cancelled; nothing is preempted', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const c = await client(fx);
@@ -80,7 +81,7 @@ test('speak outranks queued prepares; a queued prepare can be cancelled; nothing
   } finally { await fx.close(); }
 });
 
-test('a running request that is cancelled finishes silently and the next one runs', async () => {
+test('a running request that is cancelled finishes silently and the next one runs', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const c = await client(fx); const dir = fx.outDir();
@@ -91,7 +92,7 @@ test('a running request that is cancelled finishes silently and the next one run
   } finally { await fx.close(); }
 });
 
-test('a disconnected client drops its queued requests', async () => {
+test('a disconnected client drops its queued requests', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const a = await client(fx), b = await client(fx); const dir = fx.outDir();
@@ -104,7 +105,7 @@ test('a disconnected client drops its queued requests', async () => {
   } finally { await fx.close(); }
 });
 
-test('validation: bad requests are rejected without reaching Python, and the connection keeps working', async () => {
+test('validation: bad requests are rejected without reaching Python, and the connection keeps working', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const c = await client(fx); const dir = fx.outDir();
@@ -136,7 +137,7 @@ test('validation: bad requests are rejected without reaching Python, and the con
   } finally { await fx.close(); }
 });
 
-test('the home dir is 0700 and the socket 0600; a home owned by someone else is refused', async () => {
+test('the home dir is 0700 and the socket 0600; a home owned by someone else is refused', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const c = await client(fx);
@@ -147,7 +148,7 @@ test('the home dir is 0700 and the socket 0600; a home owned by someone else is 
   } finally { await fx.close(); }
 });
 
-test('the start race: clients starting at once produce one service', async () => {
+test('the start race: clients starting at once produce one service', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const all = await Promise.all([1, 2, 3, 4].map(() => connectQwenService(fx.options())));
@@ -159,7 +160,7 @@ test('the start race: clients starting at once produce one service', async () =>
   } finally { await fx.close(); }
 });
 
-test('stale socket: a service killed hard leaves socket and pid; the next client cleans them and starts a new one', async () => {
+test('stale socket: a service killed hard leaves socket and pid; the next client cleans them and starts a new one', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const first = await connectQwenService(fx.options());
@@ -174,7 +175,7 @@ test('stale socket: a service killed hard leaves socket and pid; the next client
   } finally { await fx.close(); }
 });
 
-test('lifetime: the Python stays loaded while a client is connected; once the last one leaves the grace unloads it and the service exits, removing socket and pid', async () => {
+test('lifetime: the Python stays loaded while a client is connected; once the last one leaves the grace unloads it and the service exits, removing socket and pid', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const c = await client(fx, { idleMs: 150, exitIdleMs: 500 });
@@ -197,7 +198,7 @@ test('lifetime: the Python stays loaded while a client is connected; once the la
   } finally { await fx.close(); }
 });
 
-test('version mismatch: the old service is told to exit and a new one replaces it', async () => {
+test('version mismatch: the old service is told to exit and a new one replaces it', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const old = await connectQwenService(fx.options({ version: 'old' }));
@@ -210,7 +211,7 @@ test('version mismatch: the old service is told to exit and a new one replaces i
   } finally { await fx.close(); }
 });
 
-test('version mismatch waits for the old queue to drain before it exits', async () => {
+test('version mismatch waits for the old queue to drain before it exits', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const c = await client(fx, { version: 'old' });
@@ -260,7 +261,7 @@ test('the service flags and env equal the per-session worker ones', () => {
   let seen: any;
   spawnQwenPython('/py', '/s.py', { spawn: ((_c: string, _a: string[], o: any) => { seen = o.env; return {} as any; }) as any, env: { A: '1' }, home: '/real' });
   assert.deepEqual(seen, qwenPythonEnv({ A: '1' }, '/real'));
-  assert.equal(seen.HOME, '/real'); assert.equal(seen.HF_HOME, '/real/.cache/huggingface'); assert.match(qwenServiceVersion(), /^\d+\.\d+\.\d+\+p\d+$/);
+  assert.equal(seen.HOME, '/real'); assert.equal(seen.HF_HOME, join('/real', '.cache', 'huggingface')); assert.match(qwenServiceVersion(), /^\d+\.\d+\.\d+\+p\d+$/);
 });
 
 test('T61: the shared service and its Python start in the private shared home, never in the caller\'s working directory', async () => {

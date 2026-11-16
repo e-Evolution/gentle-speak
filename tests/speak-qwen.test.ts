@@ -12,10 +12,11 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { assertMode } from './helpers/platform.ts';
 import assert from 'node:assert/strict';
 import { test, mock } from 'node:test';
 import { EventEmitter } from 'node:events';
-import { existsSync, readdirSync, mkdtempSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readdirSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA } from '../lib/speak-settings.ts';
@@ -28,7 +29,8 @@ const QS = 'gentle.speak.qwen/v1', AS = 'gentle.speak/v1';
 // T45: Qwen voices are custom voices (`custom:intima` here), seeded under voices/custom/ with a known transcript.
 const voice = { transcript: 'Hola, soy Íntima.' };
 const message = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Resultado listo.' }] };
-const until = async (predicate: () => boolean) => { for (let i = 0; i < 200 && !predicate(); i++) await new Promise(r => setImmediate(r)); assert.ok(predicate(), 'condition not reached'); };
+// T62: bounded by wall-clock time, not by a count of event-loop turns: real fs work (custom-voice sha256, mkdtemp) can outlast a fixed number of turns on a loaded CI runner.
+const until = async (predicate: () => boolean) => { const end = Date.now() + 5000; while (!predicate() && Date.now() < end) await new Promise(r => setImmediate(r)); assert.ok(predicate(), 'condition not reached'); };
 function fakeChild() {
   const writes: any[] = [];
   const child: any = Object.assign(new EventEmitter(), { stdin: { write: (line: string) => { writes.push(JSON.parse(line)); return true; } }, stdout: new EventEmitter(), stderr: new EventEmitter(), killed: 0, kill() { child.killed++; return true; } });
@@ -100,7 +102,7 @@ test('an installed Qwen voice spawns the manifest python lazily and sends synth 
     await until(() => h.pythons[0].writes.length === 1);
     const synth = h.pythons[0].writes[0];
     assert.deepEqual({ ...synth, outDir: undefined }, { schema: QS, type: 'synth', id: 1, text: 'Hola mundo.', ref: join(h.home, 'voices', 'custom', 'intima', 'reference.wav'), refText: voice.transcript, outDir: undefined, speed: 1.25 });
-    assert.equal(statSync(synth.outDir).mode & 0o777, 0o700);
+    assertMode(synth.outDir, 0o700);
     h.events.get('session_shutdown')!({}, h.ctx);
     assert.equal((await run).isError, true);
   } finally { h.close(); }

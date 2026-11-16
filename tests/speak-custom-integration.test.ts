@@ -12,6 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { NO_UNIX_SOCKETS, UNIX_SOCKETS } from './helpers/platform.ts';
 // T42 / S14: custom voices in settings, the shared service, the installer's VoiceDesign download, and every /speak action.
 // All fakes: no Python, no model, no network, no audio; scratch lives under mkdtemp.
 import assert from 'node:assert/strict';
@@ -44,7 +45,7 @@ test('settings accept custom:<id> and reject malformed custom ids; built-in voic
 });
 
 // ---- shared service: ref validation ----
-test('the shared service accepts refs under voices/custom/<id>/reference.wav and rejects everything else, including voices/qwen3/ (T45)', async () => {
+test('the shared service accepts refs under voices/custom/<id>/reference.wav and rejects everything else, including voices/qwen3/ (T45)', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const custom = join(fx.home, 'voices', 'custom');

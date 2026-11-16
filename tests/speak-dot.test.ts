@@ -12,8 +12,9 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { assertMode } from './helpers/platform.ts';
 import assert from 'node:assert/strict';
-import fs, { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import fs, { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -35,7 +36,7 @@ const backups = (dir: string) => readdirSync(dir).filter(name => name.startsWith
 test('the Dot engine home is GENTLE_DOT_AGENT_HOME, else ~/.gentle-dot/agent', () => {
   const { home, dot, io } = setup();
   assert.equal(dotAgentHome(io), dot);
-  assert.equal(dotAgentHome({ ...io, env: { GENTLE_DOT_AGENT_HOME: '/x/dot/agent' } }), '/x/dot/agent');
+  assert.equal(dotAgentHome({ ...io, env: { GENTLE_DOT_AGENT_HOME: '/x/dot/agent' } }), resolve('/x/dot/agent')); // T62: absolute per host (a drive letter on Windows)
   assert.equal(dotAgentHome({ ...io, env: { GENTLE_DOT_AGENT_HOME: '~/other' } }), join(home, 'other'));
 });
 
@@ -79,7 +80,7 @@ test('connect backs up, appends, keeps every other key, writes 2-space JSON with
   assert.equal(done.backup, `${settings}.gentle-speak-backup-2026-11-10T12-34-56-789Z`);
   assert.equal(readFileSync(done.backup!, 'utf8'), original, 'the backup is the exact previous file');
   assert.equal(readFileSync(settings, 'utf8'), `${JSON.stringify({ extensions: ['-builtin:codemode'], packages: ['npm:pi-btw', '/pkg/gentle-speak'], theme: 'x', nested: { a: [1, 2] } }, null, 2)}\n`);
-  assert.equal(statSync(settings).mode & 0o777, 0o600);
+  assertMode(settings, 0o600);
   assert.equal(renames.length, 1);
   assert.match(renames[0][0], /settings\.json\..*\.tmp$/); assert.equal(renames[0][1], settings);
   assert.deepEqual(readdirSync(s.dot).filter(n => n.endsWith('.tmp')), [], 'no temporary file is left');
@@ -123,15 +124,15 @@ test('the terminal source: local paths are re-resolved for Dot (absolute), npm i
   write(['~/dev/gentle-speak']);
   assert.equal(terminalSource({ env, home, packageRoot: '/root' }), join(home, 'dev', 'gentle-speak'), 'the real home, not Dot\'s');
   write(['/abs/gentle-speak']);
-  assert.equal(terminalSource({ env, home, packageRoot: '/root' }), '/abs/gentle-speak');
+  assert.equal(terminalSource({ env, home, packageRoot: '/root' }), resolve('/abs/gentle-speak'));
   write(['npm:gentle-speak@0.2.0']);
   assert.equal(terminalSource({ env, home, packageRoot: '/root' }), 'npm:gentle-speak@0.2.0');
   write([{ source: '../x/gentle-speak', extensions: ['a'] }]);
   assert.deepEqual(terminalSource({ env, home, packageRoot: '/root' }), { source: resolve(shell, '../x/gentle-speak'), extensions: ['a'] });
   write(['npm:pi-btw']);
-  assert.equal(terminalSource({ env, home, packageRoot: '/root' }), '/root');
+  assert.equal(terminalSource({ env, home, packageRoot: '/root' }), resolve('/root'));
   rmSync(join(shell, 'settings.json'));
-  assert.equal(terminalSource({ env, home, packageRoot: '/root' }), '/root');
+  assert.equal(terminalSource({ env, home, packageRoot: '/root' }), resolve('/root'));
 });
 
 test('settings: dotSpeech and dotOffer default off/null, old files still load, malformed values reject the file', () => {

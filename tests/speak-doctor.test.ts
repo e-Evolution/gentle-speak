@@ -12,6 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { NO_UNIX_SOCKETS, UNIX_SOCKETS } from './helpers/platform.ts';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
@@ -196,7 +197,7 @@ test('probeVoiceLock reads the owner without writing: free, live owner, dead own
   assert.deepEqual(tree(home), before, 'nothing was written or removed');
 });
 
-test('probeQwenService reads the socket file, pid and the service log line; it never connects and never writes', async () => {
+test('probeQwenService reads the socket file, pid and the service log line; it never connects and never writes', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const { home } = tmp();
   assert.deepEqual(await probeQwenService(home), { state: 'absent' });
   writeFileSync(join(home, 'qwen.sock'), 'x');

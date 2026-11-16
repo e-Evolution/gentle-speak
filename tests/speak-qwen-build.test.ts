@@ -12,6 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { NO_UNIX_SOCKETS, UNIX_SOCKETS } from './helpers/platform.ts';
 // T50 / S13 (L98): the service build id. A content hash of the service and worker scripts rides in the handshake, so any code change replaces a running service.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -45,7 +46,7 @@ test('T50: the build id is 12 hex chars, deterministic, and changes with either 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('T50: the service reports the same build id the client computes (service script + its worker script)', async () => {
+test('T50: the service reports the same build id the client computes (service script + its worker script)', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const connection = await connectQwenService(fx.options());
@@ -56,7 +57,7 @@ test('T50: the service reports the same build id the client computes (service sc
   } finally { await fx.close(); }
 });
 
-test('T50: a same-version, different-build service is replaced', async () => {
+test('T50: a same-version, different-build service is replaced', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const old = await connectQwenService(fx.options()); old.socket.destroy();
@@ -69,7 +70,7 @@ test('T50: a same-version, different-build service is replaced', async () => {
   } finally { await fx.close(); }
 });
 
-test('T50: a service whose hello has no build field (pre-T50) counts as a different build and is replaced', async () => {
+test('T50: a service whose hello has no build field (pre-T50) counts as a different build and is replaced', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   const paths = qwenServicePaths(fx.home);
   ensurePrivateHome(fx.home);
@@ -90,7 +91,7 @@ test('T50: a service whose hello has no build field (pre-T50) counts as a differ
   } finally { fake.close(); for (const s of sockets) s.destroy(); await fx.close(); }
 });
 
-test('T50: the same build is reused: no restart, same pid, no restart stamp', async () => {
+test('T50: the same build is reused: no restart, same pid, no restart stamp', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const a = await connectQwenService(fx.options());
@@ -102,7 +103,7 @@ test('T50: the same build is reused: no restart, same pid, no restart stamp', as
   } finally { await fx.close(); }
 });
 
-test('T50: the 30 s restart rate limit stops two builds from ping-ponging', async () => {
+test('T50: the 30 s restart rate limit stops two builds from ping-ponging', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const scriptB = variant(fx, 'wb.mjs');
@@ -119,7 +120,7 @@ test('T50: the 30 s restart rate limit stops two builds from ping-ponging', asyn
   } finally { await fx.close(); }
 });
 
-test('T50: a replacement lets the old service finish every request already queued on it', async () => {
+test('T50: a replacement lets the old service finish every request already queued on it', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {
     const connection = await connectQwenService(fx.options());

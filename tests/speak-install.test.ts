@@ -15,22 +15,41 @@ import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { installSpeakModel, readSpeakModelStatus, SPEAK_MODELS, installSpeakRuntime, readSpeakRuntimeStatus, speakRuntimeManifest, SPEAK_TARGETS, type SpeakModelManifest, type SpeakRuntimeManifest } from '../lib/speak-install.ts';
 
-const manifest: SpeakModelManifest = SPEAK_MODELS.es_MX;
-const bytes = await readFile(join(process.cwd(), '.local-models', manifest.files[0]!.name));
+// T62: the installer tests run on a tiny committed converted-model archive (tests/fixtures, 344 bytes) with the same layout as the official
+// Piper bundles (<id>/<voice>.onnx, tokens.txt, MODEL_CARD, espeak-ng-data/), pinned like a real manifest. The two official ~67 MB bundles
+// live in the gitignored .local-models/ and are checked by an extra local-only test when present.
+const FIXTURE = 'vits-piper-es_MX-fixture.tar.bz2';
+const manifest: SpeakModelManifest = { ...SPEAK_MODELS.es_MX, id: 'vits-piper-es_MX-fixture', decodedSize: 10240, files: [
+  { name: FIXTURE, size: 344, sha256: '0c8a4004a8f1db03cdf3ca3e066a536a8a543a07d1bd9cefcbf3a601abf5ab50' },
+] };
+const bytes = await readFile(join(import.meta.dirname, 'fixtures', FIXTURE));
 assert.equal(createHash('sha256').update(bytes).digest('hex'), manifest.files[0]!.sha256);
+const localBundle = (name: string) => join(process.cwd(), '.local-models', name);
+const officialBundlesPresent = Object.values(SPEAK_MODELS).every(pin => existsSync(localBundle(pin.files[0]!.name)));
 const home = async (run: (path: string) => Promise<void>) => { const path = await mkdtemp(join(tmpdir(), 'speak-install-')); try { await run(path); } finally { await rm(path, { recursive: true, force: true }); } };
 const response = (body = bytes) => new Response(body, { headers: { 'content-length': String(body.length) } });
 
-test('official converted bundle pins and public install produce sherpa model layout', () => home(async path => {
+test('the converted-model fixture installs into the sherpa model layout and reads back as installed', () => home(async path => {
+  const installed = await installSpeakModel({ home: path, manifest, confirmed: true, fetch: async () => response() });
+  assert.equal(installed.path, join(path, 'models', manifest.id));
+  for (const name of ['es_MX-fixture.onnx', 'tokens.txt', 'espeak-ng-data', 'MODEL_CARD']) assert.ok((await readdir(installed.path)).includes(name), name);
+  assert.equal(await readFile(join(installed.path, 'tokens.txt'), 'utf8'), '_ 0\na 1\n');
+  assert.equal((await readSpeakModelStatus({ home: path, manifest })).state, 'installed');
+}));
+
+test('official converted bundle pins and public install produce sherpa model layout (local-only: needs the ~67 MB bundles in .local-models/)', {
+  skip: !officialBundlesPresent && 'the official Piper bundles are not in .local-models/ (gitignored, absent in CI); the fixture test above covers the installer',
+}, () => home(async path => {
   for (const [voice, expected] of [['es_MX', 'ec33fb689c248fe64810aab564cba97babf0f506672cfd404928d46e751a4721'], ['es_ES', 'a3f6beb54a9cb893279f72978a22f807a4d9fc9c7848157b524d5cc7b7f58b22']] as const) {
     const pin = SPEAK_MODELS[voice];
-    const archive = await readFile(join(process.cwd(), '.local-models', pin.files[0]!.name));
+    const archive = await readFile(localBundle(pin.files[0]!.name));
     assert.equal(createHash('sha256').update(archive).digest('hex'), expected);
     assert.equal(pin.files[0]!.sha256, expected);
     const installed = await installSpeakModel({ home: path, voice, confirmed: true, fetch: async () => response(archive) });

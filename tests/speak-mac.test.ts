@@ -57,7 +57,8 @@ function setup(o: Opts = {}) {
     ui: { setStatus: (_k: string, t?: string) => statuses.push(t), notify: (t: string, l: string) => notes.push([t, l]), confirm: async () => false, select: async (_t: string, opts: string[]) => { offered.push(opts); return selections.shift(); }, input: async () => undefined, setWidget: (_k: string, f: any) => { if (typeof f === 'function') f({ getCopyOnSelect: () => true, hasActiveSelection: () => true, getScreenLines: () => [] }, {}); } } };
   const deps: any = {
     ...hermetic(home),
-    ...(o.platform ? { platform: o.platform } : {}), sayAvailable: () => o.say !== false, listMacVoices: o.listMac ?? (async () => o.voices ?? VOICES), ...(o.voiceProbeMs ? { voiceProbeMs: o.voiceProbeMs } : {}),
+    // T62: the host platform is injected (default macOS) so these Mac-voice tests mean the same on every CI host.
+    platform: o.platform ?? 'darwin', sayAvailable: () => o.say !== false, listMacVoices: o.listMac ?? (async () => o.voices ?? VOICES), ...(o.voiceProbeMs ? { voiceProbeMs: o.voiceProbeMs } : {}),
     say: (req: any) => new Promise(resolve => {
       sayCalls.push({ ...req, lockHeld: existsSync(join(home, 'voice.lock')) });
       if (sayMode === 'ok') resolve({ ok: true, message: 'Speech completed.' });

@@ -12,6 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
+import { POSIX_MODES } from './helpers/platform.ts';
 // T42 / S14: scripts/speak-design-voice.py. Design is tested through `--dry-run` (no model is loaded); import is tested for real, with ffmpeg only for conversions.
 // Runs with the same flags as the Qwen worker (`-E -P`). Scratch lives under mkdtemp and is removed.
 import assert from 'node:assert/strict';
@@ -55,7 +56,7 @@ test('design --dry-run writes reference.wav (PCM16 mono, 3-30 s) and prints one 
     assert.equal(info.channels, 1); assert.equal(info.bits, 16);
     assert.ok(Math.abs(r.json.seconds - info.seconds) < 0.01);
     assert.equal(r.stdout.includes(s.dir), false, 'no path in the output');
-    assert.equal(statSync(join(s.out, 'reference.wav')).mode & 0o077, 0, 'private file');
+    if (POSIX_MODES) assert.equal(statSync(join(s.out, 'reference.wav')).mode & 0o077, 0, 'private file'); // T62: Windows has no permission bits
   } finally { s.close(); }
 });
 

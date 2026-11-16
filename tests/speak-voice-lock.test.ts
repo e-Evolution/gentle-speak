@@ -330,3 +330,47 @@ test('no raw fs error escapes acquire: a transient race error polls again, anyth
     assert.deepEqual(fs.readdirSync(dir), []);
   } finally { (fs as any).writeFileSync = original; fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// T62 (product fix): on Windows a rename onto an existing or delete-pending directory fails with EPERM/EACCES, not ENOTEMPTY/EEXIST.
+// CI run 43970307715 showed acquire rejecting there ("voice lock unavailable") whenever two processes raced for voice.lock.
+test('Windows: an install rename refused with EPERM or EACCES means the lock is taken, so acquire polls again; elsewhere it still rejects', async () => {
+  const original = fs.renameSync;
+  const dir = tmp();
+  try {
+    for (const code of ['EPERM', 'EACCES']) {
+      let refused = 0;
+      (fs as any).renameSync = (from: any, to: any) => {
+        if (String(to) === lockDir(dir) && refused < 2) { refused++; throw Object.assign(new Error(code), { code }); }
+        return original(from, to);
+      };
+      const lock = createVoiceLock({ dir, pollMs: 2, platform: 'win32' });
+      await lock.acquire();
+      assert.equal(refused, 2, `${code}: both refusals were retried`);
+      assert.equal(ownerOf(dir).pid, process.pid, `${code}: then the lock was taken`);
+      await lock.release();
+      assert.deepEqual(fs.readdirSync(dir), [], `${code}: no temp dir left behind`);
+    }
+    // macOS and Linux keep today's rule: an EPERM rename is not a race.
+    (fs as any).renameSync = (from: any, to: any) => {
+      if (String(to) === lockDir(dir)) throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+      return original(from, to);
+    };
+    for (const platform of ['darwin', 'linux']) {
+      await assert.rejects(createVoiceLock({ dir, pollMs: 2, platform }).acquire(), (e: any) => e.name === 'VoiceLockError' && e.cause?.code === 'EPERM', platform);
+      assert.deepEqual(fs.readdirSync(dir), [], `${platform}: no temp dir left behind`);
+    }
+  } finally { (fs as any).renameSync = original; fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('Windows: a real permission problem before the rename (the temp dir cannot be written) still rejects as VoiceLockError', async () => {
+  const original = fs.writeFileSync;
+  const dir = tmp();
+  try {
+    (fs as any).writeFileSync = (...args: any[]) => {
+      if (String(args[0]).endsWith('owner.json')) throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+      return (original as any)(...args);
+    };
+    await assert.rejects(createVoiceLock({ dir, pollMs: 2, platform: 'win32' }).acquire(), (e: any) => e.name === 'VoiceLockError' && e.cause?.code === 'EPERM');
+    assert.deepEqual(fs.readdirSync(dir), []);
+  } finally { (fs as any).writeFileSync = original; fs.rmSync(dir, { recursive: true, force: true }); }
+});

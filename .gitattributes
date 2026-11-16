@@ -1,0 +1,9 @@
+# Every text file is checked out with LF on every OS (T62): the shipped scripts keep their shebang line working,
+# and the header and README checks read the same bytes on Windows as on macOS and Linux.
+* text=auto eol=lf
+
+# Binary assets and fixtures are never converted.
+*.png binary
+*.wav binary
+*.bz2 binary
+*.tgz binary

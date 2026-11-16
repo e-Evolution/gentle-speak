@@ -240,7 +240,8 @@ function mkReal(home: string, o: any, execs: string[][]) {
   const spawn = () => { const c: any = Object.assign(new EventEmitter(), { writes: [] as string[], stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true }); c.stdin = { write: (l: string) => { c.writes.push(l); return true; } }; children.push(c); return c; };
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand() {}, registerShortcut() {}, registerTool() {} } as any, home, {
     modelStatus: async () => ({ state: 'installed', path: '/m' }), runtimeStatus: async () => ({ state: 'installed', path: '/r' }), spawn,
-    userHome: home, processHome: home, env: o.env ?? { HERDR_ENV: '1', HERDR_PANE_ID: 'w1:p1' }, focusPollMs: 1000, lockPollMs: 5, sayAvailable: () => false,
+    userHome: home, processHome: home, platform: 'darwin', // T62: the terminal-frontmost check exists only on macOS; the host never decides
+    env: o.env ?? { HERDR_ENV: '1', HERDR_PANE_ID: 'w1:p1' }, focusPollMs: 1000, lockPollMs: 5, sayAvailable: () => false,
     herdrExec: async (f: string, a: string[]) => { execs.push([f, ...a]); if (o.hang) return new Promise<string>(() => {}); return JSON.stringify({ result: { pane: { focused: o.herdr ?? true } } }); },
     resolveTerminal: async () => o.terminal, readFrontmost: async () => o.front } as any);
   return { children, settle: () => events.get('agent_settled')!({ aborted: false }, ctx), texts: () => children.filter(c => c.writes.length).map(c => JSON.parse(c.writes[0]).text), shutdown: () => events.get('session_shutdown')!({}, ctx) };

@@ -62,8 +62,8 @@ export type Which = (name: string) => string | undefined;
 /** The first executable file called `name` on `PATH`; no shell, no execution. T61: relative and empty entries (`.`, `bin`, ``) are skipped, so the working directory never supplies uv or python. */
 export const makeWhich = (env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): Which => name => {
   const exts = platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
-  const absolute = platform === 'win32' ? win32.isAbsolute : posix.isAbsolute;
-  for (const dir of (env.PATH ?? '').split(delimiter).filter(entry => entry !== '' && absolute(entry))) for (const ext of exts) {
+  const { isAbsolute: absolute, delimiter: separator } = platform === 'win32' ? win32 : posix;
+  for (const dir of (env.PATH ?? '').split(separator).filter(entry => entry !== '' && absolute(entry))) for (const ext of exts) {
     const path = join(dir, name + ext);
     try { if (statSync(path).isFile()) { accessSync(path, constants.X_OK); return path; } } catch { /* not here */ }
   }

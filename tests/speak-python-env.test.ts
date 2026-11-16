@@ -16,7 +16,8 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
+import { EXEC_BIT, assertMode } from './helpers/platform.ts';
 import { test } from 'node:test';
 import { MIN_PYTHON, MLX_AUDIO_VERSION, MLX_IMPORT_CODE, PYTHON_INSTRUCTION, PYTHON_TOOL_FLAGS, defaultRunTool, detectPythonTooling, ensurePythonEnv, findPython, makeWhich, pythonEnvStatus, type RunResult, type RunTool } from '../lib/speak-python-env.ts';
 import { PYTHON_RECORD_FILE, resolveQwenPython } from '../lib/speak-voices-install.ts';
@@ -94,7 +95,7 @@ test('python.json is written (schema gentle-speak.python/v1, mode 0600) and reso
   assert.equal(out.status === 'installed' && out.python, py);
   const record = JSON.parse(readFileSync(join(home, 'python.json'), 'utf8'));
   assert.deepEqual(record, { schema: 'gentle-speak.python/v1', python: py, mlxAudio: MLX_AUDIO_VERSION, created: now.toISOString() });
-  assert.equal(statSync(join(home, 'python.json')).mode & 0o777, 0o600);
+  assertMode(join(home, 'python.json'), 0o600);
   assert.equal(resolveQwenPython(home), py);
   assert.deepEqual((await pythonEnvStatus(home)), { state: 'installed', python: py });
   assert.deepEqual(readdirSync(home).filter(n => n.endsWith('.tmp')), [], 'no temp file left behind');
@@ -119,7 +120,7 @@ test('never sudo, never the system site-packages: only the venv interpreter or u
     for (const banned of ['sudo', '--system', '--user', '--break-system-packages', '--target']) assert.equal(words.includes(banned), false, banned);
     const installs = t.calls.filter(c => c.args.includes('install'));
     assert.equal(installs.length, 1);
-    assert.ok(installs[0].command.endsWith('/uv') ? installs[0].args.includes('--python') : installs[0].command.includes('/python/bin/python'), 'installs go to the venv');
+    assert.ok(installs[0].command.endsWith('/uv') ? installs[0].args.includes('--python') : installs[0].command.includes(join('python', 'bin', 'python')), 'installs go to the venv');
   }
 });
 
@@ -162,8 +163,8 @@ test('findPython and makeWhich: PATH lookup without a shell, newest >= 3.11 only
   const { root } = tmp();
   const bin = join(root, 'bin'); mkdirSync(bin);
   writeFileSync(join(bin, 'uv'), '#!/bin/sh\n', { mode: 0o755 }); writeFileSync(join(bin, 'notexec'), 'x', { mode: 0o644 });
-  const which = makeWhich({ PATH: `${join(root, 'nope')}:${bin}` }, 'linux');
-  assert.equal(which('uv'), join(bin, 'uv')); assert.equal(which('notexec'), undefined); assert.equal(which('missing'), undefined);
+  const which = makeWhich({ PATH: [join(root, 'nope'), bin].join(delimiter) }, process.platform);
+  assert.equal(which('uv'), join(bin, 'uv')); if (EXEC_BIT) assert.equal(which('notexec'), undefined); assert.equal(which('missing'), undefined);
   const t = toolbox({ versions: { python3: '3.13', 'python3.12': '3.12' } });
   assert.deepEqual(await findPython({ which: whichOf(['python3', 'python3.12']), run: t.run }), { python: '/bin/python3', version: '3.13' });
   assert.equal(await findPython({ which: whichOf(['python3']), run: toolbox({ versions: { python3: '3.8' } }).run }), undefined);
@@ -250,7 +251,7 @@ test('T61: every install child (probes, venv, install, validation) runs in the s
       assert.equal(call.cwd, home, `${label}: ${call.command} ${call.args.join(' ')}`);
       assert.notEqual(call.cwd, process.cwd(), label);
     }
-    assert.equal(statSync(home).mode & 0o777, 0o700, label);
+    assertMode(home, 0o700, label);
   }
 });
 
@@ -291,9 +292,9 @@ test('T61: makeWhich ignores relative and empty PATH entries (".", "bin", ""), s
   const make = (dir: string) => { mkdirSync(dir, { recursive: true }); for (const name of ['uv', 'python3']) writeFileSync(join(dir, name), '#!/bin/sh\n', { mode: 0o755 }); };
   make(join(root, 'bin')); make(join(root, 'trusted'));
   await inside(root, async () => {
-    for (const PATH of ['.', 'bin', '', ':', `.:bin::`]) assert.equal(makeWhich({ PATH }, 'linux')('uv'), undefined, JSON.stringify(PATH));
+    for (const PATH of ['.', 'bin', '', delimiter, ['.', 'bin', '', ''].join(delimiter)]) assert.equal(makeWhich({ PATH }, process.platform)('uv'), undefined, JSON.stringify(PATH));
     writeFileSync(join(root, 'uv'), '#!/bin/sh\n', { mode: 0o755 });
-    const which = makeWhich({ PATH: `.:bin::${join(root, 'trusted')}` }, 'linux');
+    const which = makeWhich({ PATH: ['.', 'bin', '', join(root, 'trusted')].join(delimiter) }, process.platform);
     assert.equal(which('uv'), join(root, 'trusted', 'uv')); assert.equal(which('python3'), join(root, 'trusted', 'python3'));
   });
   assert.equal(makeWhich({ PATH: 'bin;C:\\Python312' }, 'win32')('python'), undefined, 'win32: a relative entry is skipped and a missing absolute one finds nothing');

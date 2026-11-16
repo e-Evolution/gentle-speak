@@ -796,7 +796,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   });
   const setupInstallers = (): SetupInstallers => ({
     installRuntime: o => deps.installRuntime(o as any), installPiper: o => deps.installModel(o as any),
-    ensurePython: o => ensurePythonEnv({ ...o, which, run: deps.setupRun, env: qwenPythonEnv(process.env, realUserHome()) }), installBase: o => installBaseModel({ ...o, home: realUserHome(), run: deps.downloadRun }), resolvePython: resolveQwenPython,
+    ensurePython: o => ensurePythonEnv({ ...o, which, platform: hostPlatform, run: deps.setupRun, env: qwenPythonEnv(process.env, realUserHome()) }), installBase: o => installBaseModel({ ...o, home: realUserHome(), run: deps.downloadRun }), resolvePython: resolveQwenPython,
     ...(deps.setup ?? {}),
   });
   let setupRunning = false, setupOfferShown = false, setupConfirming = false, setupPlanToken: symbol | undefined;

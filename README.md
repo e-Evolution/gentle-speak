@@ -208,7 +208,7 @@ gentle-speak can speak inside Gentle Dot's engine without changing Dot.
 |-----------|------|-------|
 | Native audio runtime (sherpa-onnx + node-cpal) | about 18 MB | `~/.gentle-speak/runtime/` |
 | Piper `es_MX` voice | about 67 MB | `~/.gentle-speak/models/` |
-| Python env with `mlx-audio==0.4.4` and its hash-locked dependencies (Apple Silicon only) | about 478 MB on disk | `~/.gentle-speak/python/` (uv, else `python3 -m venv`; no sudo, system Python untouched) |
+| Python env with `mlx-audio==0.4.4` and its hash-locked dependencies (Apple Silicon only) | about 400 MB on disk | `~/.gentle-speak/python/` (uv, else `python3 -m venv`; no sudo, system Python untouched) |
 | Qwen3-TTS Base 0.6B model (Apple Silicon only) | about 2.5 GB | Hugging Face cache |
 
 The VoiceDesign 1.7B model is **never** part of setup: it is downloaded only if you choose «Crear voz propia…» and confirm. Each download is verified (pinned hashes for the runtime and Piper bundles).

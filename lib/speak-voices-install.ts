@@ -18,6 +18,7 @@ import { lstat, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/p
 import { basename, isAbsolute, join } from 'node:path';
 import { QWEN_DESIGN_MODEL_ID, QWEN_MODEL_ID, QWEN_PYTHON_FLAGS } from './speak-voices.ts';
 import { qwenPythonEnv, readQwenPython } from './speak-qwen.ts';
+import { withPrivateCwd } from './speak-qwen-service.ts';
 import { SPEAK_SETTINGS_FILE, parseSpeakSettingsFile } from './speak-settings.ts';
 import { createCustomVoice, listCustomVoices, slugifyVoiceId } from './speak-custom-voices.ts';
 
@@ -136,7 +137,7 @@ export async function migrateLegacyQwenVoices({ home, settingsDirs, table = LEGA
 
 // ---- S14 (T42): the VoiceDesign model, a separate, explicit, confirmed download (never automatic; used only to design a voice) ----------
 export type DesignModelState = 'installed' | 'missing';
-/** Measured 2026-11-11 on the local Hugging Face cache snapshot of the repo (`du -skL`: 4 414 288 KiB); used only when the API cannot be asked. */
+/** Measured 2026-11-11 on the local Hugging Face cache snapshot of the repo (`du -skL`: 4 414 288 KiB). T61: the size shown before the download is confirmed. */
 export const QWEN_DESIGN_APPROX_BYTES = 4_414_288 * 1024;
 
 /** `<HF_HOME>`: a user-set `HF_HOME`, else `<real home>/.cache/huggingface`; the same rule as the Qwen child's environment. */
@@ -174,18 +175,21 @@ export async function hfModelSize(repo: string, fetchImpl: typeof fetch = global
   } catch { return undefined; }
 }
 export const designModelSize = (fetchImpl: typeof fetch = globalThis.fetch, timeoutMs = 5000): Promise<number | undefined> => hfModelSize(QWEN_DESIGN_MODEL_ID, fetchImpl, timeoutMs);
-export const baseModelSize = (fetchImpl: typeof fetch = globalThis.fetch, timeoutMs = 5000): Promise<number | undefined> => hfModelSize(QWEN_MODEL_ID, fetchImpl, timeoutMs);
 
-/** The size as shown in the confirmation, always with its source. */
-export function describeDesignModelSize(bytes: number | undefined): string {
+/**
+ * The size as shown in the confirmation, always with its source. T61: the confirmation passes nothing and shows the pinned approximate, so no request
+ * reaches Hugging Face before the user confirms.
+ */
+export function describeDesignModelSize(bytes?: number): string {
   return bytes === undefined
-    ? `aprox. ${(QWEN_DESIGN_APPROX_BYTES / 1e9).toFixed(1)} GB (medido en la caché local de Hugging Face el 2026-11-11; no pude consultar la API)`
+    ? `aprox. ${(QWEN_DESIGN_APPROX_BYTES / 1e9).toFixed(1)} GB (medido en la caché local de Hugging Face el 2026-11-11)`
     : `${(bytes / 1e9).toFixed(1)} GB (según la API de Hugging Face)`;
 }
 
-export type DesignRun = (command: string, args: string[], options: { env: NodeJS.ProcessEnv; signal?: AbortSignal }) => Promise<{ code: number }>;
-const defaultDesignRun: DesignRun = (command, args, { env, signal }) => new Promise(resolve => {
-  execFile(command, args, { env, signal, timeout: 60 * 60_000, maxBuffer: 1024 * 1024 }, error => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0 }));
+/** `cwd` is the child's working directory (T61: a private one, never the caller's project). */
+export type DesignRun = (command: string, args: string[], options: { env: NodeJS.ProcessEnv; signal?: AbortSignal; cwd?: string }) => Promise<{ code: number }>;
+const defaultDesignRun: DesignRun = (command, args, { env, signal, cwd }) => new Promise(resolve => {
+  execFile(command, args, { cwd, env, signal, timeout: 60 * 60_000, maxBuffer: 1024 * 1024 }, error => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0 }));
 });
 
 /** Downloads `repo` into the Hugging Face cache with the worker's interpreter; the one online step (`HF_HUB_OFFLINE` unset). Requires `confirmed: true`. */
@@ -194,7 +198,8 @@ async function downloadHfModel({ repo, name, python, hfHome, home, confirmed, si
   const env = { ...qwenPythonEnv(process.env, home), HF_HOME: hfHome };
   delete env.HF_HUB_OFFLINE;
   const code = `from huggingface_hub import snapshot_download; snapshot_download(${JSON.stringify(repo)})`;
-  if ((await run(python, [...QWEN_PYTHON_FLAGS, '-c', code], { env, signal })).code !== 0) throw new Error(`Download failed: the ${name} model could not be fetched`);
+  // T61: Python runs in a fresh private directory, never in the session's working directory.
+  if ((await withPrivateCwd(cwd => run(python, [...QWEN_PYTHON_FLAGS, '-c', code], { env, signal, cwd }))).code !== 0) throw new Error(`Download failed: the ${name} model could not be fetched`);
   if (await hfModelStatus(hfHome, repo) !== 'installed') throw new Error(`Download did not complete: the ${name} model is not installed; could not verify it`);
 }
 /** Downloads the VoiceDesign model (S14). */

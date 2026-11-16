@@ -12,9 +12,10 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import { createHash } from 'node:crypto';
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
 import { execFile, spawn as spawnChild } from 'node:child_process';
 import net from 'node:net';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // T38 (S13): lifecycle of the shared Qwen service, client side. The service itself is scripts/speak-qwen-service.mjs.
@@ -116,6 +117,21 @@ export function ensurePrivateHome(home: string, uid: number | undefined = proces
   if ((stat.mode & 0o077) !== 0) chmodSync(home, 0o700);
 }
 
+// T61 (S15, L118): the working directory of every child that installs, downloads or runs Python or the Qwen service. A child that inherits the session's
+// cwd (the user's project) lets that project steer it: `uv` reads `uv.toml`, and `python -m pip` / `python -m venv` import a planted `pip/` or `venv/`.
+// Such a child starts in the private shared home (`ensurePrivateHome`), or in a fresh private temp directory when the home may not exist yet.
+
+/** Runs `work` with a fresh private directory (`mkdtemp`, 0700) as the child's working directory, and removes it afterwards. */
+export async function withPrivateCwd<T>(work: (cwd: string) => Promise<T>): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), 'gentle-speak-cwd-'));
+  try { return await work(dir); } finally { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } }
+}
+
+/** A `spawn` whose children start in `home`, made private first ({@link ensurePrivateHome}; throws when it is not the user's own directory). */
+export function spawnInHome(home: string, run: typeof spawnChild = spawnChild): typeof spawnChild {
+  return ((command: string, args: readonly string[], options: object = {}) => { ensurePrivateHome(home); return run(command, args, { ...options, cwd: home }); }) as typeof spawnChild;
+}
+
 type Attempt = { ok: true; connection: QwenServiceConnection } | { ok: false; code: string };
 /** One connection attempt: connects and reads the `hello` line. `code` is the socket error (`ECONNREFUSED`, `ENOENT`, ...) or `EPROTO`. */
 function attempt(socketPath: string, timeoutMs = 3000): Promise<Attempt> {
@@ -174,7 +190,8 @@ function startService(options: QwenServiceOptions, paths: QwenServicePaths, vers
   if (options.exitIdleMs !== undefined) argv.push('--exit-idle-ms', String(options.exitIdleMs));
   let exited = false;
   try {
-    const child = spawnChild(options.nodePath ?? process.execPath, argv, { detached: true, stdio: ['ignore', fd, fd], env: options.env ?? process.env });
+    // T61: `cwd` is the private shared home (ensured by the caller), never the session's project; the service's Python inherits it.
+    const child = spawnChild(options.nodePath ?? process.execPath, argv, { cwd: options.home, detached: true, stdio: ['ignore', fd, fd], env: options.env ?? process.env });
     child.on('error', () => { exited = true; });
     child.on('exit', () => { exited = true; });
     child.unref();
@@ -257,3 +274,4 @@ export async function stopQwenService(home: string, timeoutMs = 5000): Promise<b
   socket.destroy();
   return true;
 }
+

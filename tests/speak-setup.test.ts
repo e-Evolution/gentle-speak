@@ -21,7 +21,7 @@ import { baseModelStatus, designModelStatus } from '../lib/speak-voices-install.
 import { QWEN_DESIGN_MODEL_ID, QWEN_MODEL_ID } from '../lib/speak-voices.ts';
 import { PYTHON_INSTRUCTION } from '../lib/speak-python-env.ts';
 import { SPEAK_MODELS, speakRuntimeManifest } from '../lib/speak-install.ts';
-import { QWEN_BASE_APPROX_BYTES, QWEN_BASE_SIZE_SOURCE_API, QWEN_BASE_SIZE_SOURCE_APPROX, computeSetupPlan, describeSetupPlan, ffmpegHint, ffmpegStatus, formatBytes, runSetup, summarizeSetup, type SetupEnv, type SetupInstallers, type SetupProgress } from '../lib/speak-setup.ts';
+import { QWEN_BASE_APPROX_BYTES, QWEN_BASE_SIZE_SOURCE_APPROX, computeSetupPlan, describeSetupPlan, ffmpegHint, ffmpegStatus, formatBytes, runSetup, summarizeSetup, type SetupEnv, type SetupInstallers, type SetupProgress } from '../lib/speak-setup.ts';
 
 // T44 (S15): the setup plan and the sequential install. Every probe and installer is a fake: nothing downloads, runs or touches a real path.
 const runtimeBytes = (target: string) => speakRuntimeManifest(target as any).packages.reduce((sum, pkg) => sum + pkg.size, 0);
@@ -42,9 +42,9 @@ function env(o: Over = {}): SetupEnv & { calls: string[] } {
 test('the plan lists only what is missing, each with its size; installed parts are left out of what installs', async () => {
   const all = await computeSetupPlan(env({ states: { runtime: 'installed', piper: 'installed', python: 'installed', base: 'installed' } }));
   assert.deepEqual(all.actionable, []); assert.equal(all.totalBytes, 0); assert.deepEqual(all.missing, []);
-  const some = await computeSetupPlan(env({ states: { runtime: 'installed', piper: 'missing', python: 'installed', base: 'missing' }, api: 2_000_000_000 }));
+  const some = await computeSetupPlan(env({ states: { runtime: 'installed', piper: 'missing', python: 'installed', base: 'missing' } }));
   assert.deepEqual(some.actionable.map(c => c.id), ['piper', 'qwen-base']);
-  assert.equal(some.totalBytes, piperBytes + 2_000_000_000);
+  assert.equal(some.totalBytes, piperBytes + QWEN_BASE_APPROX_BYTES);
   const full = await computeSetupPlan(env());
   assert.deepEqual(full.actionable.map(c => c.id), ['runtime', 'piper', 'python', 'qwen-base']);
   assert.equal(full.components.find(c => c.id === 'runtime')!.bytes, runtimeBytes('darwin-arm64'));
@@ -52,19 +52,21 @@ test('the plan lists only what is missing, each with its size; installed parts a
   assert.ok(full.components.every(c => c.bytes > 0 && c.sizeSource.length > 0), 'every size states its source');
 });
 
-test('the Base model size comes from the Hugging Face API; without it, a stated approximate with its source', async () => {
-  const api = await computeSetupPlan(env({ api: 2_345_000_000 }));
-  const fromApi = api.components.find(c => c.id === 'qwen-base')!;
-  assert.deepEqual([fromApi.bytes, fromApi.sizeSource], [2_345_000_000, QWEN_BASE_SIZE_SOURCE_API]);
-  for (const down of [undefined as any, 'throw' as const]) {
-    const plan = await computeSetupPlan(env({ baseSize: async () => { if (down === 'throw') throw new Error('offline'); return undefined; } }));
-    const base = plan.components.find(c => c.id === 'qwen-base')!;
-    assert.deepEqual([base.bytes, base.sizeSource], [QWEN_BASE_APPROX_BYTES, QWEN_BASE_SIZE_SOURCE_APPROX]);
-    assert.match(describeSetupPlan(plan), /aprox\./);
-  }
-  const installed = env({ states: { base: 'installed' } });
-  await computeSetupPlan(installed);
-  assert.equal(installed.calls.includes('baseSize'), false, 'an installed model never asks the API');
+test('T61: the plan makes no network request before the confirmation: the Base size is the pinned approximate with its source; no size lookup or fetch runs', async () => {
+  const realFetch = globalThis.fetch; let fetches = 0;
+  globalThis.fetch = (async () => { fetches++; throw new Error('network'); }) as typeof fetch;
+  try {
+    for (const states of [{}, { base: 'installed' }] as const) {
+      const e = env({ api: 2_345_000_000, states });
+      const plan = await computeSetupPlan(e);
+      const base = plan.components.find(c => c.id === 'qwen-base')!;
+      assert.deepEqual([base.bytes, base.sizeSource], [QWEN_BASE_APPROX_BYTES, QWEN_BASE_SIZE_SOURCE_APPROX]);
+      assert.doesNotMatch(base.sizeSource, /API/, 'the source never claims an API answer or a failed lookup');
+      assert.equal(e.calls.includes('baseSize'), false, 'the size lookup is never called');
+    }
+    assert.equal(fetches, 0, 'no fetch');
+    assert.match(describeSetupPlan(await computeSetupPlan(env())), /Modelo Qwen3-TTS Base 0\.6B: 2\.5 GB \(aprox\./);
+  } finally { globalThis.fetch = realFetch; }
 });
 
 test('off darwin-arm64 the Qwen components are excluded and nothing asks the API or probes Python', async () => {

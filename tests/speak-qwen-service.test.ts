@@ -16,10 +16,12 @@ import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
-import { readFileSync, statSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { QWEN_PYTHON_FLAGS } from '../lib/speak-voices.ts';
 import { qwenPythonEnv, spawnQwenPython, createQwenSpeech } from '../lib/speak-qwen.ts';
-import { connectQwenService, qwenServiceVersion } from '../lib/speak-qwen-service.ts';
+import { connectQwenService, qwenServiceVersion, spawnInHome } from '../lib/speak-qwen-service.ts';
 import { createQwenServiceSpawner } from '../lib/speak-qwen-client.ts';
 import { SERVICE_SCRIPT, qwenFixture, rawClient, until } from './helpers/qwen-service-fixture.ts';
 
@@ -259,4 +261,30 @@ test('the service flags and env equal the per-session worker ones', () => {
   spawnQwenPython('/py', '/s.py', { spawn: ((_c: string, _a: string[], o: any) => { seen = o.env; return {} as any; }) as any, env: { A: '1' }, home: '/real' });
   assert.deepEqual(seen, qwenPythonEnv({ A: '1' }, '/real'));
   assert.equal(seen.HOME, '/real'); assert.equal(seen.HF_HOME, '/real/.cache/huggingface'); assert.match(qwenServiceVersion(), /^\d+\.\d+\.\d+\+p\d+$/);
+});
+
+test('T61: the shared service and its Python start in the private shared home, never in the caller\'s working directory', async () => {
+  const fx = qwenFixture();
+  const project = mkdtempSync(join(tmpdir(), 'gsq-project-')), before = process.cwd();
+  try {
+    process.chdir(project);
+    const c = await client(fx);
+    process.chdir(before);
+    c.send(synth(fx, 1, 'Hola.', fx.outDir()));
+    await c.waitFor(m => m.some(x => x.type === 'done'), 'done');
+    assert.deepEqual(fx.read('cwd.log'), [realpathSync(fx.home)]);
+    assert.equal(statSync(fx.home).mode & 0o777, 0o700);
+  } finally { process.chdir(before); await fx.close(); rmSync(project, { recursive: true, force: true }); }
+});
+
+test('T61: spawnInHome starts a child (the per-session Qwen worker) in the private home, whatever the caller\'s cwd; the home is created 0700', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'gsq-home-')), home = join(root, '.gentle-speak'), before = process.cwd();
+  try {
+    process.chdir(root);
+    const child = spawnInHome(home)(process.execPath, ['-e', 'process.stdout.write(process.cwd())'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    process.chdir(before);
+    let out = ''; child.stdout!.setEncoding('utf8'); child.stdout!.on('data', (d: string) => { out += d; });
+    await new Promise(resolve => child.on('close', resolve));
+    assert.equal(out, realpathSync(home)); assert.equal(statSync(home).mode & 0o777, 0o700);
+  } finally { process.chdir(before); rmSync(root, { recursive: true, force: true }); }
 });

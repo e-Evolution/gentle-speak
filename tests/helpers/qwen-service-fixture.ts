@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import readline from 'node:readline';
 const dir = process.env.FW_DIR;
 fs.appendFileSync(dir + '/workers.log', 'start ' + process.pid + '\\n');
+fs.appendFileSync(dir + '/cwd.log', process.cwd() + '\\n'); // T61: where the service started its Python
 const send = (m) => process.stdout.write(JSON.stringify({ schema: 'gentle.speak.qwen/v1', ...m }) + '\\n');
 const rl = readline.createInterface({ input: process.stdin });
 let chain = Promise.resolve();

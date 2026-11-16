@@ -17,11 +17,11 @@ import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { QWEN_PYTHON_FLAGS } from '../lib/speak-voices.ts';
-import { inspectWav, runVoiceScript } from '../lib/speak-custom-voices.ts';
+import { defaultPythonRun, inspectWav, runVoiceScript } from '../lib/speak-custom-voices.ts';
 import { makeWav } from './helpers/custom-voice-fixture.ts';
 
 const SCRIPT = resolve(import.meta.dirname, '../scripts/speak-design-voice.py');
@@ -155,4 +155,18 @@ test('runVoiceScript passes the worker flags and parses the single JSON line; fa
   assert.equal((await runVoiceScript({ python: '/py', script: '/s.py', args: [], run: async () => { throw new Error('boom'); } })).ok, false);
   const controller = new AbortController(); controller.abort();
   assert.equal((await runVoiceScript({ python: '/py', script: '/s.py', args: [], signal: controller.signal, run: async () => ({ code: null, stdout: '' }) })).ok, false);
+});
+
+test('T61: runVoiceScript runs Python in a fresh private directory (never process.cwd()), removed afterwards; defaultPythonRun honours the cwd it is given', async () => {
+  const project = mkdtempSync(join(tmpdir(), 'gs-project-')), before = process.cwd();
+  try {
+    process.chdir(project);
+    let seen: { cwd?: string; mode?: number } = {};
+    const out = await runVoiceScript({ python: '/py', script: '/s.py', args: ['design'], run: async (_p, _a, o: any) => { seen = { cwd: o.cwd, mode: o.cwd && existsSync(o.cwd) ? statSync(o.cwd).mode & 0o777 : undefined }; return { code: 0, stdout: '{"ok": true}\n' }; } });
+    assert.equal(out.ok, true);
+    assert.equal(typeof seen.cwd, 'string'); assert.notEqual(seen.cwd, project); assert.notEqual(seen.cwd, realpathSync(project));
+    assert.equal(seen.mode, 0o700); assert.equal(existsSync(seen.cwd!), false, 'removed after the run');
+    const real = await defaultPythonRun(process.execPath, ['-e', 'process.stdout.write(process.cwd())'], { env: process.env, timeoutMs: 10_000, cwd: tmpdir() } as any);
+    assert.equal(real.stdout, realpathSync(tmpdir()));
+  } finally { process.chdir(before); rmSync(project, { recursive: true, force: true }); }
 });

@@ -17,12 +17,12 @@ import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA, parseSpeakSettingsFile, readSpeakSettings } from '../lib/speak-settings.ts';
 import { QWEN_DESIGN_MODEL_ID, QWEN_PYTHON_FLAGS, VOICE_CATALOG } from '../lib/speak-voices.ts';
-import { describeDesignModelSize, designModelSize, designModelStatus, installDesignModel } from '../lib/speak-voices-install.ts';
+import { describeDesignModelSize, designModelSize, designModelStatus, installBaseModel, installDesignModel } from '../lib/speak-voices-install.ts';
 import { connectQwenService } from '../lib/speak-qwen-service.ts';
 import { createCustomVoice, listCustomVoices } from '../lib/speak-custom-voices.ts';
 import gentleSpeak from '../extensions/gentle-speak.ts';
@@ -117,6 +117,24 @@ test('installDesignModel refuses without confirmation, runs the worker interpret
   } finally { rmSync(hf, { recursive: true, force: true }); }
 });
 
+test('T61: the model downloads (VoiceDesign and Base) run Python in a fresh private directory, never in process.cwd(), removed afterwards', async () => {
+  const hf = mkdtempSync(join(tmpdir(), 'gs-hf-')), project = mkdtempSync(join(tmpdir(), 'gs-project-'));
+  const before = process.cwd();
+  try {
+    process.chdir(project);
+    for (const install of [installDesignModel, installBaseModel]) {
+      const seen: Array<{ cwd?: string; mode?: number; exists: boolean }> = [];
+      const run = async (_command: string, _args: string[], o: any) => { seen.push({ cwd: o.cwd, exists: !!o.cwd && existsSync(o.cwd), mode: o.cwd && existsSync(o.cwd) ? statSync(o.cwd).mode & 0o777 : undefined }); return { code: 1 }; };
+      await assert.rejects(install({ python: '/py', hfHome: hf, home: '/home/u', confirmed: true, run }), /download/i);
+      assert.equal(seen.length, 1);
+      assert.equal(typeof seen[0].cwd, 'string', 'an explicit cwd is passed');
+      assert.notEqual(realpathSync(project), seen[0].cwd); assert.notEqual(project, seen[0].cwd);
+      assert.equal(seen[0].exists, true); assert.equal(seen[0].mode, 0o700, 'private');
+      assert.equal(existsSync(seen[0].cwd!), false, 'removed after the run');
+    }
+  } finally { process.chdir(before); rmSync(hf, { recursive: true, force: true }); rmSync(project, { recursive: true, force: true }); }
+});
+
 // ---- extension harness ----
 interface Opts { voice?: string; patch?: Record<string, unknown>; say?: boolean; design?: 'installed' | 'missing'; script?: (args: string[], out: string) => { code: number | null; stdout: string }; hang?: boolean; installThrows?: boolean; mode?: string; qwenManifest?: boolean }
 function setup(o: Opts = {}) {
@@ -129,7 +147,7 @@ function setup(o: Opts = {}) {
   const events = new Map<string, Function>(), shortcuts = new Map<string, any>(), tools = new Map<string, any>(), commands = new Map<string, any>();
   const notes: string[] = [], selections: string[] = [], offered: string[][] = [], confirms: Array<[string, string]> = [], confirmAnswers: boolean[] = [], inputs: Array<string | undefined> = [], inputPrompts: string[] = [];
   const aborted: Array<AbortSignal | undefined> = [];
-  const pythons: any[] = [], sayCalls: any[] = [], installs: any[] = [], runs: Array<{ args: string[]; env: any }> = [];
+  const pythons: any[] = [], sayCalls: any[] = [], installs: any[] = [], runs: Array<{ args: string[]; env: any }> = [], sizeAsks: number[] = [];
   const fakeChild = () => { const c: any = Object.assign(new EventEmitter(), { writes: [] as any[], stdout: new EventEmitter(), stderr: new EventEmitter(), kill() { return true; } }); c.stdin = { write: (l: string) => { c.writes.push(JSON.parse(l)); return true; } }; return c; };
   const ctx: any = { cwd: '/work/gentle-theme', mode: o.mode ?? 'tui', hasUI: true, isIdle: () => true,
     sessionManager: { getHeader: () => ({ type: 'session' }), getBranch: () => [] },
@@ -141,7 +159,7 @@ function setup(o: Opts = {}) {
     spawn: () => fakeChild(), spawnQwen: () => { const c = fakeChild(); pythons.push(c); return c; },
     focusCheck: async () => 'focused', focusPollMs: 5, lockPollMs: 5, qwenTmpRoot: tmpdir(),
     resolveTerminal: async () => 'com.term', createWatcher: () => ({ start() {}, stop() {} }),
-    hfHome: join(home, 'hf'), designStatus: async () => o.design ?? 'installed', designSize: async () => 4_500_000_000,
+    hfHome: join(home, 'hf'), designStatus: async () => o.design ?? 'installed', designSize: async () => { sizeAsks.push(1); return 4_500_000_000; },
     installDesign: async (opts: any) => { installs.push(opts); if (o.installThrows) throw new Error('download failed'); },
     pythonRun: async (_py: string, args: string[], opt: any) => {
       runs.push({ args, env: opt.env });
@@ -154,7 +172,7 @@ function setup(o: Opts = {}) {
   };
   gentleSpeak({ on: (n: string, h: Function) => events.set(n, h), registerCommand: (n: string, c: any) => commands.set(n, c), registerShortcut: (k: string, s: any) => shortcuts.set(k, s), registerTool: (t: any) => tools.set(t.name, t) } as any, home, deps);
   const settings = () => readSpeakSettings(home);
-  return { aborted, home, custom, events, shortcuts, tools, commands, notes, selections, offered, confirms, confirmAnswers, inputs, inputPrompts, ctx, pythons, sayCalls, installs, runs, save, settings,
+  return { sizeAsks, aborted, home, custom, events, shortcuts, tools, commands, notes, selections, offered, confirms, confirmAnswers, inputs, inputPrompts, ctx, pythons, sayCalls, installs, runs, save, settings,
     menu: (...picks: string[]) => { selections.push(...picks); return commands.get('speak').handler('', ctx); },
     shutdown: () => events.get('session_shutdown')!({}, ctx), close: () => rmSync(home, { recursive: true, force: true }) };
 }
@@ -282,12 +300,16 @@ test('Crear voz propia…: an empty sample falls back to a Spanish default sente
 
 test('Crear voz propia…: model missing → confirmation shows the size; refusing downloads nothing, asks nothing else and runs nothing', async () => {
   const s = setup({ design: 'missing' }); s.confirmAnswers.push(false); s.inputs.push(...designInputs);
+  const realFetch = globalThis.fetch; let fetches = 0;
+  globalThis.fetch = (async () => { fetches++; throw new Error('network'); }) as typeof fetch;
   try {
     await s.menu(DESIGN); await quiet();
     assert.equal(s.confirms.length, 1); assert.match(s.confirms[0][1], /4\.5 GB/); assert.match(s.confirms[0][1], new RegExp(QWEN_DESIGN_MODEL_ID));
+    // T61: no network request before the confirmation: the size is the pinned approximate, never an API lookup.
+    assert.match(s.confirms[0][1], /aprox\. 4\.5 GB/); assert.equal(fetches, 0, 'no fetch'); assert.deepEqual(s.sizeAsks, [], 'the size lookup is never called');
     assert.equal(s.installs.length, 0); assert.equal(s.runs.length, 0); assert.equal(s.inputPrompts.length, 0);
     assert.equal(existsSync(s.custom), false);
-  } finally { s.shutdown(); s.close(); }
+  } finally { globalThis.fetch = realFetch; s.shutdown(); s.close(); }
 });
 
 test('Crear voz propia…: model missing → accepting downloads once with confirmed:true using the worker interpreter, then designs', async () => {

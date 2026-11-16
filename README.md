@@ -213,6 +213,13 @@ gentle-speak can speak inside Gentle Dot's engine without changing Dot.
 
 The VoiceDesign 1.7B model is **never** part of setup: it is downloaded only if you choose «Crear voz propia…» and confirm. Each download is verified (pinned hashes for the runtime and Piper bundles).
 
+What the Python step fetches and writes:
+
+- The Python packages (`mlx-audio` and its dependencies) come from PyPI.
+- When Python 3.12 is missing, `uv` may download a CPython build into its own directory, `~/.local/share/uv/python`.
+- pip or uv keep their usual download cache, and the models go to the Hugging Face cache (`HF_HOME`, default `~/.cache/huggingface`).
+- The installers run from `~/.gentle-speak`, never from your current project, and `uv` runs with `--no-config`. A `uv.toml`, `pip/` or `venv/` in the directory where you started Gentle Shell cannot change what is installed.
+
 **You provide:**
 
 - Gentle Shell (Pi) and Node.js ≥ 24.
@@ -240,7 +247,9 @@ Only macOS arm64 has been run live. **Linux and Windows are verified with fakes 
 - `summary` mode sends sanitized final prose (never tool output) to the model **you** pick, which may be a cloud provider with its usual costs. Without a chosen model nothing is sent.
 - Imported recordings need explicit consent that the voice is yours or that you have permission. Designed voices use only your text.
 - Copy speech skips concealed, transient and password-manager clipboard content, and never logs clipboard text.
-- Downloads come only from the pinned npm/GitHub sources and Hugging Face, after your confirmation.
+- Downloads come only from the pinned npm/GitHub sources, PyPI (the Python packages), a `uv`-managed CPython when Python 3.12 is missing, and Hugging Face, after your confirmation.
+- No network request happens before the setup confirmation: the sizes it shows are pinned approximate values, not looked up. The same holds for the VoiceDesign download.
+- Setup writes pip or uv caches and the Hugging Face cache besides `~/.gentle-speak` (see Dependencies).
 
 ## Troubleshooting
 

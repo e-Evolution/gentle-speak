@@ -15,8 +15,9 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants, statSync } from 'node:fs';
 import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { delimiter, isAbsolute, join, posix, win32 } from 'node:path';
 import { qwenPythonEnv } from './speak-qwen.ts';
+import { ensurePrivateHome, withPrivateCwd } from './speak-qwen-service.ts';
 import { PYTHON_RECORD_FILE, PYTHON_RECORD_SCHEMA, resolveQwenPython } from './speak-voices-install.ts';
 import { QWEN_PYTHON_FLAGS } from './speak-voices.ts';
 
@@ -37,18 +38,32 @@ export const PYTHON_ENV_APPROX_BYTES = 467_080 * 1024;
 export const PYTHON_ENV_SIZE_SOURCE = 'aprox., medido en una instalación real de mlx-audio 0.4.4 con uv';
 export const MIN_PYTHON: readonly [number, number] = Object.freeze([3, 10]) as readonly [number, number];
 
+/**
+ * T61 (L118): `python -m venv`, `python -m pip` and the version probes run in isolated mode. `-I` (Python 3.4+, so every supported 3.10+) keeps the
+ * current and script directories off `sys.path` and ignores `PYTHON*` variables and the user site-packages, so a planted `pip/` or `venv/` is never imported.
+ * It is valid on 3.10, where `-P` does not exist yet; the import check keeps the worker's own `QWEN_PYTHON_FLAGS` (`-E -P`).
+ */
+export const PYTHON_TOOL_FLAGS: readonly string[] = Object.freeze(['-I']);
+/** T61: `uv` never reads `uv.toml` or `[tool.uv]` (a project's, or any parent's): the flag on every call, and `UV_NO_CONFIG=1` in its environment. */
+export const UV_NO_CONFIG_ARGS: readonly string[] = Object.freeze(['--no-config']);
+const uvEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({ ...env, UV_NO_CONFIG: '1' });
+const VERSION_CODE = "import sys; print('%d.%d' % sys.version_info[:2])";
+
 export interface RunResult { code: number | null; stdout: string; stderr: string }
-export type RunTool = (command: string, args: string[], options: { env?: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal }) => Promise<RunResult>;
-export const defaultRunTool: RunTool = (command, args, { env, timeoutMs, signal }) => new Promise(resolve => {
-  execFile(command, args, { env, timeout: timeoutMs, signal, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
+/** `cwd` is the child's working directory; T61: without one the default runner uses a fresh private directory, never the caller's (the user's project). */
+export type RunTool = (command: string, args: string[], options: { env?: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal; cwd?: string }) => Promise<RunResult>;
+const execTool = (command: string, args: string[], { env, timeoutMs, signal }: { env?: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal }, cwd: string) => new Promise<RunResult>(resolve => {
+  execFile(command, args, { cwd, env, timeout: timeoutMs, signal, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
     resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
   });
 });
+export const defaultRunTool: RunTool = (command, args, options) => options.cwd !== undefined ? execTool(command, args, options, options.cwd) : withPrivateCwd(cwd => execTool(command, args, options, cwd));
 export type Which = (name: string) => string | undefined;
-/** The first executable file called `name` on `PATH`; no shell, no execution. */
+/** The first executable file called `name` on `PATH`; no shell, no execution. T61: relative and empty entries (`.`, `bin`, ``) are skipped, so the working directory never supplies uv or python. */
 export const makeWhich = (env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): Which => name => {
   const exts = platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
-  for (const dir of (env.PATH ?? '').split(delimiter).filter(Boolean)) for (const ext of exts) {
+  const absolute = platform === 'win32' ? win32.isAbsolute : posix.isAbsolute;
+  for (const dir of (env.PATH ?? '').split(delimiter).filter(entry => entry !== '' && absolute(entry))) for (const ext of exts) {
     const path = join(dir, name + ext);
     try { if (statSync(path).isFile()) { accessSync(path, constants.X_OK); return path; } } catch { /* not here */ }
   }
@@ -67,12 +82,12 @@ const atLeast = (v: [number, number]) => v[0] > MIN_PYTHON[0] || (v[0] === MIN_P
 const CANDIDATES = ['python3.13', 'python3.12', 'python3.11', 'python3.10', 'python3'];
 
 /** The newest `python3*` ≥ 3.10 on `PATH`, or undefined. */
-export async function findPython({ which, run = defaultRunTool }: { which: Which; run?: RunTool }): Promise<{ python: string; version: string } | undefined> {
+export async function findPython({ which, run = defaultRunTool, cwd }: { which: Which; run?: RunTool; cwd?: string }): Promise<{ python: string; version: string } | undefined> {
   let best: { python: string; version: string; parsed: [number, number] } | undefined;
   for (const name of CANDIDATES) {
     const path = which(name);
     if (!path) continue;
-    const out = await run(path, ['-c', "import sys; print('%d.%d' % sys.version_info[:2])"], { timeoutMs: 10_000 }).catch(() => undefined);
+    const out = await run(path, [...PYTHON_TOOL_FLAGS, '-c', VERSION_CODE], { timeoutMs: 10_000, cwd }).catch(() => undefined);
     const parsed = out?.code === 0 ? parseVersion(out.stdout) : undefined;
     if (parsed && atLeast(parsed) && (!best || parsed[0] > best.parsed[0] || (parsed[0] === best.parsed[0] && parsed[1] > best.parsed[1]))) best = { python: path, version: `${parsed[0]}.${parsed[1]}`, parsed };
   }
@@ -80,10 +95,10 @@ export async function findPython({ which, run = defaultRunTool }: { which: Which
 }
 
 /** What would create the environment: uv when present (preferred), else a usable system Python, else instructions. */
-export async function detectPythonTooling({ which, run = defaultRunTool }: { which: Which; run?: RunTool }): Promise<PythonTooling> {
+export async function detectPythonTooling({ which, run = defaultRunTool, cwd }: { which: Which; run?: RunTool; cwd?: string }): Promise<PythonTooling> {
   const uv = which('uv');
   if (uv) return { kind: 'uv', uv };
-  const python = await findPython({ which, run });
+  const python = await findPython({ which, run, cwd });
   return python ? { kind: 'python', ...python } : { kind: 'none', instruction: PYTHON_INSTRUCTION };
 }
 
@@ -122,9 +137,9 @@ const VENV_MS = 5 * 60_000, INSTALL_MS = 30 * 60_000, IMPORT_MS = 120_000;
 const tail = (text: string) => text.replace(/[\x00-\x08\x0b-\x1f]/g, ' ').trim().split('\n').slice(-3).join(' ').replace(/\s+/g, ' ').slice(0, 200);
 
 /** The validation: the worker's interpreter flags, real HOME and HF_HOME, the import the worker performs. Returns the installed mlx-audio version on success. */
-export async function validatePythonEnv({ python, run = defaultRunTool, env, signal }: { python: string; run?: RunTool; env?: NodeJS.ProcessEnv; signal?: AbortSignal }): Promise<{ ok: true; version: string } | { ok: false; message: string }> {
+export async function validatePythonEnv({ python, run = defaultRunTool, env, signal, cwd }: { python: string; run?: RunTool; env?: NodeJS.ProcessEnv; signal?: AbortSignal; cwd?: string }): Promise<{ ok: true; version: string } | { ok: false; message: string }> {
   const code = `${MLX_IMPORT_CODE}\nfrom importlib.metadata import version\nprint(version('mlx-audio'))`;
-  const out = await run(python, [...QWEN_PYTHON_FLAGS, '-c', code], { env: env ?? qwenPythonEnv(), timeoutMs: IMPORT_MS, signal });
+  const out = await run(python, [...QWEN_PYTHON_FLAGS, '-c', code], { env: env ?? qwenPythonEnv(), timeoutMs: IMPORT_MS, signal, cwd });
   if (out.code !== 0) return { ok: false, message: `la importación de mlx_audio falló (${tail(out.stderr) || `código ${out.code}`})` };
   return { ok: true, version: out.stdout.trim().split('\n').pop()!.trim() };
 }
@@ -139,7 +154,7 @@ async function writeRecord(home: string, python: string, version: string, now: D
 }
 
 /**
- * Creates `<home>/python` (uv when present: `uv venv --python 3.12` and `uv pip install`; else `python3 -m venv` of a Python ≥ 3.10), installs the pinned
+ * Creates `<home>/python` (uv when present: `uv venv --no-config --python 3.12` and `uv pip install --no-config`; else `python3 -I -m venv` of a Python ≥ 3.10), installs the pinned
  * mlx-audio, validates the import under the worker flags and writes `python.json`. No suitable tool is an instruction (`skipped`), never a failure.
  * An existing environment that already validates is kept as is. Never sudo, never the system site-packages.
  */
@@ -152,33 +167,36 @@ export async function ensurePythonEnv(options: EnsurePythonOptions): Promise<Pyt
   // An absolute home keeps every derived path absolute: a relative or dash-leading venv path would be read by uv or python as a different location or an option.
   if (typeof home !== 'string' || !isAbsolute(home) || home.includes('\0')) return { status: 'failed', message: 'la ruta de gentle-speak no es absoluta' };
   const python = interpreterOf(home, platform), venv = pythonEnvDir(home);
+  // T61: every child below runs in the private home (`cwd`), never in the session's working directory, which may be a hostile project.
+  try { ensurePrivateHome(home); } catch { return { status: 'failed', message: 'la carpeta de gentle-speak no es un directorio propio del usuario' }; }
+  const cwd = home;
   try {
     const existing = await pythonEnvStatus(home);
     if (existing.state === 'installed') {
-      const valid = await validatePythonEnv({ python: existing.python!, run, env, signal });
+      const valid = await validatePythonEnv({ python: existing.python!, run, env, signal, cwd });
       // Only the pinned mlx-audio is reused: another version is brought to the pin below instead of being recorded as current.
       if (valid.ok && valid.version === MLX_AUDIO_VERSION) return { status: 'installed', python: existing.python!, version: valid.version, tool: 'venv', alreadyInstalled: true };
     }
-    const tooling = await detectPythonTooling({ which, run });
+    const tooling = await detectPythonTooling({ which, run, cwd });
     if (tooling.kind === 'none') return { status: 'skipped', instruction: tooling.instruction };
     let tool: 'uv' | 'venv' = tooling.kind === 'uv' ? 'uv' : 'venv';
     // A leftover venv (a failed earlier install, another Python) is completed in place only when its interpreter runs and is 3.10 or newer; otherwise it is rebuilt.
     let haveVenv = await stat(python).then(info => info.isFile(), () => false);
     let clear = false;
     if (haveVenv) {
-      const probe = await run(python, ['-c', "import sys; print('%d.%d' % sys.version_info[:2])"], { env, timeoutMs: 10_000, signal }).catch(() => undefined);
+      const probe = await run(python, [...PYTHON_TOOL_FLAGS, '-c', VERSION_CODE], { env, timeoutMs: 10_000, signal, cwd }).catch(() => undefined);
       const parsed = probe?.code === 0 ? parseVersion(probe.stdout) : undefined;
       if (!parsed || !atLeast(parsed)) { haveVenv = false; clear = true; }
     }
     const createWith = async (how: PythonTooling): Promise<string | undefined> => {
       if (how.kind === 'uv') {
         onProgress?.('Creando el entorno con uv…');
-        const made = await run(how.uv, ['venv', ...(clear ? ['--clear'] : []), '--python', '3.12', venv], { env, timeoutMs: VENV_MS, signal });
+        const made = await run(how.uv, ['venv', ...UV_NO_CONFIG_ARGS, ...(clear ? ['--clear'] : []), '--python', '3.12', venv], { env: uvEnv(env), timeoutMs: VENV_MS, signal, cwd });
         return made.code === 0 ? undefined : `uv no pudo crear el entorno (${tail(made.stderr) || `código ${made.code}`})`;
       }
       if (how.kind === 'python') {
         onProgress?.(`Creando el entorno con Python ${how.version}…`);
-        const made = await run(how.python, ['-m', 'venv', ...(clear ? ['--clear'] : []), venv], { env, timeoutMs: VENV_MS, signal });
+        const made = await run(how.python, [...PYTHON_TOOL_FLAGS, '-m', 'venv', ...(clear ? ['--clear'] : []), venv], { env, timeoutMs: VENV_MS, signal, cwd });
         return made.code === 0 ? undefined : `python -m venv no pudo crear el entorno (${tail(made.stderr) || `código ${made.code}`})`;
       }
       return 'no hay herramienta para crear el entorno';
@@ -187,18 +205,18 @@ export async function ensurePythonEnv(options: EnsurePythonOptions): Promise<Pyt
       let failure = await createWith(tooling);
       if (failure && tooling.kind === 'uv') {
         // uv could not provide a 3.12 (offline, unsupported): a system Python ≥ 3.10 is the documented second choice.
-        const system = await findPython({ which, run });
+        const system = await findPython({ which, run, cwd });
         if (system) { tool = 'venv'; failure = await createWith({ kind: 'python', ...system }); }
       }
       if (failure) return { status: 'failed', message: failure };
     }
     onProgress?.(`Instalando mlx-audio ${MLX_AUDIO_VERSION}…`);
     const install = tool === 'uv' && tooling.kind === 'uv'
-      ? await run(tooling.uv, ['pip', 'install', '--python', python, ...PYTHON_REQUIREMENTS], { env, timeoutMs: INSTALL_MS, signal })
-      : await run(python, ['-m', 'pip', 'install', '--disable-pip-version-check', ...PYTHON_REQUIREMENTS], { env, timeoutMs: INSTALL_MS, signal });
+      ? await run(tooling.uv, ['pip', 'install', ...UV_NO_CONFIG_ARGS, '--python', python, ...PYTHON_REQUIREMENTS], { env: uvEnv(env), timeoutMs: INSTALL_MS, signal, cwd })
+      : await run(python, [...PYTHON_TOOL_FLAGS, '-m', 'pip', 'install', '--disable-pip-version-check', ...PYTHON_REQUIREMENTS], { env, timeoutMs: INSTALL_MS, signal, cwd });
     if (install.code !== 0) return { status: 'failed', message: `no pude instalar mlx-audio (${tail(install.stderr) || `código ${install.code}`})` };
     onProgress?.('Validando mlx_audio…');
-    const valid = await validatePythonEnv({ python, run, env, signal });
+    const valid = await validatePythonEnv({ python, run, env, signal, cwd });
     if (!valid.ok) return { status: 'failed', message: valid.message };
     if (valid.version !== MLX_AUDIO_VERSION) return { status: 'failed', message: `se instaló mlx-audio ${valid.version || 'desconocido'} en lugar de ${MLX_AUDIO_VERSION}` };
     await writeRecord(home, python, valid.version, now());

@@ -22,7 +22,7 @@ import { filterSettledSpeech } from '../lib/speak-filter.ts';
 import { CUSTOM_VOICE_PREFIX, QWEN_DESIGN_MODEL_ID, VOICE_CATALOG, isCustomVoiceId, isLegacyQwenVoiceId } from '../lib/speak-voices.ts';
 import { CUSTOM_LABEL_MAX, CUSTOM_TRANSCRIPT_MAX, createCustomVoice, customCatalog, defaultPythonRun, deleteCustomVoice, listCustomVoices, readCustomVoice, runVoiceScript, slugifyVoiceId, type CustomVoice, type PythonRun } from '../lib/speak-custom-voices.ts';
 import { SPEAK_STATUS_KEY, formatSpeakStatus, nextAvailableVoice, voiceMenuEntries } from '../lib/speak-status.ts';
-import { baseModelSize, baseModelStatus, describeDesignModelSize, type DesignRun, designModelSize, designModelStatus, hfHomeOf, installBaseModel, installDesignModel, migrateLegacyQwenVoices, resolveQwenPython, type LegacyQwenVoice } from '../lib/speak-voices-install.ts';
+import { baseModelStatus, describeDesignModelSize, type DesignRun, designModelStatus, hfHomeOf, installBaseModel, installDesignModel, migrateLegacyQwenVoices, resolveQwenPython, type LegacyQwenVoice } from '../lib/speak-voices-install.ts';
 import { createCopiedSelectionWatcher, createOwnCopyGate, isSelectionTui, resolveTerminalBundleId } from '../lib/speak-clipboard.ts';
 import { createTerminalFocusTracker, type TerminalFocusTracker } from '../lib/speak-terminal-focus.ts';
 import { createFocusCheck, createLatestOnlyDeferral, probeHerdrFocus, projectPrefix, readFrontmostBundleId, type FocusState, type HerdrExec } from '../lib/speak-focus.ts';
@@ -32,7 +32,7 @@ import { realHome, settingsHome, sharedHome } from '../lib/speak-home.ts';
 import { createVoiceLock } from '../lib/speak-voice-lock.ts';
 import { connectDot, detectDot, disconnectDot, dotHome, isDotEngine, readDotSpeak, seedDotSettings, resolveDotSource, writeDotSpeak, type DotFs } from '../lib/speak-dot.ts';
 import { createQwenServiceSpawner, type QwenServiceSpawner, type QwenServiceSpawnerOptions } from '../lib/speak-qwen-client.ts';
-import { qwenBuildId, qwenServicePaths, qwenServiceVersion, stopQwenService } from '../lib/speak-qwen-service.ts';
+import { qwenBuildId, qwenServicePaths, qwenServiceVersion, spawnInHome, stopQwenService } from '../lib/speak-qwen-service.ts';
 import { createSpeculativePlanner } from '../lib/speak-speculative.ts';
 import { createQwenSpeech, playbackFailure, qwenPythonEnv, spawnQwenPython, type QwenChild, type QwenPrepareHandle } from '../lib/speak-qwen.ts';
 import { QWEN_CREATE_VOICE_SUGGESTION, computeSetupPlan, describeSetupPlan, runSetup, summarizeSetup, type SetupEnv, type SetupInstallers, type SetupPlan } from '../lib/speak-setup.ts';
@@ -91,7 +91,6 @@ type Dependencies = {
   hfHome?: string;
   /** S14: whether the VoiceDesign model is in the Hugging Face cache, its size for the confirmation, and its explicit download (all faked in tests). */
   designStatus: typeof designModelStatus;
-  designSize: () => Promise<number | undefined>;
   installDesign: typeof installDesignModel;
   /** S14: runs `scripts/speak-design-voice.py` (design or import); tests inject a fake runner. */
   pythonRun: PythonRun;
@@ -112,7 +111,7 @@ const defaults: Dependencies = {
   modelStatus: readSpeakModelStatus, runtimeStatus: readSpeakRuntimeStatus,
   installModel: installSpeakModel, installRuntime: installSpeakRuntime,
   spawn: script => spawnChild(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] }),
-  spawnQwen: (python, script) => spawnQwenPython(python, script),
+  spawnQwen: (python, script) => spawnQwenPython(python, script, { spawn: spawnInHome(sharedHome()) }), // T61: the per-session worker starts in the private shared home, never in the project
   resolveTerminal: async () => process.platform === 'darwin' ? resolveTerminalBundleId({ env: process.env, pid: process.pid }) : undefined,
   createWatcher: createCopiedSelectionWatcher,
   env: process.env,
@@ -124,7 +123,6 @@ const defaults: Dependencies = {
   voiceProbeMs: systemVoiceProbeMs(),
   say: speakWithSystemVoice,
   designStatus: designModelStatus,
-  designSize: () => designModelSize(),
   installDesign: installDesignModel,
   pythonRun: defaultPythonRun,
   setupOffer: true,
@@ -793,7 +791,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     home, target: hostTarget, platform: hostPlatform, hfHome, which,
     runtimeStatus: deps.runtimeStatus as SetupEnv['runtimeStatus'], modelStatus: deps.modelStatus as SetupEnv['modelStatus'],
     pythonStatus: pythonEnvStatus, tooling: () => detectPythonTooling({ which, run: deps.setupRun }),
-    baseStatus: baseModelStatus, baseSize: () => baseModelSize(),
+    baseStatus: baseModelStatus,
     ...(deps.setup ?? {}),
   });
   const setupInstallers = (): SetupInstallers => ({
@@ -981,7 +979,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     try { state = await deps.designStatus(hf); } catch { state = 'missing'; }
     if (stopped) return;
     if (state !== 'installed') {
-      const size = describeDesignModelSize(await deps.designSize().catch(() => undefined));
+      const size = describeDesignModelSize(); // T61: the pinned approximate; nothing reaches Hugging Face before the confirmation
       const yes = await ctx.ui.confirm('Descargar el modelo VoiceDesign', `Diseñar una voz necesita el modelo ${QWEN_DESIGN_MODEL_ID} (${size}), que se descarga de Hugging Face a tu caché. Solo se usa para diseñar; hablar sigue usando el modelo Base. ¿Descargarlo ahora?`);
       if (!yes || stopped) { if (!stopped) ctx.ui.notify('No descargué nada y no creé ninguna voz.', 'info'); return; }
       const controller = new AbortController();

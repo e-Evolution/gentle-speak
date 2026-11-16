@@ -46,10 +46,12 @@ export interface SetupPlan {
 }
 
 export const QWEN_TARGET = 'darwin-arm64';
-/** Measured 2026-11-12 on the local Hugging Face cache snapshot of the Base repo (`du -skL`: 2 457 208 KiB); used only when the API cannot be asked. */
+/**
+ * Measured 2026-11-12 on the local Hugging Face cache snapshot of the Base repo (`du -skL`: 2 457 208 KiB). T61: the size the confirmation shows; the plan
+ * never asks the Hugging Face API, so nothing reaches the network before the user confirms.
+ */
 export const QWEN_BASE_APPROX_BYTES = 2_457_208 * 1024;
-export const QWEN_BASE_SIZE_SOURCE_API = 'API de Hugging Face';
-export const QWEN_BASE_SIZE_SOURCE_APPROX = 'aprox., medido en la caché local de Hugging Face; no pude consultar la API';
+export const QWEN_BASE_SIZE_SOURCE_APPROX = 'aprox., medido en la caché local de Hugging Face el 2026-11-12';
 
 /** `brew install ffmpeg` on macOS; the platform's own package command elsewhere. Never run by gentle-speak. */
 export function ffmpegHint(platform: string): string {
@@ -73,14 +75,13 @@ export interface SetupEnv {
   pythonStatus: (home: string) => Promise<{ state: 'installed' | 'missing' }>;
   tooling: () => Promise<PythonTooling>;
   baseStatus: (hfHome: string) => Promise<'installed' | 'missing'>;
-  baseSize: () => Promise<number | undefined>;
   hfHome: string;
   which: Which;
 }
 
 const safeState = async (read: () => Promise<{ state: ComponentState }>): Promise<ComponentState> => { try { return (await read()).state; } catch { return 'invalid'; } };
 
-/** The components that are missing, with their sizes. Read-only: nothing is created, downloaded or run (Python is only probed for its version). */
+/** The components that are missing, with their sizes. Read-only: nothing is created, downloaded or run (Python is only probed for its version), and no network request is made. */
 export async function computeSetupPlan(env: SetupEnv): Promise<SetupPlan> {
   const runtimeTarget = env.target as SpeakTarget;
   let runtimeBytes = 0;
@@ -97,9 +98,7 @@ export async function computeSetupPlan(env: SetupEnv): Promise<SetupPlan> {
     const blocked = tooling.kind === 'none' ? tooling.instruction : undefined;
     components.push({ id: 'python', label: 'Entorno Python de gentle-speak con mlx-audio', state: pythonState, bytes: PYTHON_ENV_APPROX_BYTES, sizeSource: PYTHON_ENV_SIZE_SOURCE, ...(pythonState === 'missing' && blocked ? { blocked } : {}) });
     const baseState = await env.baseStatus(env.hfHome).catch(() => 'missing' as const);
-    let baseBytes = QWEN_BASE_APPROX_BYTES, baseSource = QWEN_BASE_SIZE_SOURCE_APPROX;
-    if (baseState === 'missing') { const api = await env.baseSize().catch(() => undefined); if (api !== undefined) { baseBytes = api; baseSource = QWEN_BASE_SIZE_SOURCE_API; } }
-    components.push({ id: 'qwen-base', label: 'Modelo Qwen3-TTS Base 0.6B', state: baseState, bytes: baseBytes, sizeSource: baseSource, ...(baseState === 'missing' && blocked && pythonState !== 'installed' ? { blocked } : {}) }); // an existing env needs no tooling to download the model
+    components.push({ id: 'qwen-base', label: 'Modelo Qwen3-TTS Base 0.6B', state: baseState, bytes: QWEN_BASE_APPROX_BYTES, sizeSource: QWEN_BASE_SIZE_SOURCE_APPROX, ...(baseState === 'missing' && blocked && pythonState !== 'installed' ? { blocked } : {}) }); // an existing env needs no tooling to download the model
   }
   const missing = components.filter(component => component.state !== 'installed');
   const actionable = missing.filter(component => component.state === 'missing' && !component.blocked);

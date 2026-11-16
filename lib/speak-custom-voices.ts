@@ -16,6 +16,7 @@ import { spawn } from 'node:child_process';
 import { lstat, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { qwenPythonEnv } from './speak-qwen.ts';
+import { withPrivateCwd } from './speak-qwen-service.ts';
 import { CUSTOM_ID_PATTERN, CUSTOM_VOICE_PREFIX, QWEN_PYTHON_FLAGS } from './speak-voices.ts';
 
 // S14 (T42): custom voices live in `<sharedHome>/voices/custom/<id>/{voice.json,reference.wav}`. They stay local, are verified by sha256 on every read,
@@ -188,17 +189,17 @@ export async function deleteCustomVoice(home: string, id: string): Promise<boole
 }
 
 // ---- the design/import script -------------------------------------------------------------------------------------------------------
-/** Runs one Python process and returns its exit code and (bounded) stdout; injected in tests. */
-export type PythonRun = (python: string, args: string[], options: { env: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs: number }) => Promise<{ code: number | null; stdout: string }>;
+/** Runs one Python process and returns its exit code and (bounded) stdout; injected in tests. `cwd` is its working directory (T61: never the caller's project). */
+export type PythonRun = (python: string, args: string[], options: { env: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs: number; cwd?: string }) => Promise<{ code: number | null; stdout: string }>;
 const STDOUT_MAX = 64 * 1024;
-export const defaultPythonRun: PythonRun = (python, args, { env, signal, timeoutMs }) => new Promise(resolve => {
+export const defaultPythonRun: PythonRun = (python, args, { env, signal, timeoutMs, cwd }) => new Promise(resolve => {
   let stdout = '', done = false;
   let child: ReturnType<typeof spawn>;
   const finish = (code: number | null) => { if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener('abort', abort); resolve({ code, stdout }); };
   const abort = () => { try { child?.kill(); } catch { /* gone */ } finish(null); };
   const timer = setTimeout(abort, timeoutMs);
   timer.unref?.();
-  try { child = spawn(python, args, { stdio: ['ignore', 'pipe', 'pipe'], env }); } catch { finish(null); return; }
+  try { child = spawn(python, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env }); } catch { finish(null); return; }
   child.stdout?.setEncoding('utf8');
   child.stdout?.on('data', (chunk: string) => { if (stdout.length < STDOUT_MAX) stdout += chunk; });
   child.stderr?.on('data', () => { /* logs stay on stderr; drained so the pipe never blocks */ });
@@ -214,7 +215,8 @@ const cleanMessage = (text: unknown) => (typeof text === 'string' ? text.replace
 export async function runVoiceScript(options: { python: string; script: string; args: string[]; run?: PythonRun; env?: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs?: number }): Promise<VoiceScriptOutcome> {
   const run = options.run ?? defaultPythonRun;
   let outcome: { code: number | null; stdout: string };
-  try { outcome = await run(options.python, [...QWEN_PYTHON_FLAGS, options.script, ...options.args], { env: options.env ?? qwenPythonEnv(), signal: options.signal, timeoutMs: options.timeoutMs ?? 15 * 60_000 }); }
+  // T61: Python runs in a fresh private directory, never in the session's working directory (the script takes absolute paths only).
+  try { outcome = await withPrivateCwd(cwd => run(options.python, [...QWEN_PYTHON_FLAGS, options.script, ...options.args], { env: options.env ?? qwenPythonEnv(), signal: options.signal, timeoutMs: options.timeoutMs ?? 15 * 60_000, cwd })); }
   catch { return { ok: false, code: 'spawn', message: 'The Python process could not start' }; }
   if (options.signal?.aborted) return { ok: false, code: 'cancelled', message: 'Cancelled' };
   const line = outcome.stdout.split('\n').map(text => text.trim()).filter(Boolean).at(-1);

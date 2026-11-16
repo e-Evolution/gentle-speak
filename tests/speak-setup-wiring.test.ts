@@ -31,11 +31,16 @@ const until = async (cond: () => boolean, what = 'condition') => {
 const quiet = (ms = 40) => new Promise(r => setTimeout(r, ms));
 const roots: string[] = [];
 test.afterEach(() => { for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true }); });
+// T61: no test here may reach the network; the production wiring must not even try before the confirmation (counted).
+const fetches: string[] = [];
+const realFetch = globalThis.fetch;
+test.before(() => { globalThis.fetch = (async (url: unknown) => { fetches.push(String(url)); throw new Error('network disabled in tests'); }) as typeof fetch; });
+test.after(() => { globalThis.fetch = realFetch; });
 
 type Opts = {
   mode?: string; header?: any; target?: string; platform?: string; ffmpeg?: boolean; uv?: boolean; offer?: boolean; settings?: Record<string, unknown> | null;
   states?: Partial<Record<'runtime' | 'piper' | 'python' | 'base', string>>; confirm?: (title: string, message: string) => Promise<boolean> | boolean; select?: string[];
-  failPiper?: boolean; gate?: Promise<void>; baseApi?: number | undefined; custom?: boolean; dot?: boolean; legacy?: boolean;
+  failPiper?: boolean; gate?: Promise<void>; custom?: boolean; dot?: boolean; legacy?: boolean;
 };
 function world(o: Opts = {}) {
   const base = mkdtempSync(join(tmpdir(), 'gs-setup-wiring-')); roots.push(base);
@@ -45,7 +50,7 @@ function world(o: Opts = {}) {
   if (o.settings !== null) writeFileSync(settingsFile, JSON.stringify({ schema: SPEAK_SETTINGS_SCHEMA, ...DEFAULT_SPEAK_SETTINGS, enabled: true, ...o.settings }));
   if (o.custom) writeEntry(join(speakHome, 'voices', 'custom'), 'mia', { wav: makeWav(7), meta: { label: 'Mia', transcript: 'Hola, soy mia.' } });
   const st = { runtime: 'missing', piper: 'missing', python: 'missing', base: 'missing', ...o.states };
-  const log: string[] = [], run: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = [], downloads: { command: string; args: string[]; env: NodeJS.ProcessEnv }[] = [];
+  const log: string[] = [], run: { command: string; args: string[]; env?: NodeJS.ProcessEnv; cwd?: string }[] = [], downloads: { command: string; args: string[]; env: NodeJS.ProcessEnv }[] = [];
   const confirms: { title: string; message: string }[] = [], notes: { text: string; level?: string }[] = [], selections = [...(o.select ?? [])], events = new Map<string, Function>(), commands = new Map<string, any>();
   const spoken: any[] = [];
   const pythonPath = join(speakHome, 'python', 'bin', 'python');
@@ -55,8 +60,8 @@ function world(o: Opts = {}) {
   if (st.python === 'installed') { mkdirSync(join(speakHome, 'python', 'bin'), { recursive: true }); writeFileSync(pythonPath, '#!fake\n'); writeFileSync(join(speakHome, 'python.json'), JSON.stringify({ schema: 'gentle-speak.python/v1', python: pythonPath })); }
   if (st.base === 'installed') makeBase();
   // The fake toolbox: uv creates the venv and "installs"; the python import prints the pinned version; python.json is written by the real library.
-  const setupRun = async (command: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
-    run.push({ command, args, env: options.env });
+  const setupRun = async (command: string, args: string[], options: { env?: NodeJS.ProcessEnv; cwd?: string }) => {
+    run.push({ command, args, env: options.env, cwd: options.cwd });
     if (command.endsWith('/uv') && args[0] === 'venv') { mkdirSync(join(args[args.length - 1], 'bin'), { recursive: true }); writeFileSync(join(args[args.length - 1], 'bin', 'python'), '#!fake\n'); log.push('python:venv'); return { code: 0, stdout: '', stderr: '' }; }
     if (command.endsWith('/uv')) { log.push('python:pip'); return { code: 0, stdout: '', stderr: '' }; }
     if (args.join(' ').includes('load_model')) return { code: 0, stdout: '0.4.4\n', stderr: '' };
@@ -89,7 +94,7 @@ function world(o: Opts = {}) {
     installRuntime: async () => { log.push('runtime'); st.runtime = 'installed'; return { path: '/r', alreadyInstalled: false }; },
     installModel: async () => { log.push('piper'); if (o.failPiper) throw new Error('descarga fallida en /x/y'); st.piper = 'installed'; return { path: '/m', alreadyInstalled: false }; },
     setupRun, downloadRun,
-    setup: { which: (name: string) => name === 'uv' && o.uv !== false ? '/bin/uv' : name === 'ffmpeg' && o.ffmpeg ? '/bin/ffmpeg' : undefined, baseSize: async () => { await o.gate; return o.baseApi; }, },
+    setup: { which: (name: string) => name === 'uv' && o.uv !== false ? '/bin/uv' : name === 'ffmpeg' && o.ffmpeg ? '/bin/ffmpeg' : undefined, ...(o.gate ? { tooling: async () => { await o.gate; return { kind: 'uv' as const, uv: '/bin/uv' }; } } : {}) },
     sayAvailable: () => true, listMacVoices: async () => [{ name: 'Paulina', locale: 'es_MX' }], say: async (req: any) => { spoken.push(req); return { ok: true, message: 'Speech completed.' }; },
     focusCheck: async () => 'focused', readFrontmost: async () => undefined, resolveTerminal: async () => undefined, focusPollMs: 5, lockPollMs: 5,
     herdrExec: (async () => { throw new Error('no herdr'); }) as any, spawn: (() => { throw new Error('no audio in tests'); }) as any,
@@ -98,15 +103,28 @@ function world(o: Opts = {}) {
 }
 test('first start: the offer appears once, in the background (session_start returns first), with every component, its size and the total', async () => {
   let release!: (v: boolean) => void;
-  const w = world({ confirm: () => new Promise<boolean>(r => { release = r; }), baseApi: 2_000_000_000 });
+  const w = world({ confirm: () => new Promise<boolean>(r => { release = r; }) });
   await w.start(); // returns while nothing is shown yet: never blocked on the human
   await until(() => w.confirms.length === 1, 'offer');
   const { title, message } = w.confirms[0];
   assert.equal(title, 'Instalar todo');
-  for (const part of ['Runtime de audio nativo', 'Voz Piper es_MX', 'Entorno Python de gentle-speak con mlx-audio', 'Modelo Qwen3-TTS Base 0.6B', 'API de Hugging Face', 'Total:']) assert.ok(message.includes(part), part);
+  for (const part of ['Runtime de audio nativo', 'Voz Piper es_MX', 'Entorno Python de gentle-speak con mlx-audio', 'Modelo Qwen3-TTS Base 0.6B: 2.5 GB (aprox.', 'Total:']) assert.ok(message.includes(part), part);
   assert.doesNotMatch(message, /VoiceDesign/);
   assert.equal(w.log.length, 0, 'nothing installs before the answer');
   release(false); await quiet();
+});
+
+test('T61: no network request before the answer: the first-start offer and «Instalar todo» show the pinned Base size and fetch nothing', async () => {
+  let release!: (v: boolean) => void;
+  fetches.length = 0;
+  const w = world({ confirm: () => new Promise<boolean>(r => { release = r; }) });
+  await w.start(); await until(() => w.confirms.length === 1, 'offer');
+  assert.match(w.confirms[0].message, /Modelo Qwen3-TTS Base 0\.6B: 2\.5 GB \(aprox\./);
+  assert.deepEqual(fetches, [], 'nothing was fetched while the offer is on screen');
+  release(false); await quiet();
+  const menu = world({ offer: false, select: ['Instalar todo'], confirm: () => false });
+  await menu.menu(); await until(() => menu.confirms.length === 1, 'Instalar todo confirmation');
+  assert.deepEqual(fetches, [], 'nothing was fetched for «Instalar todo» either');
 });
 
 test('shown once: a second session_start while the offer is on screen, and again after it was answered, never shows it twice; the answer still counts', async () => {
@@ -133,7 +151,7 @@ test('shutdown while the offer is on screen drops the answer: nothing installs a
 test('a session_start that supersedes a plan still being computed does not burn the one-time offer: it is shown exactly once', async () => {
   let open!: () => void;
   const w = world({ confirm: () => false, gate: new Promise<void>(r => { open = r; }) });
-  await w.start(); await quiet(30); // the first offer is computing its plan (the size lookup is held)
+  await w.start(); await quiet(30); // the first offer is computing its plan (the tooling probe is held)
   await w.start(); await quiet(30);
   open();
   await until(() => w.confirms.length === 1, 'offer'); await quiet(60); assert.equal(w.confirms.length, 1);
@@ -185,8 +203,11 @@ test('the Python env is built with uv in <home>/python, python.json is written, 
   const w = world({ confirm: () => true });
   await w.start(); await until(() => w.texts().some(t => t.startsWith('gentle-speak listo')));
   const pythonDir = join(w.speakHome, 'python');
-  assert.deepEqual(w.run.find(c => c.args[0] === 'venv')!.args, ['venv', '--python', '3.12', pythonDir]);
-  assert.deepEqual(w.run.find(c => c.args[0] === 'pip')!.args, ['pip', 'install', '--python', join(pythonDir, 'bin', 'python'), 'mlx-audio==0.4.4']);
+  assert.deepEqual(w.run.find(c => c.args[0] === 'venv')!.args, ['venv', '--no-config', '--python', '3.12', pythonDir]);
+  assert.deepEqual(w.run.find(c => c.args[0] === 'pip')!.args, ['pip', 'install', '--no-config', '--python', join(pythonDir, 'bin', 'python'), 'mlx-audio==0.4.4']);
+  // T61: through the extension too, every install child runs in the shared home (never the session's cwd) and uv reads no config file.
+  for (const call of w.run) { assert.equal(call.cwd, w.speakHome, call.args.join(' ')); assert.notEqual(call.cwd, process.cwd()); }
+  for (const call of w.run.filter(c => c.command.endsWith('/uv'))) assert.equal(call.env?.UV_NO_CONFIG, '1');
   assert.equal(JSON.parse(readFileSync(join(w.speakHome, 'python.json'), 'utf8')).schema, 'gentle-speak.python/v1');
   for (const call of w.run) assert.equal(call.env?.HOME, w.userHome, 'real HOME, not the shared speak home');
   assert.equal(w.downloads.length, 1); assert.equal(w.downloads[0].command, join(pythonDir, 'bin', 'python'));

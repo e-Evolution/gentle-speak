@@ -265,4 +265,4 @@ gentle-speak is [MIT](LICENSE), Copyright (c) 2026 e-Evolution Consultants S.A. 
 
 ## Development
 
-`npm test` runs the whole suite (Node ≥ 24, `node --test`) behind a real-home guard: tests run with injected temporary homes and fail if anything reads or writes the real `~/.gentle-speak`, `~/.gentle-dot`, `~/.gentle-shell` or `~/.pi`. The `odd/` planning directory is not shipped (`files` is an allowlist). See [CHANGELOG.md](CHANGELOG.md) for history.
+`npm test` runs the whole suite (Node ≥ 24, `node --test`) behind a real-home guard: tests run with injected temporary homes and fail if anything reads or writes the real `~/.gentle-speak`, `~/.gentle-dot`, `~/.gentle-shell` or `~/.pi`. The published package is an allowlist (`files` in `package.json`), and CI checks it. See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute, [SECURITY.md](SECURITY.md) to report a vulnerability and [CHANGELOG.md](CHANGELOG.md) for history.

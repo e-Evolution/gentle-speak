@@ -57,7 +57,7 @@ The sherpa-onnx prebuilt binaries include **espeak-ng, which is GPL-3.0-or-later
 - The **Qwen team** (Alibaba Cloud), for Qwen3-TTS, and **mlx-community**, for the MLX conversions of the Base and VoiceDesign models.
 - The **Piper** project and the authors of the `es_MX` (claude) and `es_ES` (davefx) voices and their datasets, and the **sherpa-onnx** maintainers (k2-fsa) for the converted bundles and the runtime.
 - **Pi and Gentle Shell**, by Mario Zechner and contributors, the host this extension is built for.
-- **gentle-ai**, by Gentleman Programming (MIT, Copyright (c) 2025 Gentleman Programming, https://github.com/Gentleman-Programming/gentle-ai): used only as development tooling and not shipped (the `odd/` directory is excluded from the package). gentle-speak is not affiliated with Gentleman Programming.
+- **gentle-ai**, by Gentleman Programming (MIT, Copyright (c) 2025 Gentleman Programming, https://github.com/Gentleman-Programming/gentle-ai): used only as development tooling; nothing from it is shipped. gentle-speak is not affiliated with Gentleman Programming.
 
 ## Unverified
 

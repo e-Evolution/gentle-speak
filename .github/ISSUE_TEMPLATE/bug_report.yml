@@ -1,0 +1,54 @@
+name: Bug report
+description: Something does not work as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Security problems go through the Security tab, not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of /speak doctor
+      description: Run `/speak doctor` in Gentle Shell and paste the result. Remove anything private.
+      render: text
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux (X11)
+        - Linux (Wayland)
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: voice
+    attributes:
+      label: Voice engine
+      options:
+        - Piper
+        - Qwen3-TTS (custom voice)
+        - System voice
+        - Not sure
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: gentle-speak, Gentle Shell and Node.js versions.
+      placeholder: gentle-speak 0.1.0, Gentle Shell 4.7.0, Node 24
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal and multiplexer
+      placeholder: WezTerm + Herdr, iTerm2, kitty + tmux, Windows Terminal...

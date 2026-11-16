@@ -79,7 +79,7 @@ test('piper: es_MX installed passes; otherwise fails; both voices are listed', a
 test('python env + mlx-audio import: not recorded, interpreter gone, import fails, passes', async () => {
   assert.match(get(await runDoctor(healthy()), 'python').detail, /mlx-audio 0\.4\.4/);
   const none = get(await runDoctor(healthy({ python: async () => ({ recorded: false }) })), 'python');
-  assert.deepEqual([none.status, /uv o Python 3\.10\+/.test(none.hint!)], ['fail', true]);
+  assert.deepEqual([none.status, /uv o Python 3\.11\+/.test(none.hint!)], ['fail', true]);
   const gone = get(await runDoctor(healthy({ python: async () => ({ recorded: true, exists: false }) })), 'python');
   assert.deepEqual([gone.status, gone.detail], ['fail', 'el intérprete registrado ya no existe']);
   const broken = get(await runDoctor(healthy({ python: async () => ({ recorded: true, exists: true, importOk: false, message: 'ModuleNotFoundError' }) })), 'python');

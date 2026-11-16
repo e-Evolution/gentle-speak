@@ -98,7 +98,7 @@ export async function runDoctor(probes: DoctorProbes): Promise<DoctorReport> {
   checks.push(await check('python', 'Entorno Python + mlx-audio', async () => {
     if (!qwen) return na('solo en Apple Silicon (Qwen)');
     const python = await probes.python();
-    if (!python.recorded) return { status: 'fail', detail: 'no hay entorno registrado', hint: `${INSTALL_ALL} (necesita uv o Python 3.10+: brew install python@3.12)` };
+    if (!python.recorded) return { status: 'fail', detail: 'no hay entorno registrado', hint: `${INSTALL_ALL} (necesita uv o Python 3.11+: brew install python@3.12)` };
     if (python.exists === false) return { status: 'fail', detail: 'el intérprete registrado ya no existe', hint: INSTALL_ALL };
     return python.importOk ? { status: 'ok', detail: `mlx_audio se importa${python.version ? ` (mlx-audio ${python.version})` : ''}` }
       : { status: 'fail', detail: `mlx_audio no se importa${python.message ? `: ${python.message}` : ''}`, hint: INSTALL_ALL };

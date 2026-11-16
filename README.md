@@ -223,7 +223,7 @@ What the Python step fetches and writes:
 **You provide:**
 
 - Gentle Shell (Pi) and Node.js ≥ 24.
-- For Qwen: macOS on Apple Silicon, and `uv` **or** Python ≥ 3.10. Without either, setup shows how to install one and installs nothing else.
+- For Qwen: macOS on Apple Silicon, and `uv` **or** Python ≥ 3.11. Without either, setup shows how to install one and installs nothing else.
 - Optional: `ffmpeg` (speed changes on Qwen voices only). Setup detects it and shows `brew install ffmpeg`; it never installs system packages.
 - Linux system voice: `sudo apt install speech-dispatcher espeak-ng`. macOS and Windows need nothing.
 

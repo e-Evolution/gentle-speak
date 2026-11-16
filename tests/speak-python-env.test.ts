@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { MLX_AUDIO_VERSION, MLX_IMPORT_CODE, PYTHON_INSTRUCTION, PYTHON_TOOL_FLAGS, defaultRunTool, detectPythonTooling, ensurePythonEnv, findPython, makeWhich, pythonEnvStatus, type RunResult, type RunTool } from '../lib/speak-python-env.ts';
+import { MIN_PYTHON, MLX_AUDIO_VERSION, MLX_IMPORT_CODE, PYTHON_INSTRUCTION, PYTHON_TOOL_FLAGS, defaultRunTool, detectPythonTooling, ensurePythonEnv, findPython, makeWhich, pythonEnvStatus, type RunResult, type RunTool } from '../lib/speak-python-env.ts';
 import { PYTHON_RECORD_FILE, resolveQwenPython } from '../lib/speak-voices-install.ts';
 import { QWEN_PYTHON_FLAGS } from '../lib/speak-voices.ts';
 
@@ -63,9 +63,9 @@ test('uv is preferred over venv: uv venv --python 3.12, uv pip install the pinne
   assert.ok(steps.length >= 3, steps.join('|'));
 });
 
-test('without uv, python3 -m venv of a Python >= 3.10 is used (the newest candidate wins, 3.9 is refused) and pip installs the pin', async () => {
+test('without uv, python3 -m venv of a Python >= 3.11 is used (the newest candidate wins, 3.10 is refused) and pip installs the pin', async () => {
   const { home } = tmp();
-  const t = toolbox({ versions: { python3: '3.9', 'python3.10': '3.10', 'python3.11': '3.11' } });
+  const t = toolbox({ versions: { python3: '3.10', 'python3.10': '3.10', 'python3.11': '3.11' } });
   const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf(['python3', 'python3.10', 'python3.11']), platform: 'darwin', env: {} });
   assert.equal(out.status, 'installed'); assert.equal(out.status === 'installed' && out.tool, 'venv');
   const made = t.calls.find(c => c.args[1] === '-m' && c.args[2] === 'venv')!;
@@ -79,7 +79,7 @@ test('neither uv nor a suitable Python: an instruction and a skip; nothing is cr
   const t = toolbox({ versions: { python3: '3.9' } });
   const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf(['python3']), platform: 'darwin', env: {} });
   assert.deepEqual(out, { status: 'skipped', instruction: PYTHON_INSTRUCTION });
-  assert.match(PYTHON_INSTRUCTION, /uv/); assert.match(PYTHON_INSTRUCTION, /Python 3\.10/); assert.match(PYTHON_INSTRUCTION, /No instalo nada del sistema/);
+  assert.match(PYTHON_INSTRUCTION, /uv/); assert.match(PYTHON_INSTRUCTION, /Python 3\.11/); assert.match(PYTHON_INSTRUCTION, /No instalo nada del sistema/);
   assert.equal(existsSync(join(home, 'python')), false); assert.equal(existsSync(join(home, PYTHON_RECORD_FILE)), false);
   assert.equal(t.calls.every(c => c.args[0] === '-I' && c.args[1] === '-c' && c.args[2].includes('sys.version_info')), true, 'only version probes ran');
   assert.deepEqual(await detectPythonTooling({ which: whichOf([]), run: t.run }), { kind: 'none', instruction: PYTHON_INSTRUCTION });
@@ -133,7 +133,7 @@ test('a failed install or a failed import is a failure with no python.json', asy
   }
 });
 
-test('uv that cannot provide 3.12 falls back to a system Python >= 3.10; if that fails too the failure names uv', async () => {
+test('uv that cannot provide 3.12 falls back to a system Python >= 3.11; if that fails too the failure names uv', async () => {
   const a = tmp(), t = toolbox({ failUvVenv: true, versions: { python3: '3.11' } });
   const out = await ensurePythonEnv({ home: a.home, confirmed: true, run: t.run, which: whichOf(['uv', 'python3']), platform: 'darwin', env: {} });
   assert.equal(out.status === 'installed' && out.tool, 'venv');
@@ -158,7 +158,7 @@ test('an explicit confirmation is required and nothing runs without it', async (
   assert.deepEqual(t.calls, []);
 });
 
-test('findPython and makeWhich: PATH lookup without a shell, newest >= 3.10 only', async () => {
+test('findPython and makeWhich: PATH lookup without a shell, newest >= 3.11 only', async () => {
   const { root } = tmp();
   const bin = join(root, 'bin'); mkdirSync(bin);
   writeFileSync(join(bin, 'uv'), '#!/bin/sh\n', { mode: 0o755 }); writeFileSync(join(bin, 'notexec'), 'x', { mode: 0o644 });
@@ -194,8 +194,8 @@ test('T49 R1-001: an existing environment with another mlx-audio version is not 
   assert.equal(JSON.parse(readFileSync(join(home, 'python.json'), 'utf8')).mlxAudio, MLX_AUDIO_VERSION);
 });
 
-test('T49 R3-venv-pip-reuse: a leftover venv from a failed install whose interpreter is broken or older than 3.10 is recreated with --clear, not pip-installed into', async () => {
-  for (const [tooling, versions] of [['uv', {}], ['uv', { python: '3.9' }], ['python3', {}], ['python3', { python: '3.8', python3: '3.12' }]] as const) {
+test('T49 R3-venv-pip-reuse: a leftover venv from a failed install whose interpreter is broken or older than 3.11 is recreated with --clear, not pip-installed into', async () => {
+  for (const [tooling, versions] of [['uv', {}], ['uv', { python: '3.9' }], ['python3', {}], ['python3', { python: '3.10', python3: '3.12' }]] as const) {
     const { home } = tmp();
     const which = whichOf(tooling === 'uv' ? ['uv'] : ['python3']);
     const first = await ensurePythonEnv({ home, confirmed: true, run: toolbox({ failInstall: true, versions: { python3: '3.12' } }).run, which, platform: 'darwin', env: {} });
@@ -209,7 +209,7 @@ test('T49 R3-venv-pip-reuse: a leftover venv from a failed install whose interpr
   }
 });
 
-test('T49 R3-venv-pip-reuse: a leftover venv with a healthy 3.10+ interpreter is completed in place (no --clear)', async () => {
+test('T49 R3-venv-pip-reuse: a leftover venv with a healthy 3.11+ interpreter is completed in place (no --clear)', async () => {
   const { home } = tmp();
   const which = whichOf(['uv']);
   await ensurePythonEnv({ home, confirmed: true, run: toolbox({ failInstall: true }).run, which, platform: 'darwin', env: {} });
@@ -269,9 +269,9 @@ test('T61: every uv invocation carries --no-config and UV_NO_CONFIG=1; the calle
   }
 });
 
-test('T61: python -m venv, python -m pip and the version probes run in isolated mode (-I) on 3.10 and on 3.12; the import check keeps the worker flags', async () => {
+test('T61: python -m venv, python -m pip and the version probes run in isolated mode (-I) on 3.11 and on 3.12; the import check keeps the worker flags', async () => {
   assert.deepEqual([...PYTHON_TOOL_FLAGS], ['-I']);
-  for (const version of ['3.10', '3.12']) {
+  for (const version of ['3.11', '3.12']) {
     const { home } = tmp();
     const name = `python${version}`;
     const t = toolbox({ versions: { [name]: version, python: version } });
@@ -280,7 +280,7 @@ test('T61: python -m venv, python -m pip and the version probes run in isolated 
     const venv = t.calls.find(c => c.args.join(' ').includes('-m venv'))!, pip = t.calls.find(c => c.args.join(' ').includes('-m pip'))!;
     assert.deepEqual(venv.args.slice(0, 3), ['-I', '-m', 'venv'], version); assert.deepEqual(pip.args.slice(0, 3), ['-I', '-m', 'pip'], version);
     for (const probe of t.calls.filter(c => c.args.join(' ').includes('sys.version_info'))) assert.deepEqual(probe.args.slice(0, 2), ['-I', '-c'], version);
-    assert.equal(t.calls.some(c => c.args.includes('-P') && !c.args.join(' ').includes('load_model')), false, `${version}: -P (3.11+ only) is never passed to the tools`);
+    assert.equal(t.calls.some(c => c.args.includes('-P') && !c.args.join(' ').includes('load_model')), false, `${version}: the tools use -I, not -P`);
     const check = t.calls.find(c => c.args.join(' ').includes('load_model'))!;
     assert.deepEqual(check.args.slice(0, 2), [...QWEN_PYTHON_FLAGS], 'the import check keeps -E -P');
   }
@@ -361,4 +361,16 @@ test('T61: hostile project regression: a planted pip/ or venv/ and a uv.toml in 
   assert.equal(existsSync(marker), false, 'no planted module ran');
   for (const call of seen) assert.notEqual(call.cwd, project, `${call.command} ${call.args.join(' ')} ran in the project`);
   assert.ok(seen.length > 0);
+});
+
+test('Python 3.10 is refused: the Qwen worker and the import check run with -P, which exists only from 3.11', async () => {
+  assert.deepEqual([...MIN_PYTHON], [3, 11]);
+  assert.ok(QWEN_PYTHON_FLAGS.includes('-P'));
+  const t = toolbox({ versions: { python3: '3.10', 'python3.10': '3.10' } });
+  assert.equal(await findPython({ which: whichOf(['python3', 'python3.10']), run: t.run }), undefined);
+  const { home } = tmp();
+  const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf(['python3', 'python3.10']), platform: 'darwin', env: {} });
+  assert.equal(out.status, 'skipped', JSON.stringify(out));
+  assert.equal(t.calls.some(c => c.args.join(' ').includes('-m venv') || c.args.includes('install')), false);
+  assert.match(PYTHON_INSTRUCTION, /3\.11 o superior/);
 });

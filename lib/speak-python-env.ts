@@ -36,12 +36,12 @@ export const PYTHON_ENV_DIR = 'python';
 /** Disk size of the venv with mlx-audio 0.4.4 and its dependencies, measured 2026-11-12 on a real `uv` install (`du -sk`: 467 080 KiB). */
 export const PYTHON_ENV_APPROX_BYTES = 467_080 * 1024;
 export const PYTHON_ENV_SIZE_SOURCE = 'aprox., medido en una instalación real de mlx-audio 0.4.4 con uv';
-export const MIN_PYTHON: readonly [number, number] = Object.freeze([3, 10]) as readonly [number, number];
+export const MIN_PYTHON: readonly [number, number] = Object.freeze([3, 11]) as readonly [number, number];
 
 /**
- * T61 (L118): `python -m venv`, `python -m pip` and the version probes run in isolated mode. `-I` (Python 3.4+, so every supported 3.10+) keeps the
+ * T61 (L118): `python -m venv`, `python -m pip` and the version probes run in isolated mode. `-I` (Python 3.4+, so every supported 3.11+) keeps the
  * current and script directories off `sys.path` and ignores `PYTHON*` variables and the user site-packages, so a planted `pip/` or `venv/` is never imported.
- * It is valid on 3.10, where `-P` does not exist yet; the import check keeps the worker's own `QWEN_PYTHON_FLAGS` (`-E -P`).
+ * The import check keeps the worker's own `QWEN_PYTHON_FLAGS` (`-E -P`); `-P` exists from Python 3.11, which is why 3.11 is the minimum.
  */
 export const PYTHON_TOOL_FLAGS: readonly string[] = Object.freeze(['-I']);
 /** T61: `uv` never reads `uv.toml` or `[tool.uv]` (a project's, or any parent's): the flag on every call, and `UV_NO_CONFIG=1` in its environment. */
@@ -70,7 +70,7 @@ export const makeWhich = (env: NodeJS.ProcessEnv = process.env, platform: string
   return undefined;
 };
 
-export const PYTHON_INSTRUCTION = 'No encontré uv ni un Python 3.10 o superior para crear el entorno de Qwen. Instalá uno de los dos (por ejemplo `brew install python@3.12` o `brew install uv`) y volvé a ejecutar /speak → «Instalar todo». No instalo nada del sistema por vos.';
+export const PYTHON_INSTRUCTION = 'No encontré uv ni un Python 3.11 o superior para crear el entorno de Qwen. Instalá uno de los dos (por ejemplo `brew install python@3.12` o `brew install uv`) y volvé a ejecutar /speak → «Instalar todo». No instalo nada del sistema por vos.';
 
 export type PythonTooling =
   | { kind: 'uv'; uv: string }
@@ -79,9 +79,9 @@ export type PythonTooling =
 
 const parseVersion = (text: string): [number, number] | undefined => { const m = /^(\d+)\.(\d+)/.exec(text.trim()); return m ? [Number(m[1]), Number(m[2])] : undefined; };
 const atLeast = (v: [number, number]) => v[0] > MIN_PYTHON[0] || (v[0] === MIN_PYTHON[0] && v[1] >= MIN_PYTHON[1]);
-const CANDIDATES = ['python3.13', 'python3.12', 'python3.11', 'python3.10', 'python3'];
+const CANDIDATES = ['python3.13', 'python3.12', 'python3.11', 'python3'];
 
-/** The newest `python3*` ≥ 3.10 on `PATH`, or undefined. */
+/** The newest `python3*` ≥ 3.11 on `PATH`, or undefined. */
 export async function findPython({ which, run = defaultRunTool, cwd }: { which: Which; run?: RunTool; cwd?: string }): Promise<{ python: string; version: string } | undefined> {
   let best: { python: string; version: string; parsed: [number, number] } | undefined;
   for (const name of CANDIDATES) {
@@ -154,7 +154,7 @@ async function writeRecord(home: string, python: string, version: string, now: D
 }
 
 /**
- * Creates `<home>/python` (uv when present: `uv venv --no-config --python 3.12` and `uv pip install --no-config`; else `python3 -I -m venv` of a Python ≥ 3.10), installs the pinned
+ * Creates `<home>/python` (uv when present: `uv venv --no-config --python 3.12` and `uv pip install --no-config`; else `python3 -I -m venv` of a Python ≥ 3.11), installs the pinned
  * mlx-audio, validates the import under the worker flags and writes `python.json`. No suitable tool is an instruction (`skipped`), never a failure.
  * An existing environment that already validates is kept as is. Never sudo, never the system site-packages.
  */
@@ -180,7 +180,7 @@ export async function ensurePythonEnv(options: EnsurePythonOptions): Promise<Pyt
     const tooling = await detectPythonTooling({ which, run, cwd });
     if (tooling.kind === 'none') return { status: 'skipped', instruction: tooling.instruction };
     let tool: 'uv' | 'venv' = tooling.kind === 'uv' ? 'uv' : 'venv';
-    // A leftover venv (a failed earlier install, another Python) is completed in place only when its interpreter runs and is 3.10 or newer; otherwise it is rebuilt.
+    // A leftover venv (a failed earlier install, another Python) is completed in place only when its interpreter runs and is 3.11 or newer; otherwise it is rebuilt.
     let haveVenv = await stat(python).then(info => info.isFile(), () => false);
     let clear = false;
     if (haveVenv) {
@@ -204,7 +204,7 @@ export async function ensurePythonEnv(options: EnsurePythonOptions): Promise<Pyt
     if (!haveVenv) {
       let failure = await createWith(tooling);
       if (failure && tooling.kind === 'uv') {
-        // uv could not provide a 3.12 (offline, unsupported): a system Python ≥ 3.10 is the documented second choice.
+        // uv could not provide a 3.12 (offline, unsupported): a system Python ≥ 3.11 is the documented second choice.
         const system = await findPython({ which, run, cwd });
         if (system) { tool = 'venv'; failure = await createWith({ kind: 'python', ...system }); }
       }

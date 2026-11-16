@@ -227,7 +227,7 @@ test('a component that fails stops only itself: the others install and the summa
 test('without uv or Python the offer still covers runtime and Piper, shows the instruction, and never creates an environment', async () => {
   const w = world({ confirm: () => true, uv: false });
   await w.start(); await until(() => w.confirms.length === 1);
-  assert.match(w.confirms[0].message, /No encontré uv ni un Python 3\.10 o superior/);
+  assert.match(w.confirms[0].message, /No encontré uv ni un Python 3\.11 o superior/);
   assert.doesNotMatch(w.confirms[0].message, /• Entorno Python.*MB/);
   await until(() => w.texts().some(t => t.startsWith('gentle-speak listo')));
   assert.deepEqual(w.log, ['runtime', 'piper']); assert.equal(existsSync(join(w.speakHome, 'python')), false);

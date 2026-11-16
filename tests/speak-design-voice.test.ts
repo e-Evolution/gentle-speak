@@ -166,7 +166,7 @@ test('T61: runVoiceScript runs Python in a fresh private directory (never proces
     const out = await runVoiceScript({ python: '/py', script: '/s.py', args: ['design'], run: async (_p, _a, o: any) => { seen = { cwd: o.cwd, mode: o.cwd && existsSync(o.cwd) ? statSync(o.cwd).mode & 0o777 : undefined }; return { code: 0, stdout: '{"ok": true}\n' }; } });
     assert.equal(out.ok, true);
     assert.equal(typeof seen.cwd, 'string'); assert.notEqual(seen.cwd, project); assert.notEqual(seen.cwd, realpathSync(project));
-    assert.equal(seen.mode, 0o700); assert.equal(existsSync(seen.cwd!), false, 'removed after the run');
+    if (POSIX_MODES) assert.equal(seen.mode, 0o700); assert.equal(existsSync(seen.cwd!), false, 'removed after the run');
     const real = await defaultPythonRun(process.execPath, ['-e', 'process.stdout.write(process.cwd())'], { env: process.env, timeoutMs: 10_000, cwd: tmpdir() } as any);
     assert.equal(real.stdout, realpathSync(tmpdir()));
   } finally { process.chdir(before); rmSync(project, { recursive: true, force: true }); }

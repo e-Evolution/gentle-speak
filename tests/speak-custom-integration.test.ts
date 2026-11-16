@@ -12,7 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
-import { NO_UNIX_SOCKETS, UNIX_SOCKETS } from './helpers/platform.ts';
+import { NO_UNIX_SOCKETS, POSIX_MODES, UNIX_SOCKETS } from './helpers/platform.ts';
 // T42 / S14: custom voices in settings, the shared service, the installer's VoiceDesign download, and every /speak action.
 // All fakes: no Python, no model, no network, no audio; scratch lives under mkdtemp.
 import assert from 'node:assert/strict';
@@ -130,7 +130,7 @@ test('T61: the model downloads (VoiceDesign and Base) run Python in a fresh priv
       assert.equal(seen.length, 1);
       assert.equal(typeof seen[0].cwd, 'string', 'an explicit cwd is passed');
       assert.notEqual(realpathSync(project), seen[0].cwd); assert.notEqual(project, seen[0].cwd);
-      assert.equal(seen[0].exists, true); assert.equal(seen[0].mode, 0o700, 'private');
+      assert.equal(seen[0].exists, true); if (POSIX_MODES) assert.equal(seen[0].mode, 0o700, 'private');
       assert.equal(existsSync(seen[0].cwd!), false, 'removed after the run');
     }
   } finally { process.chdir(before); rmSync(hf, { recursive: true, force: true }); rmSync(project, { recursive: true, force: true }); }

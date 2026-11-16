@@ -12,7 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import './helpers/guard-real-home.ts';
-import { NO_UNIX_SOCKETS, UNIX_SOCKETS } from './helpers/platform.ts';
+import { NO_UNIX_SOCKETS, UNIX_SOCKETS, assertMode } from './helpers/platform.ts';
 // T38 / S13: the shared Qwen service. Real unix sockets and a real detached service process, in a temp shared home; the Python is a fake.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -264,7 +264,7 @@ test('the service flags and env equal the per-session worker ones', () => {
   assert.equal(seen.HOME, '/real'); assert.equal(seen.HF_HOME, join('/real', '.cache', 'huggingface')); assert.match(qwenServiceVersion(), /^\d+\.\d+\.\d+\+p\d+$/);
 });
 
-test('T61: the shared service and its Python start in the private shared home, never in the caller\'s working directory', async () => {
+test('T61: the shared service and its Python start in the private shared home, never in the caller\'s working directory', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   const project = mkdtempSync(join(tmpdir(), 'gsq-project-')), before = process.cwd();
   try {
@@ -286,6 +286,6 @@ test('T61: spawnInHome starts a child (the per-session Qwen worker) in the priva
     process.chdir(before);
     let out = ''; child.stdout!.setEncoding('utf8'); child.stdout!.on('data', (d: string) => { out += d; });
     await new Promise(resolve => child.on('close', resolve));
-    assert.equal(out, realpathSync(home)); assert.equal(statSync(home).mode & 0o777, 0o700);
+    assert.equal(out, realpathSync(home)); assertMode(home, 0o700);
   } finally { process.chdir(before); rmSync(root, { recursive: true, force: true }); }
 });

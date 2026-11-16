@@ -41,7 +41,7 @@ function toolbox(o: { versions?: Record<string, string>; failVenv?: boolean; fai
       if (args[0] === 'venv') { if (o.failUvVenv || o.failVenv) return { code: 1, stdout: '', stderr: 'No interpreter found for Python 3.12' }; venvAt(args[args.length - 1]); return ok(); }
       if (args[0] === 'pip') return o.failInstall ? { code: 1, stdout: '', stderr: 'resolution failed' } : ok();
     }
-    if (args[0] === '-c' && args[1]?.includes('sys.version_info')) { const v = o.versions?.[command.split('/').pop()!]; return v ? ok(`${v}\n`) : { code: 1, stdout: '', stderr: 'no' }; }
+    if (args[0] === '-c' && args[1]?.includes('sys.version_info')) { const v = o.versions?.[command.split(/[\\/]/).pop()!]; return v ? ok(`${v}\n`) : { code: 1, stdout: '', stderr: 'no' }; }
     if (args[0] === '-m' && args[1] === 'venv') { if (o.failVenv) return { code: 1, stdout: '', stderr: 'ensurepip is not available' }; venvAt(args[args.length - 1]); return ok(); }
     if (args[0] === '-m' && args[1] === 'pip') return o.failInstall ? { code: 1, stdout: '', stderr: 'no matching distribution' } : ok();
     if (args.includes('-c') && args.join(' ').includes('load_model')) return o.failImport ? { code: 1, stdout: '', stderr: 'ModuleNotFoundError: mlx' } : ok(`${o.mlx ?? MLX_AUDIO_VERSION}\n`);
@@ -319,7 +319,7 @@ test('T61: hostile project regression: a planted pip/ or venv/ and a uv.toml in 
   // The fixture is live: a plain `python -m pip` / `python -m venv` started in the project imports the planted package (the L118 attack).
   if (python) {
     for (const mod of ['pip', 'venv']) { try { execFileSync(python.python, ['-m', mod, '--version'], { cwd: project, stdio: 'ignore', timeout: 30_000 }); } catch { /* the planted module is not a real tool */ } }
-    assert.equal(readFileSync(marker, 'utf8'), 'pip\nvenv\n', 'the planted packages run when the cwd is the project'); rmSync(marker);
+    assert.equal(readFileSync(marker, 'utf8').replace(/\r\n/g, '\n'), 'pip\nvenv\n', 'the planted packages run when the cwd is the project'); rmSync(marker);
   }
   // Offline and hermetic: pip may not use an index, uv may not download, and every cache lives in the scratch root.
   const env: NodeJS.ProcessEnv = {

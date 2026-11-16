@@ -12,10 +12,10 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { accessSync, constants, statSync } from 'node:fs';
-import { mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { delimiter, isAbsolute, join, posix, win32 } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { accessSync, constants, readFileSync, statSync } from 'node:fs';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { isAbsolute, join, posix, resolve, win32 } from 'node:path';
 import { qwenPythonEnv } from './speak-qwen.ts';
 import { ensurePrivateHome, withPrivateCwd } from './speak-qwen-service.ts';
 import { PYTHON_RECORD_FILE, PYTHON_RECORD_SCHEMA, resolveQwenPython } from './speak-voices-install.ts';
@@ -27,21 +27,32 @@ import { QWEN_PYTHON_FLAGS } from './speak-voices.ts';
  * `<sharedHome>/python.json`, which `resolveQwenPython` (T45) already reads.
  */
 export const MLX_AUDIO_VERSION = '0.4.4';
-/** What the worker needs on top of `mlx-audio` itself (the pinned package declares its own dependencies; this is only what it does not pull in). */
-export const PYTHON_EXTRA_REQUIREMENTS: readonly string[] = Object.freeze([]);
-export const PYTHON_REQUIREMENTS: readonly string[] = Object.freeze([`mlx-audio==${MLX_AUDIO_VERSION}`, ...PYTHON_EXTRA_REQUIREMENTS]);
+/**
+ * T63 (L118, L124): the environment installs exactly this hash-locked requirements file (`mlx-audio==0.4.4` and its whole dependency closure, each with
+ * sha256 hashes, universal markers, Python 3.12+), shipped in the package and resolved from this module's location, never from the working directory.
+ * Regenerated with `npm run lock:qwen` (see CONTRIBUTING.md).
+ */
+export const QWEN_LOCK_FILE = 'requirements-qwen.txt';
+export const QWEN_LOCK_PATH = resolve(import.meta.dirname, '..', 'scripts', QWEN_LOCK_FILE);
+/** The lock's absolute path and sha256 (recorded in `python.json` as `lockSha256`), or undefined when it is missing or unreadable. */
+export async function readQwenLock(path: string = QWEN_LOCK_PATH): Promise<{ path: string; sha256: string } | undefined> {
+  if (!isAbsolute(path)) return undefined;
+  try { return { path, sha256: createHash('sha256').update(await readFile(path)).digest('hex') }; } catch { return undefined; }
+}
+const LOCK_MISSING = `falta el archivo de dependencias fijadas (scripts/${QWEN_LOCK_FILE}); reinstalá gentle-speak`;
 /** The import the worker performs first; the environment is valid only when it succeeds under the worker's own flags. */
 export const MLX_IMPORT_CODE = 'from mlx_audio.tts.utils import load_model';
 export const PYTHON_ENV_DIR = 'python';
 /** Disk size of the venv with mlx-audio 0.4.4 and its dependencies, measured 2026-11-12 on a real `uv` install (`du -sk`: 467 080 KiB). */
 export const PYTHON_ENV_APPROX_BYTES = 467_080 * 1024;
 export const PYTHON_ENV_SIZE_SOURCE = 'aprox., medido en una instalación real de mlx-audio 0.4.4 con uv';
-export const MIN_PYTHON: readonly [number, number] = Object.freeze([3, 11]) as readonly [number, number];
+/** T63: numpy in the lock needs Python 3.12 or newer (the worker's `-P` alone would need 3.11). */
+export const MIN_PYTHON: readonly [number, number] = Object.freeze([3, 12]) as readonly [number, number];
 
 /**
- * T61 (L118): `python -m venv`, `python -m pip` and the version probes run in isolated mode. `-I` (Python 3.4+, so every supported 3.11+) keeps the
+ * T61 (L118): `python -m venv`, `python -m pip` and the version probes run in isolated mode. `-I` (Python 3.4+, so every supported 3.12+) keeps the
  * current and script directories off `sys.path` and ignores `PYTHON*` variables and the user site-packages, so a planted `pip/` or `venv/` is never imported.
- * The import check keeps the worker's own `QWEN_PYTHON_FLAGS` (`-E -P`); `-P` exists from Python 3.11, which is why 3.11 is the minimum.
+ * The import check keeps the worker's own `QWEN_PYTHON_FLAGS` (`-E -P`); `-P` exists from Python 3.11, and the lock's numpy makes 3.12 the minimum (T63).
  */
 export const PYTHON_TOOL_FLAGS: readonly string[] = Object.freeze(['-I']);
 /** T61: `uv` never reads `uv.toml` or `[tool.uv]` (a project's, or any parent's): the flag on every call, and `UV_NO_CONFIG=1` in its environment. */
@@ -70,7 +81,7 @@ export const makeWhich = (env: NodeJS.ProcessEnv = process.env, platform: string
   return undefined;
 };
 
-export const PYTHON_INSTRUCTION = 'No encontré uv ni un Python 3.11 o superior para crear el entorno de Qwen. Instalá uno de los dos (por ejemplo `brew install python@3.12` o `brew install uv`) y volvé a ejecutar /speak → «Instalar todo». No instalo nada del sistema por vos.';
+export const PYTHON_INSTRUCTION = 'No encontré uv ni un Python 3.12 o superior para crear el entorno de Qwen. Instalá uno de los dos (por ejemplo `brew install python@3.12` o `brew install uv`) y volvé a ejecutar /speak → «Instalar todo». No instalo nada del sistema por vos.';
 
 export type PythonTooling =
   | { kind: 'uv'; uv: string }
@@ -79,9 +90,9 @@ export type PythonTooling =
 
 const parseVersion = (text: string): [number, number] | undefined => { const m = /^(\d+)\.(\d+)/.exec(text.trim()); return m ? [Number(m[1]), Number(m[2])] : undefined; };
 const atLeast = (v: [number, number]) => v[0] > MIN_PYTHON[0] || (v[0] === MIN_PYTHON[0] && v[1] >= MIN_PYTHON[1]);
-const CANDIDATES = ['python3.13', 'python3.12', 'python3.11', 'python3'];
+const CANDIDATES = ['python3.13', 'python3.12', 'python3'];
 
-/** The newest `python3*` ≥ 3.11 on `PATH`, or undefined. */
+/** The newest `python3*` ≥ 3.12 on `PATH`, or undefined. */
 export async function findPython({ which, run = defaultRunTool, cwd }: { which: Which; run?: RunTool; cwd?: string }): Promise<{ python: string; version: string } | undefined> {
   let best: { python: string; version: string; parsed: [number, number] } | undefined;
   for (const name of CANDIDATES) {
@@ -105,14 +116,28 @@ export async function detectPythonTooling({ which, run = defaultRunTool, cwd }: 
 export const pythonEnvDir = (home: string) => join(home, PYTHON_ENV_DIR);
 const interpreterOf = (home: string, platform: string = process.platform) => platform === 'win32' ? join(pythonEnvDir(home), 'Scripts', 'python.exe') : join(pythonEnvDir(home), 'bin', 'python');
 
+/** The `lockSha256` of a valid T44 `python.json` (`null` when the record has none), or undefined when there is no valid record (e.g. the old manifest's python). */
+function recordedLock(home: string): string | null | undefined {
+  try {
+    const record = JSON.parse(readFileSync(join(home, PYTHON_RECORD_FILE), 'utf8'));
+    if (record?.schema !== PYTHON_RECORD_SCHEMA || typeof record.python !== 'string' || !isAbsolute(record.python)) return undefined;
+    return typeof record.lockSha256 === 'string' ? record.lockSha256 : null;
+  } catch { return undefined; }
+}
+
 /**
  * Installed when `resolveQwenPython` yields an interpreter that still exists (the T44 record, or the old manifest's python of an earlier install). Cheap:
- * nothing is run; `/speak doctor` runs the import.
+ * nothing is run; `/speak doctor` runs the import. T63: an environment gentle-speak recorded (`python.json`) without the current lock's sha256 (built by
+ * an earlier, unlocked release, or from another lock) is `missing` with `outdated: true`: its interpreter still works, but setup installs the lock into it.
+ * The old manifest's python is the user's own interpreter, not one gentle-speak installed, so it is never marked outdated.
  */
-export async function pythonEnvStatus(home: string): Promise<{ state: 'installed' | 'missing'; python?: string }> {
+export async function pythonEnvStatus(home: string, lockPath: string = QWEN_LOCK_PATH): Promise<{ state: 'installed' | 'missing'; python?: string; outdated?: true }> {
   const python = resolveQwenPython(home);
   if (!python) return { state: 'missing' };
-  return (await stat(python).then(info => info.isFile(), () => false)) ? { state: 'installed', python } : { state: 'missing' };
+  if (!(await stat(python).then(info => info.isFile(), () => false))) return { state: 'missing' };
+  const recorded = recordedLock(home);
+  if (recorded !== undefined && recorded !== (await readQwenLock(lockPath))?.sha256) return { state: 'missing', python, outdated: true };
+  return { state: 'installed', python };
 }
 
 export type PythonEnvOutcome =
@@ -132,6 +157,8 @@ export interface EnsurePythonOptions {
   now?: () => Date;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
+  /** The hash-locked requirements to install; defaults to the shipped `scripts/requirements-qwen.txt` (tests point it elsewhere). */
+  lockPath?: string;
 }
 const VENV_MS = 5 * 60_000, INSTALL_MS = 30 * 60_000, IMPORT_MS = 120_000;
 const tail = (text: string) => text.replace(/[\x00-\x08\x0b-\x1f]/g, ' ').trim().split('\n').slice(-3).join(' ').replace(/\s+/g, ' ').slice(0, 200);
@@ -144,19 +171,21 @@ export async function validatePythonEnv({ python, run = defaultRunTool, env, sig
   return { ok: true, version: out.stdout.trim().split('\n').pop()!.trim() };
 }
 
-async function writeRecord(home: string, python: string, version: string, now: Date) {
+async function writeRecord(home: string, python: string, version: string, lockSha256: string, now: Date) {
   await mkdir(home, { recursive: true, mode: 0o700 });
   const path = join(home, PYTHON_RECORD_FILE), temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporary, `${JSON.stringify({ schema: PYTHON_RECORD_SCHEMA, python, mlxAudio: version, created: now.toISOString() })}\n`, { flag: 'wx', mode: 0o600 });
+    await writeFile(temporary, `${JSON.stringify({ schema: PYTHON_RECORD_SCHEMA, python, mlxAudio: version, lockSha256, created: now.toISOString() })}\n`, { flag: 'wx', mode: 0o600 });
     await rename(temporary, path);
   } finally { await rm(temporary, { force: true }); }
 }
 
 /**
- * Creates `<home>/python` (uv when present: `uv venv --no-config --python 3.12` and `uv pip install --no-config`; else `python3 -I -m venv` of a Python ≥ 3.11), installs the pinned
- * mlx-audio, validates the import under the worker flags and writes `python.json`. No suitable tool is an instruction (`skipped`), never a failure.
- * An existing environment that already validates is kept as is. Never sudo, never the system site-packages.
+ * Creates `<home>/python` (uv when present: `uv venv --no-config --python 3.12` and `uv pip install --no-config`; else `python3 -I -m venv` of a Python ≥ 3.12), installs the
+ * hash-locked requirements (`--require-hashes -r <lock>`, T63), validates the import under the worker flags and writes `python.json` with the lock's sha256.
+ * No suitable tool is an instruction (`skipped`), never a failure; a missing lock fails before anything runs. An existing environment installed from the
+ * current lock that still validates is kept as is; one recorded from another lock (or none) gets the lock installed into the same venv. Never sudo, never
+ * the system site-packages.
  */
 export async function ensurePythonEnv(options: EnsurePythonOptions): Promise<PythonEnvOutcome> {
   if (options.confirmed !== true) throw new Error('Explicit caller confirmation is required.');
@@ -170,8 +199,11 @@ export async function ensurePythonEnv(options: EnsurePythonOptions): Promise<Pyt
   // T61: every child below runs in the private home (`cwd`), never in the session's working directory, which may be a hostile project.
   try { ensurePrivateHome(home); } catch { return { status: 'failed', message: 'la carpeta de gentle-speak no es un directorio propio del usuario' }; }
   const cwd = home;
+  // T63: the lock is read first; without it nothing runs (no probe, no venv, no installer).
+  const lock = await readQwenLock(options.lockPath ?? QWEN_LOCK_PATH);
+  if (!lock) return { status: 'failed', message: LOCK_MISSING };
   try {
-    const existing = await pythonEnvStatus(home);
+    const existing = await pythonEnvStatus(home, lock.path);
     if (existing.state === 'installed') {
       const valid = await validatePythonEnv({ python: existing.python!, run, env, signal, cwd });
       // Only the pinned mlx-audio is reused: another version is brought to the pin below instead of being recorded as current.
@@ -180,7 +212,8 @@ export async function ensurePythonEnv(options: EnsurePythonOptions): Promise<Pyt
     const tooling = await detectPythonTooling({ which, run, cwd });
     if (tooling.kind === 'none') return { status: 'skipped', instruction: tooling.instruction };
     let tool: 'uv' | 'venv' = tooling.kind === 'uv' ? 'uv' : 'venv';
-    // A leftover venv (a failed earlier install, another Python) is completed in place only when its interpreter runs and is 3.11 or newer; otherwise it is rebuilt.
+    // A leftover venv (a failed earlier install, another Python, an install from another lock) is completed in place only when its interpreter runs and is
+    // 3.12 or newer; otherwise it is rebuilt.
     let haveVenv = await stat(python).then(info => info.isFile(), () => false);
     let clear = false;
     if (haveVenv) {
@@ -204,22 +237,23 @@ export async function ensurePythonEnv(options: EnsurePythonOptions): Promise<Pyt
     if (!haveVenv) {
       let failure = await createWith(tooling);
       if (failure && tooling.kind === 'uv') {
-        // uv could not provide a 3.12 (offline, unsupported): a system Python ≥ 3.11 is the documented second choice.
+        // uv could not provide a 3.12 (offline, unsupported): a system Python ≥ 3.12 is the documented second choice.
         const system = await findPython({ which, run, cwd });
         if (system) { tool = 'venv'; failure = await createWith({ kind: 'python', ...system }); }
       }
       if (failure) return { status: 'failed', message: failure };
     }
-    onProgress?.(`Instalando mlx-audio ${MLX_AUDIO_VERSION}…`);
+    onProgress?.(`Instalando mlx-audio ${MLX_AUDIO_VERSION} y sus dependencias fijadas…`);
+    const locked = ['--require-hashes', '-r', lock.path];
     const install = tool === 'uv' && tooling.kind === 'uv'
-      ? await run(tooling.uv, ['pip', 'install', ...UV_NO_CONFIG_ARGS, '--python', python, ...PYTHON_REQUIREMENTS], { env: uvEnv(env), timeoutMs: INSTALL_MS, signal, cwd })
-      : await run(python, [...PYTHON_TOOL_FLAGS, '-m', 'pip', 'install', '--disable-pip-version-check', ...PYTHON_REQUIREMENTS], { env, timeoutMs: INSTALL_MS, signal, cwd });
+      ? await run(tooling.uv, ['pip', 'install', ...UV_NO_CONFIG_ARGS, '--python', python, ...locked], { env: uvEnv(env), timeoutMs: INSTALL_MS, signal, cwd })
+      : await run(python, [...PYTHON_TOOL_FLAGS, '-m', 'pip', 'install', '--disable-pip-version-check', ...locked], { env, timeoutMs: INSTALL_MS, signal, cwd });
     if (install.code !== 0) return { status: 'failed', message: `no pude instalar mlx-audio (${tail(install.stderr) || `código ${install.code}`})` };
     onProgress?.('Validando mlx_audio…');
     const valid = await validatePythonEnv({ python, run, env, signal, cwd });
     if (!valid.ok) return { status: 'failed', message: valid.message };
     if (valid.version !== MLX_AUDIO_VERSION) return { status: 'failed', message: `se instaló mlx-audio ${valid.version || 'desconocido'} en lugar de ${MLX_AUDIO_VERSION}` };
-    await writeRecord(home, python, valid.version, now());
+    await writeRecord(home, python, valid.version, lock.sha256, now());
     return { status: 'installed', python, version: valid.version, tool, alreadyInstalled: false };
   } catch (error) {
     return { status: 'failed', message: signal?.aborted ? 'cancelado' : tail(String((error as Error)?.message ?? 'error')) };

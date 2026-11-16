@@ -263,3 +263,12 @@ test('T47 (S16): setup never plans a system package, on any platform; the system
     assert.equal(/apt install speech-dispatcher|espeak/.test(describeSetupPlan(plan)), false, platform);
   }
 });
+
+test('T63: an environment recorded from another (or no) dependency lock is offered for install again; without tooling it is blocked but the Base model is not', async () => {
+  const outdated = async () => ({ state: 'missing' as const, python: '/h/python/bin/python', outdated: true as const });
+  const plan = await computeSetupPlan(env({ states: { runtime: 'installed', piper: 'installed', base: 'installed' }, pythonStatus: outdated }));
+  assert.deepEqual(plan.actionable.map(c => c.id), ['python']);
+  const none = await computeSetupPlan(env({ pythonStatus: outdated, tooling: async () => ({ kind: 'none', instruction: PYTHON_INSTRUCTION }) }));
+  assert.deepEqual(none.missing.filter(c => c.blocked).map(c => c.id), ['python'], 'the outdated env still runs, so the Base model can download');
+  assert.deepEqual(none.actionable.map(c => c.id), ['runtime', 'piper', 'qwen-base']);
+});

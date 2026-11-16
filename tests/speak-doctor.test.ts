@@ -80,7 +80,7 @@ test('piper: es_MX installed passes; otherwise fails; both voices are listed', a
 test('python env + mlx-audio import: not recorded, interpreter gone, import fails, passes', async () => {
   assert.match(get(await runDoctor(healthy()), 'python').detail, /mlx-audio 0\.4\.4/);
   const none = get(await runDoctor(healthy({ python: async () => ({ recorded: false }) })), 'python');
-  assert.deepEqual([none.status, /uv o Python 3\.11\+/.test(none.hint!)], ['fail', true]);
+  assert.deepEqual([none.status, /uv o Python 3\.12\+/.test(none.hint!)], ['fail', true]); assert.doesNotMatch(none.hint!, /3\.11/);
   const gone = get(await runDoctor(healthy({ python: async () => ({ recorded: true, exists: false }) })), 'python');
   assert.deepEqual([gone.status, gone.detail], ['fail', 'el intérprete registrado ya no existe']);
   const broken = get(await runDoctor(healthy({ python: async () => ({ recorded: true, exists: true, importOk: false, message: 'ModuleNotFoundError' }) })), 'python');
@@ -269,4 +269,11 @@ test('T49 R1-002: the probe child gets a minimal environment, a bounded buffer a
   assert.deepEqual(seen[0].args, ['/s/probe.cjs', '/r']);
   assert.equal(typeof seen[0].options.env, 'object'); assert.equal(seen[0].options.env.T49_CANARY, undefined);
   assert.ok(seen[0].options.maxBuffer <= 64 * 1024); assert.ok(seen[0].options.timeout > 0);
+});
+
+test('T63: an environment that imports but was not installed from the current dependency lock fails with «Instalar todo»; a current one passes', async () => {
+  const stale = get(await runDoctor(healthy({ python: async () => ({ recorded: true, python: '/h/python/bin/python', exists: true, importOk: true, version: '0.4.4', lockCurrent: false }) })), 'python');
+  assert.equal(stale.status, 'fail'); assert.match(stale.detail, /mlx-audio 0\.4\.4/); assert.match(stale.detail, /dependencias fijadas/); assert.equal(stale.hint, 'ejecutá /speak → «Instalar todo»');
+  const current = get(await runDoctor(healthy({ python: async () => ({ recorded: true, python: '/h/python/bin/python', exists: true, importOk: true, version: '0.4.4', lockCurrent: true }) })), 'python');
+  assert.equal(current.status, 'ok');
 });

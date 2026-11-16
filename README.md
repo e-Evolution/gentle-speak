@@ -208,14 +208,14 @@ gentle-speak can speak inside Gentle Dot's engine without changing Dot.
 |-----------|------|-------|
 | Native audio runtime (sherpa-onnx + node-cpal) | about 18 MB | `~/.gentle-speak/runtime/` |
 | Piper `es_MX` voice | about 67 MB | `~/.gentle-speak/models/` |
-| Python env with `mlx-audio==0.4.4` (Apple Silicon only) | about 478 MB on disk | `~/.gentle-speak/python/` (uv, else `python3 -m venv`; no sudo, system Python untouched) |
+| Python env with `mlx-audio==0.4.4` and its hash-locked dependencies (Apple Silicon only) | about 478 MB on disk | `~/.gentle-speak/python/` (uv, else `python3 -m venv`; no sudo, system Python untouched) |
 | Qwen3-TTS Base 0.6B model (Apple Silicon only) | about 2.5 GB | Hugging Face cache |
 
 The VoiceDesign 1.7B model is **never** part of setup: it is downloaded only if you choose «Crear voz propia…» and confirm. Each download is verified (pinned hashes for the runtime and Piper bundles).
 
 What the Python step fetches and writes:
 
-- The Python packages (`mlx-audio` and its dependencies) come from PyPI.
+- The Python packages come from PyPI as a hash-locked set: `mlx-audio==0.4.4` and every dependency, each pinned to one version with its sha256 hashes, listed in `scripts/requirements-qwen.txt` and installed with `--require-hashes`. A package whose hash does not match is refused. An environment installed by an earlier release without this lock is offered again in «Instalar todo» (`/speak doctor` reports it), and the lock is installed into the same environment.
 - When Python 3.12 is missing, `uv` may download a CPython build into its own directory, `~/.local/share/uv/python`.
 - pip or uv keep their usual download cache, and the models go to the Hugging Face cache (`HF_HOME`, default `~/.cache/huggingface`).
 - The installers run from `~/.gentle-speak`, never from your current project, and `uv` runs with `--no-config`. A `uv.toml`, `pip/` or `venv/` in the directory where you started Gentle Shell cannot change what is installed.
@@ -223,7 +223,7 @@ What the Python step fetches and writes:
 **You provide:**
 
 - Gentle Shell (Pi) and Node.js ≥ 24.
-- For Qwen: macOS on Apple Silicon, and `uv` **or** Python ≥ 3.11. Without either, setup shows how to install one and installs nothing else.
+- For Qwen: macOS on Apple Silicon, and `uv` **or** Python ≥ 3.12. Without either, setup shows how to install one and installs nothing else.
 - Optional: `ffmpeg` (speed changes on Qwen voices only). Setup detects it and shows `brew install ffmpeg`; it never installs system packages.
 - Linux system voice: `sudo apt install speech-dispatcher espeak-ng`. macOS and Windows need nothing.
 

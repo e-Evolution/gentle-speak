@@ -865,10 +865,11 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       python: async () => {
         const interpreter = python();
         if (!interpreter) return { recorded: false };
-        const exists = (await pythonEnvStatus(home)).state === 'installed';
+        const status = await pythonEnvStatus(home);
+        const exists = status.state === 'installed' || status.outdated === true; // T63: an env from another dependency lock still exists; it is reported as needing «Instalar todo»
         if (!exists) return { recorded: true, python: interpreter, exists };
         const valid = await validatePythonEnv({ python: interpreter, run: defaultRunTool, env: qwenPythonEnv(process.env, realUserHome()) });
-        return valid.ok ? { recorded: true, python: interpreter, exists, importOk: true, version: valid.version } : { recorded: true, python: interpreter, exists, importOk: false, message: valid.message };
+        return valid.ok ? { recorded: true, python: interpreter, exists, importOk: true, version: valid.version, lockCurrent: status.outdated !== true } : { recorded: true, python: interpreter, exists, importOk: false, message: valid.message };
       },
       base: () => baseModelStatus(hfHome), design: () => deps.designStatus(hfHome),
       customVoices: () => listCustomVoices(home),

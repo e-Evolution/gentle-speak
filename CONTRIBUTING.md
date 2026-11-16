@@ -32,6 +32,18 @@ gentle-shell -- -e ./extensions/gentle-speak.ts
 - Use fakes for processes, audio devices, the clipboard and the network. Tests must not download anything or play sound.
 - For a behaviour change, add a test that fails before your change and passes after it.
 
+## Updating the Qwen Python lock
+
+The Qwen environment installs `scripts/requirements-qwen.txt` with `--require-hashes`: every package pinned, with its sha256 hashes. Do not edit it by hand. To regenerate it (for example after changing `MLX_AUDIO_VERSION` in `lib/speak-python-env.ts`), with `uv` on `PATH` and network access to PyPI:
+
+```bash
+npm run lock:qwen
+# or, to keep the versions of a known-good environment:
+npm run lock:qwen -- --constraints constraints.txt
+```
+
+The script runs `uv pip compile --no-config --universal --python-version 3.12 --generate-hashes`, and writes the file with its two header lines. Install the result in a scratch venv and run the import check before you commit it. The script is excluded from the npm package.
+
 ## Code conventions
 
 - TypeScript run directly by Node (`--experimental-strip-types`), with no build step.

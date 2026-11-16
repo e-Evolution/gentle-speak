@@ -13,15 +13,22 @@
  */
 import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import gentleSpeak from '../extensions/gentle-speak.ts';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_SCHEMA, parseSpeakSettingsFile, readSpeakSettings } from '../lib/speak-settings.ts';
 import { QWEN_MODEL_ID } from '../lib/speak-voices.ts';
 import { makeWav, writeEntry } from './helpers/custom-voice-fixture.ts';
 import { hermetic } from './helpers/hermetic.ts';
+import { EXEC_BIT } from './helpers/platform.ts';
+
+/** T63: the shipped hash-locked requirements and the sha256 a current `python.json` records. */
+const LOCK = fileURLToPath(new URL('../scripts/requirements-qwen.txt', import.meta.url));
+const LOCK_SHA = createHash('sha256').update(readFileSync(LOCK)).digest('hex');
 
 // T44 (S15) wiring: the first-start offer, «Instalar todo», `/speak doctor`. Fakes for uv, python, the HF API, downloads, ffmpeg and audio; temp homes; no real path.
 const until = async (cond: () => boolean, what = 'condition') => {
@@ -41,6 +48,8 @@ type Opts = {
   mode?: string; header?: any; target?: string; platform?: string; ffmpeg?: boolean; uv?: boolean; offer?: boolean; settings?: Record<string, unknown> | null;
   states?: Partial<Record<'runtime' | 'piper' | 'python' | 'base', string>>; confirm?: (title: string, message: string) => Promise<boolean> | boolean; select?: string[];
   failPiper?: boolean; gate?: Promise<void>; custom?: boolean; dot?: boolean; legacy?: boolean;
+  /** T63: the installed env's python.json is the one an earlier, unlocked release wrote (no lockSha256). */
+  unlocked?: boolean;
 };
 function world(o: Opts = {}) {
   const base = mkdtempSync(join(tmpdir(), 'gs-setup-wiring-')); roots.push(base);
@@ -57,7 +66,7 @@ function world(o: Opts = {}) {
   const baseSnapshot = join(hfHome, 'hub', `models--${QWEN_MODEL_ID.replace('/', '--')}`, 'snapshots', 'abc');
   const makeBase = () => { mkdirSync(join(baseSnapshot, 'speech_tokenizer'), { recursive: true }); writeFileSync(join(baseSnapshot, 'config.json'), '{}'); writeFileSync(join(baseSnapshot, 'model.safetensors'), 'weights'); };
   // python and the Base cache are read from real (temp) files by the production probes; runtime and Piper come from the injected statuses.
-  if (st.python === 'installed') { mkdirSync(join(speakHome, 'python', 'bin'), { recursive: true }); writeFileSync(pythonPath, '#!fake\n'); writeFileSync(join(speakHome, 'python.json'), JSON.stringify({ schema: 'gentle-speak.python/v1', python: pythonPath })); }
+  if (st.python === 'installed') { mkdirSync(join(speakHome, 'python', 'bin'), { recursive: true }); writeFileSync(pythonPath, '#!fake\n'); writeFileSync(join(speakHome, 'python.json'), JSON.stringify({ schema: 'gentle-speak.python/v1', python: pythonPath, ...(o.unlocked ? {} : { lockSha256: LOCK_SHA }) })); }
   if (st.base === 'installed') makeBase();
   // The fake toolbox: uv creates the venv and "installs"; the python import prints the pinned version; python.json is written by the real library.
   const setupRun = async (command: string, args: string[], options: { env?: NodeJS.ProcessEnv; cwd?: string }) => {
@@ -65,6 +74,7 @@ function world(o: Opts = {}) {
     if (command.endsWith('/uv') && args[0] === 'venv') { mkdirSync(join(args[args.length - 1], 'bin'), { recursive: true }); writeFileSync(join(args[args.length - 1], 'bin', 'python'), '#!fake\n'); log.push('python:venv'); return { code: 0, stdout: '', stderr: '' }; }
     if (command.endsWith('/uv')) { log.push('python:pip'); return { code: 0, stdout: '', stderr: '' }; }
     if (args.join(' ').includes('load_model')) return { code: 0, stdout: '0.4.4\n', stderr: '' };
+    if (args.join(' ').includes('sys.version_info')) { log.push('python:probe'); return { code: 0, stdout: '3.12\n', stderr: '' }; }
     return { code: 1, stdout: '', stderr: 'unexpected' };
   };
   const downloadRun = async (command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
@@ -204,7 +214,8 @@ test('the Python env is built with uv in <home>/python, python.json is written, 
   await w.start(); await until(() => w.texts().some(t => t.startsWith('gentle-speak listo')));
   const pythonDir = join(w.speakHome, 'python');
   assert.deepEqual(w.run.find(c => c.args[0] === 'venv')!.args, ['venv', '--no-config', '--python', '3.12', pythonDir]);
-  assert.deepEqual(w.run.find(c => c.args[0] === 'pip')!.args, ['pip', 'install', '--no-config', '--python', join(pythonDir, 'bin', 'python'), 'mlx-audio==0.4.4']);
+  assert.deepEqual(w.run.find(c => c.args[0] === 'pip')!.args, ['pip', 'install', '--no-config', '--python', join(pythonDir, 'bin', 'python'), '--require-hashes', '-r', LOCK]);
+  assert.equal(JSON.parse(readFileSync(join(w.speakHome, 'python.json'), 'utf8')).lockSha256, LOCK_SHA);
   // T61: through the extension too, every install child runs in the shared home (never the session's cwd) and uv reads no config file.
   for (const call of w.run) { assert.equal(call.cwd, w.speakHome, call.args.join(' ')); assert.notEqual(call.cwd, process.cwd()); }
   for (const call of w.run.filter(c => c.command.endsWith('/uv'))) assert.equal(call.env?.UV_NO_CONFIG, '1');
@@ -227,7 +238,7 @@ test('a component that fails stops only itself: the others install and the summa
 test('without uv or Python the offer still covers runtime and Piper, shows the instruction, and never creates an environment', async () => {
   const w = world({ confirm: () => true, uv: false });
   await w.start(); await until(() => w.confirms.length === 1);
-  assert.match(w.confirms[0].message, /No encontré uv ni un Python 3\.11 o superior/);
+  assert.match(w.confirms[0].message, /No encontré uv ni un Python 3\.12 o superior/);
   assert.doesNotMatch(w.confirms[0].message, /• Entorno Python.*MB/);
   await until(() => w.texts().some(t => t.startsWith('gentle-speak listo')));
   assert.deepEqual(w.log, ['runtime', 'piper']); assert.equal(existsSync(join(w.speakHome, 'python')), false);
@@ -361,3 +372,29 @@ test('the doctor reports a healthy custom voice and a missing selected voice wit
   assert.match(bad.texts()[0], /✗ Voz elegida: custom:ghost: no existe o es inválida\n    → /);
 });
 
+
+test('T63: an env installed by an earlier unlocked release is offered again and the lock is installed into the same venv; python.json then records the lock', async () => {
+  const w = world({ confirm: () => true, unlocked: true, states: { runtime: 'installed', piper: 'installed', python: 'installed', base: 'installed' } });
+  await w.start(); await until(() => w.texts().some(t => t.startsWith('gentle-speak listo')), 'listo');
+  assert.equal(w.confirms.length, 1); assert.match(w.confirms[0].message, /• Entorno Python de gentle-speak con mlx-audio/);
+  assert.deepEqual(w.log, ['python:probe', 'python:pip'], 'the venv is kept (probed, not recreated), only the lock is installed');
+  assert.deepEqual(w.run.find(c => c.args[0] === 'pip')!.args.slice(-3), ['--require-hashes', '-r', LOCK]);
+  assert.equal(JSON.parse(readFileSync(join(w.speakHome, 'python.json'), 'utf8')).lockSha256, LOCK_SHA);
+  const again = world({ offer: false, select: ['Instalar todo'], states: { runtime: 'installed', piper: 'installed', python: 'installed', base: 'installed' } });
+  await again.menu(); await until(() => again.texts().some(t => t.startsWith('gentle-speak listo')), 'nothing missing');
+  assert.deepEqual(again.confirms, [], 'a current lock is not offered again');
+});
+
+test('T63: /speak doctor reports an env from an earlier unlocked release as needing «Instalar todo», even though it imports', { skip: !EXEC_BIT && 'needs an executable stand-in interpreter' }, async () => {
+  for (const unlocked of [true, false]) {
+    const w = world({ offer: false, unlocked, states: { runtime: 'installed', piper: 'installed', python: 'installed', base: 'installed' } });
+    // A stand-in interpreter the real doctor probe can run: it ignores its arguments and prints the pinned version, as the import check does.
+    const python = join(w.speakHome, 'python', 'bin', 'python');
+    writeFileSync(python, '#!/bin/sh\necho 0.4.4\n'); chmodSync(python, 0o755);
+    await w.doctor();
+    const report = w.texts()[0];
+    if (unlocked) assert.match(report, /✗ Entorno Python \+ mlx-audio: mlx_audio se importa \(mlx-audio 0\.4\.4\), pero el entorno no se instaló con las dependencias fijadas actuales\n    → ejecutá \/speak → «Instalar todo»/);
+    else assert.match(report, /✓ Entorno Python \+ mlx-audio: mlx_audio se importa \(mlx-audio 0\.4\.4\)\n/);
+    assert.deepEqual(w.log, [], 'the doctor installs nothing');
+  }
+});

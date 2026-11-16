@@ -14,9 +14,11 @@
 import './helpers/guard-real-home.ts';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { EXEC_BIT, assertMode } from './helpers/platform.ts';
 import { test } from 'node:test';
 import { MIN_PYTHON, MLX_AUDIO_VERSION, MLX_IMPORT_CODE, PYTHON_INSTRUCTION, PYTHON_TOOL_FLAGS, defaultRunTool, detectPythonTooling, ensurePythonEnv, findPython, makeWhich, pythonEnvStatus, type RunResult, type RunTool } from '../lib/speak-python-env.ts';
@@ -28,6 +30,9 @@ const roots: string[] = [];
 test.afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const tmp = () => { const root = mkdtempSync(join(tmpdir(), 'gs-pyenv-')); roots.push(root); const home = join(root, '.gentle-speak'); mkdirSync(home, { recursive: true }); return { root, home }; };
 const ok = (stdout = ''): RunResult => ({ code: 0, stdout, stderr: '' });
+/** T63: the hash-locked requirements every install uses, resolved from the package (never process.cwd()), and its sha256 as recorded in python.json. */
+const LOCK = fileURLToPath(new URL('../scripts/requirements-qwen.txt', import.meta.url));
+const LOCK_SHA = createHash('sha256').update(readFileSync(LOCK)).digest('hex');
 
 type Call = { command: string; args: string[]; env?: NodeJS.ProcessEnv; cwd?: string };
 /** A fake toolbox: `uv venv` and `python -m venv` create the interpreter file; pip installs succeed; the import prints the version. */
@@ -59,20 +64,20 @@ test('uv is preferred over venv: uv venv --python 3.12, uv pip install the pinne
   assert.equal(out.status, 'installed'); assert.equal(out.status === 'installed' && out.tool, 'uv');
   const venv = join(home, 'python'), py = join(venv, 'bin', 'python');
   assert.deepEqual(t.calls.find(c => c.args[0] === 'venv'), { command: '/bin/uv', args: ['venv', '--no-config', '--python', '3.12', venv], env: { HOME: '/real', HF_HOME: '/real/hf', UV_NO_CONFIG: '1' }, cwd: home });
-  assert.deepEqual(t.calls.find(c => c.args[0] === 'pip')!.args, ['pip', 'install', '--no-config', '--python', py, `mlx-audio==${MLX_AUDIO_VERSION}`]);
+  assert.deepEqual(t.calls.find(c => c.args[0] === 'pip')!.args, ['pip', 'install', '--no-config', '--python', py, '--require-hashes', '-r', LOCK]);
   assert.equal(t.calls.some(c => c.args.includes('-m')), false, 'no venv module when uv is present');
   assert.ok(steps.length >= 3, steps.join('|'));
 });
 
-test('without uv, python3 -m venv of a Python >= 3.11 is used (the newest candidate wins, 3.10 is refused) and pip installs the pin', async () => {
+test('without uv, python3 -m venv of a Python >= 3.12 is used (the newest candidate wins, 3.11 is refused) and pip installs the lock', async () => {
   const { home } = tmp();
-  const t = toolbox({ versions: { python3: '3.10', 'python3.10': '3.10', 'python3.11': '3.11' } });
-  const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf(['python3', 'python3.10', 'python3.11']), platform: 'darwin', env: {} });
+  const t = toolbox({ versions: { python3: '3.11', 'python3.11': '3.11', 'python3.12': '3.12' } });
+  const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf(['python3', 'python3.11', 'python3.12']), platform: 'darwin', env: {} });
   assert.equal(out.status, 'installed'); assert.equal(out.status === 'installed' && out.tool, 'venv');
   const made = t.calls.find(c => c.args[1] === '-m' && c.args[2] === 'venv')!;
-  assert.equal(made.command, '/bin/python3.11'); assert.deepEqual(made.args, ['-I', '-m', 'venv', join(home, 'python')]);
+  assert.equal(made.command, '/bin/python3.12'); assert.deepEqual(made.args, ['-I', '-m', 'venv', join(home, 'python')]);
   const install = t.calls.find(c => c.args[2] === 'pip')!;
-  assert.equal(install.command, join(home, 'python', 'bin', 'python')); assert.deepEqual(install.args, ['-I', '-m', 'pip', 'install', '--disable-pip-version-check', `mlx-audio==${MLX_AUDIO_VERSION}`]);
+  assert.equal(install.command, join(home, 'python', 'bin', 'python')); assert.deepEqual(install.args, ['-I', '-m', 'pip', 'install', '--disable-pip-version-check', '--require-hashes', '-r', LOCK]);
 });
 
 test('neither uv nor a suitable Python: an instruction and a skip; nothing is created, no package command runs', async () => {
@@ -80,7 +85,7 @@ test('neither uv nor a suitable Python: an instruction and a skip; nothing is cr
   const t = toolbox({ versions: { python3: '3.9' } });
   const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf(['python3']), platform: 'darwin', env: {} });
   assert.deepEqual(out, { status: 'skipped', instruction: PYTHON_INSTRUCTION });
-  assert.match(PYTHON_INSTRUCTION, /uv/); assert.match(PYTHON_INSTRUCTION, /Python 3\.11/); assert.match(PYTHON_INSTRUCTION, /No instalo nada del sistema/);
+  assert.match(PYTHON_INSTRUCTION, /uv/); assert.match(PYTHON_INSTRUCTION, /Python 3\.12/); assert.match(PYTHON_INSTRUCTION, /No instalo nada del sistema/);
   assert.equal(existsSync(join(home, 'python')), false); assert.equal(existsSync(join(home, PYTHON_RECORD_FILE)), false);
   assert.equal(t.calls.every(c => c.args[0] === '-I' && c.args[1] === '-c' && c.args[2].includes('sys.version_info')), true, 'only version probes ran');
   assert.deepEqual(await detectPythonTooling({ which: whichOf([]), run: t.run }), { kind: 'none', instruction: PYTHON_INSTRUCTION });
@@ -94,7 +99,7 @@ test('python.json is written (schema gentle-speak.python/v1, mode 0600) and reso
   const py = join(home, 'python', 'bin', 'python');
   assert.equal(out.status === 'installed' && out.python, py);
   const record = JSON.parse(readFileSync(join(home, 'python.json'), 'utf8'));
-  assert.deepEqual(record, { schema: 'gentle-speak.python/v1', python: py, mlxAudio: MLX_AUDIO_VERSION, created: now.toISOString() });
+  assert.deepEqual(record, { schema: 'gentle-speak.python/v1', python: py, mlxAudio: MLX_AUDIO_VERSION, lockSha256: LOCK_SHA, created: now.toISOString() });
   assertMode(join(home, 'python.json'), 0o600);
   assert.equal(resolveQwenPython(home), py);
   assert.deepEqual((await pythonEnvStatus(home)), { state: 'installed', python: py });
@@ -134,8 +139,8 @@ test('a failed install or a failed import is a failure with no python.json', asy
   }
 });
 
-test('uv that cannot provide 3.12 falls back to a system Python >= 3.11; if that fails too the failure names uv', async () => {
-  const a = tmp(), t = toolbox({ failUvVenv: true, versions: { python3: '3.11' } });
+test('uv that cannot provide 3.12 falls back to a system Python >= 3.12; if that fails too the failure names uv', async () => {
+  const a = tmp(), t = toolbox({ failUvVenv: true, versions: { python3: '3.12' } });
   const out = await ensurePythonEnv({ home: a.home, confirmed: true, run: t.run, which: whichOf(['uv', 'python3']), platform: 'darwin', env: {} });
   assert.equal(out.status === 'installed' && out.tool, 'venv');
   const b = tmp(), u = toolbox({ failUvVenv: true });
@@ -159,7 +164,7 @@ test('an explicit confirmation is required and nothing runs without it', async (
   assert.deepEqual(t.calls, []);
 });
 
-test('findPython and makeWhich: PATH lookup without a shell, newest >= 3.11 only', async () => {
+test('findPython and makeWhich: PATH lookup without a shell, newest >= 3.12 only', async () => {
   const { root } = tmp();
   const bin = join(root, 'bin'); mkdirSync(bin);
   writeFileSync(join(bin, 'uv'), '#!/bin/sh\n', { mode: 0o755 }); writeFileSync(join(bin, 'notexec'), 'x', { mode: 0o644 });
@@ -195,8 +200,8 @@ test('T49 R1-001: an existing environment with another mlx-audio version is not 
   assert.equal(JSON.parse(readFileSync(join(home, 'python.json'), 'utf8')).mlxAudio, MLX_AUDIO_VERSION);
 });
 
-test('T49 R3-venv-pip-reuse: a leftover venv from a failed install whose interpreter is broken or older than 3.11 is recreated with --clear, not pip-installed into', async () => {
-  for (const [tooling, versions] of [['uv', {}], ['uv', { python: '3.9' }], ['python3', {}], ['python3', { python: '3.10', python3: '3.12' }]] as const) {
+test('T49 R3-venv-pip-reuse: a leftover venv from a failed install whose interpreter is broken or older than 3.12 is recreated with --clear, not pip-installed into', async () => {
+  for (const [tooling, versions] of [['uv', {}], ['uv', { python: '3.9' }], ['uv', { python: '3.11' }], ['python3', {}], ['python3', { python: '3.11', python3: '3.12' }]] as const) {
     const { home } = tmp();
     const which = whichOf(tooling === 'uv' ? ['uv'] : ['python3']);
     const first = await ensurePythonEnv({ home, confirmed: true, run: toolbox({ failInstall: true, versions: { python3: '3.12' } }).run, which, platform: 'darwin', env: {} });
@@ -210,7 +215,7 @@ test('T49 R3-venv-pip-reuse: a leftover venv from a failed install whose interpr
   }
 });
 
-test('T49 R3-venv-pip-reuse: a leftover venv with a healthy 3.11+ interpreter is completed in place (no --clear)', async () => {
+test('T49 R3-venv-pip-reuse: a leftover venv with a healthy 3.12+ interpreter is completed in place (no --clear)', async () => {
   const { home } = tmp();
   const which = whichOf(['uv']);
   await ensurePythonEnv({ home, confirmed: true, run: toolbox({ failInstall: true }).run, which, platform: 'darwin', env: {} });
@@ -240,7 +245,7 @@ function hostileProject(root: string) {
 }
 
 test('T61: every install child (probes, venv, install, validation) runs in the shared home, never in process.cwd(); the home ends 0700', async () => {
-  for (const [label, names, o] of [['uv', ['uv'], {}], ['venv', ['python3.12'], { versions: { 'python3.12': '3.12' } }], ['uv fallback', ['uv', 'python3.11'], { failUvVenv: true, versions: { 'python3.11': '3.11' } }]] as const) {
+  for (const [label, names, o] of [['uv', ['uv'], {}], ['venv', ['python3.12'], { versions: { 'python3.12': '3.12' } }], ['uv fallback', ['uv', 'python3.12'], { failUvVenv: true, versions: { 'python3.12': '3.12' } }]] as const) {
     const { root, home } = tmp();
     const { project } = hostileProject(root);
     const t = toolbox(o);
@@ -270,9 +275,9 @@ test('T61: every uv invocation carries --no-config and UV_NO_CONFIG=1; the calle
   }
 });
 
-test('T61: python -m venv, python -m pip and the version probes run in isolated mode (-I) on 3.11 and on 3.12; the import check keeps the worker flags', async () => {
+test('T61: python -m venv, python -m pip and the version probes run in isolated mode (-I) on 3.12 and on 3.13; the import check keeps the worker flags', async () => {
   assert.deepEqual([...PYTHON_TOOL_FLAGS], ['-I']);
-  for (const version of ['3.11', '3.12']) {
+  for (const version of ['3.12', '3.13']) {
     const { home } = tmp();
     const name = `python${version}`;
     const t = toolbox({ versions: { [name]: version, python: version } });
@@ -364,14 +369,102 @@ test('T61: hostile project regression: a planted pip/ or venv/ and a uv.toml in 
   assert.ok(seen.length > 0);
 });
 
-test('Python 3.10 is refused: the Qwen worker and the import check run with -P, which exists only from 3.11', async () => {
-  assert.deepEqual([...MIN_PYTHON], [3, 11]);
+test('T63: Python 3.11 and 3.10 are refused and 3.12 is accepted: numpy in the lock needs 3.12 (and the worker\'s -P needs 3.11)', async () => {
+  assert.deepEqual([...MIN_PYTHON], [3, 12]);
   assert.ok(QWEN_PYTHON_FLAGS.includes('-P'));
-  const t = toolbox({ versions: { python3: '3.10', 'python3.10': '3.10' } });
-  assert.equal(await findPython({ which: whichOf(['python3', 'python3.10']), run: t.run }), undefined);
-  const { home } = tmp();
-  const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf(['python3', 'python3.10']), platform: 'darwin', env: {} });
-  assert.equal(out.status, 'skipped', JSON.stringify(out));
-  assert.equal(t.calls.some(c => c.args.join(' ').includes('-m venv') || c.args.includes('install')), false);
-  assert.match(PYTHON_INSTRUCTION, /3\.11 o superior/);
+  for (const old of ['3.10', '3.11']) {
+    const name = `python${old}`;
+    const t = toolbox({ versions: { python3: old, [name]: old } });
+    assert.equal(await findPython({ which: whichOf(['python3', name]), run: t.run }), undefined, old);
+    const { home } = tmp();
+    const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf(['python3', name]), platform: 'darwin', env: {} });
+    assert.equal(out.status, 'skipped', `${old}: ${JSON.stringify(out)}`);
+    assert.equal(t.calls.some(c => c.args.join(' ').includes('-m venv') || c.args.includes('install')), false, old);
+    assert.equal(t.calls.some(c => c.command.endsWith('/python3.11')), false, `${old}: python3.11 is no longer a candidate`);
+  }
+  assert.deepEqual(await findPython({ which: whichOf(['python3']), run: toolbox({ versions: { python3: '3.12' } }).run }), { python: '/bin/python3', version: '3.12' });
+  assert.match(PYTHON_INSTRUCTION, /3\.12 o superior/); assert.doesNotMatch(PYTHON_INSTRUCTION, /3\.11/);
+});
+
+// ---- T63 (S5, S15, L118, L124): the Qwen environment installs exactly the hash-locked requirements ----------------------------------------
+test('T63: both install paths install the lock with --require-hashes -r <absolute lock path>; the bare mlx-audio spec is never passed', async () => {
+  assert.ok(LOCK.endsWith(join('scripts', 'requirements-qwen.txt')) && LOCK === join(LOCK), 'absolute and normalized');
+  for (const [label, names, o] of [['uv', ['uv'], {}], ['venv', ['python3.12'], { versions: { 'python3.12': '3.12' } }]] as const) {
+    const { root, home } = tmp();
+    const { project } = hostileProject(root);
+    const t = toolbox(o);
+    const out = await inside(project, () => ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf([...names]), platform: 'darwin', env: {} }));
+    assert.equal(out.status, 'installed', label);
+    const installs = t.calls.filter(c => c.args.includes('install'));
+    assert.equal(installs.length, 1, label);
+    const py = join(home, 'python', 'bin', 'python');
+    assert.deepEqual(installs[0].args, label === 'uv' ? ['pip', 'install', '--no-config', '--python', py, '--require-hashes', '-r', LOCK] : ['-I', '-m', 'pip', 'install', '--disable-pip-version-check', '--require-hashes', '-r', LOCK], label);
+    for (const call of t.calls) assert.equal(call.args.some(arg => /^mlx-audio/.test(arg)), false, `${label}: ${call.args.join(' ')}`);
+  }
+});
+
+test('T63: a missing or unreadable lock fails clearly before any installer (or any probe) runs', async () => {
+  for (const names of [['uv'], ['python3.12']]) {
+    const { root, home } = tmp();
+    const t = toolbox({ versions: { 'python3.12': '3.12' } });
+    for (const lockPath of [join(root, 'missing.txt'), root /* a directory: unreadable as a file */]) {
+      const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf(names), platform: 'darwin', env: {}, lockPath } as Parameters<typeof ensurePythonEnv>[0]);
+      assert.equal(out.status, 'failed', lockPath);
+      assert.match(out.status === 'failed' ? out.message : '', /requirements-qwen\.txt/);
+    }
+    assert.deepEqual(t.calls, [], 'nothing ran');
+    assert.equal(existsSync(join(home, 'python')), false); assert.equal(existsSync(join(home, PYTHON_RECORD_FILE)), false);
+  }
+});
+
+test('T63: the shipped lock pins exactly mlx-audio==0.4.4 and hashes every requirement; nothing is unpinned', () => {
+  assert.equal(MLX_AUDIO_VERSION, '0.4.4');
+  const lines = readFileSync(LOCK, 'utf8').replace(/\r\n/g, '\n').split('\n');
+  const requirements: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '' || line.startsWith('#') || /^\s+--hash=/.test(line)) continue;
+    const name = line.split(/[=<>!~;\s\\[]/)[0];
+    assert.match(line, /^[A-Za-z0-9._-]+(\[[^\]]+\])?==[^\s;\\]+( ; [^\\]+)? \\$/, `pinned with ==: ${line}`);
+    assert.match(lines[i + 1] ?? '', /^\s+--hash=sha256:[0-9a-f]{64}( \\)?$/, `${name} is followed by a sha256 hash`);
+    requirements.push(name.toLowerCase());
+  }
+  assert.ok(requirements.length >= 20, `${requirements.length} requirements`);
+  assert.deepEqual(lines.filter(line => /^mlx-audio\b/.test(line)).map(line => line.split(' ')[0]), ['mlx-audio==0.4.4']);
+  for (const line of lines.filter(line => /--hash=/.test(line))) assert.match(line, /^\s+--hash=sha256:[0-9a-f]{64}( \\)?$/, line);
+  assert.equal(lines.some(line => /^\s*-(e|-index-url|-extra-index-url|f|-find-links|i)\b/.test(line)), false, 'no index or editable overrides');
+});
+
+test('T63: an environment recorded without the current lock sha (an old unlocked install, or another lock) is re-installed from the lock into the same venv', async () => {
+  for (const [label, names, o, stale] of [
+    ['uv, no lock recorded', ['uv'], {}, undefined],
+    ['uv, another lock', ['uv'], {}, 'f'.repeat(64)],
+    ['pip, no lock recorded', ['python3.12'], { versions: { 'python3.12': '3.12', python: '3.12' } }, undefined],
+  ] as const) {
+    const { home } = tmp();
+    const first = await ensurePythonEnv({ home, confirmed: true, run: toolbox(o).run, which: whichOf([...names]), platform: 'darwin', env: {} });
+    assert.equal(first.status, 'installed', label);
+    const py = join(home, 'python', 'bin', 'python');
+    assert.deepEqual(await pythonEnvStatus(home), { state: 'installed', python: py }, `${label}: current lock`);
+    // The record an earlier (unlocked) release wrote, or one from another lock.
+    writeFileSync(join(home, PYTHON_RECORD_FILE), JSON.stringify({ schema: 'gentle-speak.python/v1', python: py, mlxAudio: MLX_AUDIO_VERSION, created: '2026-11-01T00:00:00.000Z', ...(stale ? { lockSha256: stale } : {}) }));
+    assert.deepEqual(await pythonEnvStatus(home), { state: 'missing', python: py, outdated: true }, label);
+    const t = toolbox({ versions: { python: '3.12', 'python3.12': '3.12' } });
+    const out = await ensurePythonEnv({ home, confirmed: true, run: t.run, which: whichOf([...names]), platform: 'darwin', env: {} });
+    assert.equal(out.status, 'installed', label); assert.equal(out.status === 'installed' && out.alreadyInstalled, false, label);
+    assert.equal(t.calls.some(c => c.args[0] === 'venv' || c.args.join(' ').includes('-m venv')), false, `${label}: the venv is not recreated`);
+    const install = t.calls.filter(c => c.args.includes('install'));
+    assert.equal(install.length, 1, label); assert.deepEqual(install[0].args.slice(-3), ['--require-hashes', '-r', LOCK], label);
+    assert.equal(JSON.parse(readFileSync(join(home, PYTHON_RECORD_FILE), 'utf8')).lockSha256, LOCK_SHA, label);
+    assert.deepEqual(await pythonEnvStatus(home), { state: 'installed', python: py }, `${label}: current again`);
+  }
+});
+
+test('T63: an interpreter from the old voices manifest (no python.json) is not ours to re-install: its status is unchanged', async () => {
+  const { root, home } = tmp();
+  const py = join(root, 'brew', 'bin', 'python3'); mkdirSync(join(root, 'brew', 'bin'), { recursive: true }); writeFileSync(py, '#!fake\n');
+  mkdirSync(join(home, 'voices', 'qwen3'), { recursive: true });
+  writeFileSync(join(home, 'voices', 'qwen3', 'manifest.json'), JSON.stringify({ schema: 'gentle-speak.qwen-voices/v1', python: py, voices: {} }));
+  assert.equal(resolveQwenPython(home), py);
+  assert.deepEqual(await pythonEnvStatus(home), { state: 'installed', python: py });
 });

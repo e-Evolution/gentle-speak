@@ -72,7 +72,8 @@ export interface SetupEnv {
   platform: string;
   runtimeStatus: (options: { home: string; target: SpeakTarget; manifest?: SpeakRuntimeManifest }) => Promise<{ state: ComponentState }>;
   modelStatus: (options: { home: string; voice: 'es_MX' | 'es_ES'; manifest?: SpeakModelManifest }) => Promise<{ state: ComponentState }>;
-  pythonStatus: (home: string) => Promise<{ state: 'installed' | 'missing' }>;
+  /** T63: `outdated` marks an env whose interpreter works but was not installed from the current dependency lock (setup installs the lock into it). */
+  pythonStatus: (home: string) => Promise<{ state: 'installed' | 'missing'; outdated?: boolean }>;
   tooling: () => Promise<PythonTooling>;
   baseStatus: (hfHome: string) => Promise<'installed' | 'missing'>;
   hfHome: string;
@@ -94,11 +95,12 @@ export async function computeSetupPlan(env: SetupEnv): Promise<SetupPlan> {
   const qwenSupported = env.target === QWEN_TARGET;
   if (qwenSupported) {
     const tooling = await env.tooling().catch((): PythonTooling => ({ kind: 'none', instruction: PYTHON_INSTRUCTION }));
-    const pythonState = (await env.pythonStatus(env.home).catch(() => ({ state: 'missing' as const }))).state;
+    const pythonStatus = await env.pythonStatus(env.home).catch((): { state: 'missing'; outdated?: boolean } => ({ state: 'missing' }));
+    const pythonState = pythonStatus.state, pythonRuns = pythonState === 'installed' || pythonStatus.outdated === true;
     const blocked = tooling.kind === 'none' ? tooling.instruction : undefined;
     components.push({ id: 'python', label: 'Entorno Python de gentle-speak con mlx-audio', state: pythonState, bytes: PYTHON_ENV_APPROX_BYTES, sizeSource: PYTHON_ENV_SIZE_SOURCE, ...(pythonState === 'missing' && blocked ? { blocked } : {}) });
     const baseState = await env.baseStatus(env.hfHome).catch(() => 'missing' as const);
-    components.push({ id: 'qwen-base', label: 'Modelo Qwen3-TTS Base 0.6B', state: baseState, bytes: QWEN_BASE_APPROX_BYTES, sizeSource: QWEN_BASE_SIZE_SOURCE_APPROX, ...(baseState === 'missing' && blocked && pythonState !== 'installed' ? { blocked } : {}) }); // an existing env needs no tooling to download the model
+    components.push({ id: 'qwen-base', label: 'Modelo Qwen3-TTS Base 0.6B', state: baseState, bytes: QWEN_BASE_APPROX_BYTES, sizeSource: QWEN_BASE_SIZE_SOURCE_APPROX, ...(baseState === 'missing' && blocked && !pythonRuns ? { blocked } : {}) }); // an existing env (even an outdated one) needs no tooling to download the model
   }
   const missing = components.filter(component => component.state !== 'installed');
   const actionable = missing.filter(component => component.state === 'missing' && !component.blocked);

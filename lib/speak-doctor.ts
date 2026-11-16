@@ -31,7 +31,8 @@ export interface DoctorReport { checks: DoctorCheck[]; ok: number; failed: numbe
 export type ServiceProbe = { state: 'running'; pid?: number; version?: string; build?: string; /** Whether version and build equal what this code would start; undefined when unknown. */ current?: boolean } | { state: 'stale'; reason: string } | { state: 'absent' };
 export type LockProbe = { state: 'free' } | { state: 'owned'; pid: number; alive: boolean };
 export type FocusSource = 'terminal-events' | 'herdr' | 'unknown';
-export interface PythonProbe { recorded: boolean; python?: string; exists?: boolean; importOk?: boolean; version?: string; message?: string }
+/** `lockCurrent: false` (T63): the env imports, but `python.json` does not record the current dependency lock (an earlier unlocked install or another lock). */
+export interface PythonProbe { recorded: boolean; python?: string; exists?: boolean; importOk?: boolean; version?: string; message?: string; lockCurrent?: boolean }
 
 export interface DoctorProbes {
   platform: string;
@@ -98,9 +99,11 @@ export async function runDoctor(probes: DoctorProbes): Promise<DoctorReport> {
   checks.push(await check('python', 'Entorno Python + mlx-audio', async () => {
     if (!qwen) return na('solo en Apple Silicon (Qwen)');
     const python = await probes.python();
-    if (!python.recorded) return { status: 'fail', detail: 'no hay entorno registrado', hint: `${INSTALL_ALL} (necesita uv o Python 3.11+: brew install python@3.12)` };
+    if (!python.recorded) return { status: 'fail', detail: 'no hay entorno registrado', hint: `${INSTALL_ALL} (necesita uv o Python 3.12+: brew install python@3.12)` };
     if (python.exists === false) return { status: 'fail', detail: 'el intérprete registrado ya no existe', hint: INSTALL_ALL };
-    return python.importOk ? { status: 'ok', detail: `mlx_audio se importa${python.version ? ` (mlx-audio ${python.version})` : ''}` }
+    const imports = `mlx_audio se importa${python.version ? ` (mlx-audio ${python.version})` : ''}`;
+    if (python.importOk && python.lockCurrent === false) return { status: 'fail', detail: `${imports}, pero el entorno no se instaló con las dependencias fijadas actuales`, hint: INSTALL_ALL };
+    return python.importOk ? { status: 'ok', detail: imports }
       : { status: 'fail', detail: `mlx_audio no se importa${python.message ? `: ${python.message}` : ''}`, hint: INSTALL_ALL };
   }));
   checks.push(await check('base', 'Modelo Qwen Base 0.6B (caché)', async () => {

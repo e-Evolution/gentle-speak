@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="gentle-speak: hear your coding agent">
+  <rect width="1280" height="640" fill="#1A1218"/>
+  <g transform="translate(88 179) scale(2.2)"><rect x="4" y="4" width="120" height="120" rx="28" fill="#1A1218"/><rect x="4.75" y="4.75" width="118.5" height="118.5" rx="27.25" fill="none" stroke="#342230" stroke-width="1.5"/><rect x="18" y="42" width="14" height="44" rx="3" fill="#F43888"/><rect x="44" y="56" width="6" height="16" rx="3" fill="#B4E7C7"/><rect x="54" y="47" width="6" height="34" rx="3" fill="#E0C27A"/><rect x="64" y="52" width="6" height="24" rx="3" fill="#C4DAF6"/><rect x="74" y="39" width="6" height="50" rx="3" fill="#F2B86D"/><rect x="84" y="49" width="6" height="30" rx="3" fill="#FFB1DD"/><rect x="94" y="35" width="6" height="58" rx="3" fill="#F095C8"/><rect x="104" y="54" width="6" height="20" rx="3" fill="#FF718F"/></g>
+  <text x="420" y="300" font-family="Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif" font-weight="700" font-size="96" fill="#F6EFF3" letter-spacing="-2">gentle<tspan fill="#F43888">-speak</tspan></text>
+  <text x="424" y="370" font-family="Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif" font-weight="500" font-size="32" fill="#D7A0B8">Hear your coding agent's questions and results.</text>
+  <text x="424" y="418" font-family="Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif" font-weight="500" font-size="27" fill="#A78E9B">Local text-to-speech for Gentle Shell and Gentle Dot.</text>
+</svg>

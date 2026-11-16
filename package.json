@@ -33,6 +33,7 @@
     "scripts/",
     "!scripts/lock-qwen.mjs",
     "assets/preview.png",
+    "assets/logo.svg",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",

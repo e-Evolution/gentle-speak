@@ -34,7 +34,7 @@ test('npm and Pi discover the inert extension entrypoint', async () => {
   });
   assert.ok(!manifest.dependencies?.['@earendil-works/pi-coding-agent']);
   assert.ok(!manifest.dependencies?.['@earendil-works/pi-tui']);
-  assert.deepEqual(manifest.files, ['extensions/', 'lib/', 'scripts/', '!scripts/lock-qwen.mjs', 'assets/preview.png', 'README.md', 'CHANGELOG.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md']);
+  assert.deepEqual(manifest.files, ['extensions/', 'lib/', 'scripts/', '!scripts/lock-qwen.mjs', 'assets/preview.png', 'assets/logo.svg', 'README.md', 'CHANGELOG.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md']);
   assert.equal(manifest.scripts['lock:qwen'], 'node scripts/lock-qwen.mjs');
   assert.equal(manifest.scripts.test, 'node --experimental-strip-types --import ./tests/helpers/guard-real-home.ts --test --test-timeout=60000 tests/*.test.ts');
   assert.match(await readFile(new URL('extensions/gentle-speak.ts', root), 'utf8'), /export default function/);
@@ -55,7 +55,7 @@ test('npm pack includes a decodable PNG preview rather than just an image metada
   assert.equal(png.toString('ascii', png.length - 8, png.length - 4), 'IEND');
   const [pack] = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json'], { cwd: new URL('.', root), encoding: 'utf8', shell: process.platform === 'win32' /* T62: npm is npm.cmd there, which needs a shell */ }));
   const files = new Set(pack.files.map((file: { path: string }) => file.path));
-  for (const path of ['assets/preview.png', 'README.md', 'CHANGELOG.md', 'LICENSE', 'extensions/gentle-speak.ts', 'scripts/requirements-qwen.txt']) assert.ok(files.has(path), `missing ${path}`);
+  for (const path of ['assets/preview.png', 'assets/logo.svg', 'README.md', 'CHANGELOG.md', 'LICENSE', 'extensions/gentle-speak.ts', 'scripts/requirements-qwen.txt']) assert.ok(files.has(path), `missing ${path}`);
   // T63: the lock regeneration tool exists in the repository but is never published; nor are the internal directories the CI pack check rejects.
   assert.ok(existsSync(new URL('scripts/lock-qwen.mjs', root)), 'the lock script exists');
   assert.equal(files.has('scripts/lock-qwen.mjs'), false, 'the lock script is not shipped');

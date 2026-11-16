@@ -1,8 +1,8 @@
+<p align="center"><img src="assets/logo.svg" alt="gentle-speak logo: a cursor turning into a sound wave" width="112"></p>
+
 # gentle-speak
 
 Opt-in, local text-to-speech for Gentle Shell (Pi): it reads the agent's questions and usable results aloud, so you do not have to read every answer after each task. Voices are Piper (small, fast), Qwen3-TTS cloned from **your own** voice or a voice you design from a text description (Apple Silicon), or your system voice. Everything runs on your machine. It can also speak inside Gentle Dot. **Automatic speech is off until you turn it on.**
-
-[Preview](assets/preview.png) is a speech illustration, **not** a UI screenshot.
 
 ## Quick start
 

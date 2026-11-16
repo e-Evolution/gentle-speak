@@ -44,6 +44,16 @@ npm run lock:qwen -- --constraints constraints.txt
 
 The script runs `uv pip compile --no-config --universal --python-version 3.12 --generate-hashes`, and writes the file with its two header lines. Install the result in a scratch venv and run the import check before you commit it. The script is excluded from the npm package.
 
+## Logo and preview image
+
+`assets/logo.svg` is the logo. `assets/preview.png` (the package and social preview, 1280×640) is rendered from `assets/social-preview.svg`:
+
+```bash
+rsvg-convert -w 1280 -h 640 assets/social-preview.svg -o assets/preview.png
+```
+
+The preview uses the Avenir Next font; render it on a machine that has it, or the text falls back to another sans-serif font.
+
 ## Code conventions
 
 - TypeScript run directly by Node (`--experimental-strip-types`), with no build step.

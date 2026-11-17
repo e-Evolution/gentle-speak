@@ -1,0 +1,32 @@
+// Small additions on top of the gentle color scheme.
+
+a:hover,
+a:focus {
+  color: #ffb1dd;
+}
+
+// Dark text on the pink button: 5.0:1 instead of 3.6:1 for white.
+.btn-primary,
+.btn-primary:hover,
+.btn-primary:focus {
+  color: #1a1218 !important;
+}
+
+.site-footer-note {
+  color: #a78e9b;
+}
+
+.muted {
+  color: #a78e9b;
+}
+
+table th {
+  color: #e0c27a;
+}
+
+.home-logo {
+  display: block;
+  width: 112px;
+  height: 112px;
+  margin: 0 0 1rem;
+}

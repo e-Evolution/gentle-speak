@@ -1,0 +1,34 @@
+// gentle-speak dark color scheme for just-the-docs v0.10.x.
+// Palette of the logo (from gentlemanprogramming.com). Contrast against the
+// body background #1A1218: text 16.2:1, muted 6.1:1, links 5.0:1,
+// link hover 11.0:1, headings 10.6:1.
+
+$color-scheme: dark;
+
+$gentle-bg: #1a1218;
+$gentle-sidebar: #20161e;
+$gentle-code: #241822;
+$gentle-border: #342230;
+$gentle-text: #f6eff3;
+$gentle-muted: #a78e9b;
+$gentle-pink: #f43888;
+$gentle-pink-light: #ffb1dd;
+$gentle-gold: #e0c27a;
+
+$body-background-color: $gentle-bg;
+$body-heading-color: $gentle-gold;
+$body-text-color: $gentle-text;
+$link-color: $gentle-pink;
+$nav-child-link-color: $gentle-muted;
+$sidebar-color: $gentle-sidebar;
+$base-button-color: $gentle-code;
+$btn-primary-color: $gentle-pink;
+$code-background-color: $gentle-code;
+$code-linenumber-color: $gentle-muted;
+$feedback-color: darken($gentle-sidebar, 3%);
+$table-background-color: $gentle-sidebar;
+$search-background-color: $gentle-code;
+$search-result-preview-color: $gentle-muted;
+$border-color: $gentle-border;
+
+@import "./vendor/OneDarkJekyll/syntax";

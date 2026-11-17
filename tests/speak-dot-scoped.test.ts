@@ -96,7 +96,8 @@ test('T53: README installs the scoped package and restarts with pi -r instead of
   assert.match(readme, /npm:@e-evolution\/gentle-speak/);
   assert.match(quick, /gentle-shell install npm:@e-evolution\/gentle-speak/);
   assert.match(quick, /gentle-shell install git:github\.com\/e-Evolution\/gentle-speak/);
-  assert.match(quick, /once the repository is public/i);
+  assert.doesNotMatch(quick, /once the repository is public/i); // the repository is public: the git source works today
+  assert.match(quick, /Once published/);
   assert.match(quick, /gentle-shell install \.\//);
   assert.match(quick, /pi -r/);
   assert.doesNotMatch(quick, /Run `\/reload`/);

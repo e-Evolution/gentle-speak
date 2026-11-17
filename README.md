@@ -4,16 +4,18 @@
 
 Opt-in, local text-to-speech for Gentle Shell (Pi): it reads the agent's questions and usable results aloud, so you do not have to read every answer after each task. Voices are Piper (small, fast), Qwen3-TTS cloned from **your own** voice or a voice you design from a text description (Apple Silicon), or your system voice. Everything runs on your machine. It can also speak inside Gentle Dot. **Automatic speech is off until you turn it on.**
 
+**User manual:** [e-evolution.github.io/gentle-speak](https://e-evolution.github.io/gentle-speak/)
+
 ## Quick start
 
 ```bash
 # Once published (not published yet):
 gentle-shell install npm:@e-evolution/gentle-speak
 
-# Once the repository is public:
+# From GitHub:
 gentle-shell install git:github.com/e-Evolution/gentle-speak
 
-# Today, from a local checkout:
+# From a local checkout:
 cd gentle-speak && npm ci
 gentle-shell install ./
 ```
@@ -208,7 +210,7 @@ gentle-speak can speak inside Gentle Dot's engine without changing Dot.
 |-----------|------|-------|
 | Native audio runtime (sherpa-onnx + node-cpal) | about 18 MB | `~/.gentle-speak/runtime/` |
 | Piper `es_MX` voice | about 67 MB | `~/.gentle-speak/models/` |
-| Python env with `mlx-audio==0.4.4` and its hash-locked dependencies (Apple Silicon only) | about 400 MB on disk | `~/.gentle-speak/python/` (uv, else `python3 -m venv`; no sudo, system Python untouched) |
+| Python env with `mlx-audio==0.4.4` and its hash-locked dependencies (Apple Silicon only) | about 480 MB on disk | `~/.gentle-speak/python/` (uv, else `python3 -m venv`; no sudo, system Python untouched) |
 | Qwen3-TTS Base 0.6B model (Apple Silicon only) | about 2.5 GB | Hugging Face cache |
 
 The VoiceDesign 1.7B model is **never** part of setup: it is downloaded only if you choose «Crear voz propia…» and confirm. Each download is verified (pinned hashes for the runtime and Piper bundles).

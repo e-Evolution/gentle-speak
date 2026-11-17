@@ -1,10 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- The Qwen service stops a cancelled synthesis quietly instead of logging a missing-file error.
-- The user manual is also available in Spanish, at /es/, with an English / Español switch on every page.
-
 ## 0.1.0 - 2026-11-17
 
 First public release.
@@ -47,5 +42,6 @@ First public release.
 
 - The README doubles as the Gentle Hub instruction page. Install from GitHub with `gentle-shell install git:github.com/e-Evolution/gentle-speak`; the npm package will be `@e-evolution/gentle-speak`.
 - A user manual on GitHub Pages: https://e-evolution.github.io/gentle-speak/ (installation, usage, voices, configuration, Gentle Dot, architecture, platforms, troubleshooting, privacy and licenses).
+- The manual is also available in Spanish, at https://e-evolution.github.io/gentle-speak/es/, with an English / Español switch on every page.
 - After installing, restart Gentle Shell (for example `gentle-shell -r` to resume your session). `/reload` can crash Gentle Shell 4.7.0 (gentle-shell#2580).
 - MIT license. THIRD_PARTY_NOTICES.md records every component's license, including the GPL-3.0 note for espeak-ng inside the sherpa-onnx runtime that users download.

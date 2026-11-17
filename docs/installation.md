@@ -27,9 +27,7 @@ Everything else is downloaded by the setup, after you confirm it. See [What setu
 
 Pick one source.
 
-### From npm (once published)
-
-The package is not on npm yet. Once it is published:
+### From npm
 
 ```bash
 gentle-shell install npm:@e-evolution/gentle-speak

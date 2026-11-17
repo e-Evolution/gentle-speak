@@ -97,11 +97,20 @@ test('T53: README installs the scoped package and restarts with gentle-shell -r 
   assert.match(quick, /gentle-shell install npm:@e-evolution\/gentle-speak/);
   assert.match(quick, /gentle-shell install git:github\.com\/e-Evolution\/gentle-speak/);
   assert.doesNotMatch(quick, /once the repository is public/i); // the repository is public: the git source works today
-  assert.match(quick, /Once published/);
+  assert.doesNotMatch(quick, /once published|not published yet/i); // 0.1.0 is on npm
   assert.match(quick, /gentle-shell install \.\//);
   assert.match(quick, /gentle-shell -r/);
   assert.doesNotMatch(quick, /Run `\/reload`/);
   assert.doesNotMatch(readme, /@e-Evolution\/gentle-speak/);
+});
+test('the install guides no longer say the npm package is unpublished', () => {
+  const read = (f: string) => readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');
+  const en = read('docs/installation.md');
+  const es = read('docs/es/instalacion.md');
+  assert.match(en, /### From npm\b/);
+  assert.doesNotMatch(en, /once (it is )?published|not on npm yet/i);
+  assert.match(es, /### Desde npm\b/);
+  assert.doesNotMatch(es, /cuando (esté publicado|se publique)|todavía no está en npm/i);
 });
 test('T53: package.json, notices and changelog use the scoped name', () => {
   const read = (f: string) => readFileSync(new URL(`../${f}`, import.meta.url), 'utf8');

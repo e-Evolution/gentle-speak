@@ -29,9 +29,7 @@ Todo lo demás lo descarga la instalación, después de que lo confirmes. Consul
 
 Elige un origen.
 
-### Desde npm (cuando esté publicado)
-
-El paquete todavía no está en npm. Cuando se publique:
+### Desde npm
 
 ```bash
 gentle-shell install npm:@e-evolution/gentle-speak

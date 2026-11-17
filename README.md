@@ -11,7 +11,7 @@ Opt-in, local text-to-speech for Gentle Shell (Pi): it reads the agent's questio
 ## Quick start
 
 ```bash
-# Once published (not published yet):
+# From npm:
 gentle-shell install npm:@e-evolution/gentle-speak
 
 # From GitHub:

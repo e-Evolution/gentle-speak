@@ -34,11 +34,13 @@ aux_links_new_tab: true
 
 footer_content: >-
   MIT License · e-Evolution Consultants S.A. · Community extension for Gentle
-  Shell, not affiliated with Gentleman Programming
+  Shell, not affiliated with Gentleman Programming · Built with
+  <a href="https://github.com/Gentleman-Programming/gentle-ai">gentle-ai</a>
 # The Spanish pages (lang: es) show this one instead; see _includes/footer_custom.html.
 footer_content_es: >-
   Licencia MIT · e-Evolution Consultants S.A. · Extensión comunitaria para
-  Gentle Shell, no afiliada a Gentleman Programming
+  Gentle Shell, no afiliada a Gentleman Programming · Creada con
+  <a href="https://github.com/Gentleman-Programming/gentle-ai">gentle-ai</a>
 
 mermaid:
   version: "11.4.1"

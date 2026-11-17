@@ -1,5 +1,7 @@
 <p align="center"><img src="assets/logo.svg" alt="gentle-speak logo: a cursor turning into a sound wave" width="112"></p>
 
+<p align="center"><a href="https://github.com/Gentleman-Programming/gentle-ai"><img src="https://img.shields.io/badge/built%20with-gentle--ai-f43888" alt="Built with gentle-ai"></a></p>
+
 # gentle-speak
 
 Opt-in, local text-to-speech for Gentle Shell (Pi): it reads the agent's questions and usable results aloud, so you do not have to read every answer after each task. Voices are Piper (small, fast), Qwen3-TTS cloned from **your own** voice or a voice you design from a text description (Apple Silicon), or your system voice. Everything runs on your machine. It can also speak inside Gentle Dot. **Automatic speech is off until you turn it on.**
@@ -265,7 +267,7 @@ Only macOS arm64 has been run live. **Linux and Windows are verified with fakes 
 
 ## License and attribution
 
-gentle-speak is [MIT](LICENSE), Copyright (c) 2026 e-Evolution Consultants S.A. It is **not affiliated with Gentleman Programming**; it is built for Gentle Shell (gentle-pi, MIT, by Mario Zechner).
+gentle-speak is [MIT](LICENSE), Copyright (c) 2026 e-Evolution Consultants S.A. It is **not affiliated with Gentleman Programming**; it is built for Gentle Shell (gentle-pi, MIT), by Alan Buscaglia, which runs on Pi, by Mario Zechner. It was developed with [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), by Gentleman Programming.
 
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists every component and its license. In short:
 

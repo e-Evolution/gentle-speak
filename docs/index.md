@@ -14,6 +14,8 @@ permalink: /
 Opt-in, local text-to-speech for Gentle Shell (Pi). It reads the agent's questions and usable results aloud, so you do not have to read every answer after each task.
 {: .fs-6 .fw-300 }
 
+[![Built with gentle-ai](https://img.shields.io/badge/built%20with-gentle--ai-f43888)](https://github.com/Gentleman-Programming/gentle-ai)
+
 [Install it](installation.md){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
 [View it on GitHub](https://github.com/e-Evolution/gentle-speak){: .btn .fs-5 .mb-4 .mb-md-0 }
 

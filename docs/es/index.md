@@ -16,6 +16,8 @@ description: "gentle-speak lee en voz alta las preguntas y los resultados de Gen
 Texto a voz local y opcional para Gentle Shell (Pi). Lee en voz alta las preguntas del agente y sus resultados útiles, para que no tengas que leer cada respuesta después de cada tarea.
 {: .fs-6 .fw-300 }
 
+[![Creado con gentle-ai](https://img.shields.io/badge/built%20with-gentle--ai-f43888)](https://github.com/Gentleman-Programming/gentle-ai)
+
 [Instálalo](instalacion.md){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
 [Ver en GitHub](https://github.com/e-Evolution/gentle-speak){: .btn .fs-5 .mb-4 .mb-md-0 }
 

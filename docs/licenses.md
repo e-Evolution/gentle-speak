@@ -16,7 +16,7 @@ translation: es/licencias.md
 
 gentle-speak is released under the [MIT License](https://github.com/e-Evolution/gentle-speak/blob/main/LICENSE), Copyright (c) 2026 e-Evolution Consultants S.A.
 
-It is a community extension for Gentle Shell (gentle-pi, MIT, by Mario Zechner). It is **not affiliated with Gentleman Programming**.
+It is a community extension for Gentle Shell (gentle-pi, MIT), by Alan Buscaglia, which runs on Pi, by Mario Zechner. It is **not affiliated with Gentleman Programming**.
 
 ## Third-party components
 
@@ -64,5 +64,6 @@ Treat them as unknown until they are verified. Corrections are welcome as issues
 - **Prince Canuma** and the **mlx-audio** contributors, for the MLX speech library that runs Qwen3-TTS on Apple Silicon.
 - The **Qwen team** (Alibaba Cloud), for Qwen3-TTS, and **mlx-community**, for the MLX conversions of the Base and VoiceDesign models.
 - The **Piper** project, the authors of the `es_MX` (claude) and `es_ES` (davefx) voices and their datasets, and the **sherpa-onnx** maintainers (k2-fsa), for the converted bundles and the runtime.
-- **Pi and Gentle Shell**, by Mario Zechner and contributors, the host this extension is built for.
-- **gentle-ai**, by Gentleman Programming (MIT), used only as development tooling. Nothing from it is shipped.
+- **Pi**, by Mario Zechner and contributors, the coding agent Gentle Shell runs on.
+- **Gentle Shell** (gentle-pi), by Alan Buscaglia (Gentleman Programming), the host this extension is built for.
+- **gentle-ai**, by Gentleman Programming (MIT), used only as development tooling. Nothing from it is shipped. gentle-speak was built with gentle-ai.

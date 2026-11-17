@@ -21,7 +21,7 @@ Relation legend: **shipped** = in the package; **peer** = provided by Gentle She
 | 1 | seek-bzip | 2.0.0 (pinned) | MIT | https://www.npmjs.com/package/seek-bzip | shipped (npm dependency) |
 | 2 | @earendil-works/pi-coding-agent | `*` (peer) | MIT | https://www.npmjs.com/package/@earendil-works/pi-coding-agent | peer |
 | 3 | @earendil-works/pi-tui | `*` (peer) | MIT | https://www.npmjs.com/package/@earendil-works/pi-tui | peer |
-| 4 | Gentle Shell (gentle-pi) | host | MIT, Copyright (c) 2025 Mario Zechner | https://www.npmjs.com/package/gentle-pi | peer (the host application) |
+| 4 | Gentle Shell (gentle-pi), by Alan Buscaglia | host | MIT, Copyright (c) 2025 Mario Zechner | https://www.npmjs.com/package/gentle-pi | peer (the host application) |
 | 5 | sherpa-onnx-node and its platform binaries (e.g. sherpa-onnx-darwin-arm64) | 1.13.8 (pinned) | Apache-2.0 | https://github.com/k2-fsa/sherpa-onnx | downloaded (npm registry tarballs, hash-verified) |
 | 6 | onnxruntime (bundled inside the sherpa-onnx binaries) | as bundled by sherpa-onnx 1.13.8 | MIT (**unverified**: license file not checked) | https://github.com/microsoft/onnxruntime | downloaded |
 | 7 | node-cpal | 1.0.0 (pinned) | ISC (its Rust crates **unverified**) | https://github.com/saeta-eth/node-cpal | downloaded |
@@ -56,8 +56,9 @@ The sherpa-onnx prebuilt binaries include **espeak-ng, which is GPL-3.0-or-later
 - **Prince Canuma** and the **mlx-audio** contributors, for the MLX speech library that runs Qwen3-TTS on Apple Silicon.
 - The **Qwen team** (Alibaba Cloud), for Qwen3-TTS, and **mlx-community**, for the MLX conversions of the Base and VoiceDesign models.
 - The **Piper** project and the authors of the `es_MX` (claude) and `es_ES` (davefx) voices and their datasets, and the **sherpa-onnx** maintainers (k2-fsa) for the converted bundles and the runtime.
-- **Pi and Gentle Shell**, by Mario Zechner and contributors, the host this extension is built for.
-- **gentle-ai**, by Gentleman Programming (MIT, Copyright (c) 2025 Gentleman Programming, https://github.com/Gentleman-Programming/gentle-ai): used only as development tooling; nothing from it is shipped. gentle-speak is not affiliated with Gentleman Programming.
+- **Pi**, by Mario Zechner and contributors, the coding agent Gentle Shell runs on.
+- **Gentle Shell** (gentle-pi), by Alan Buscaglia (Gentleman Programming), the host this extension is built for. Its license file reads Copyright (c) 2025 Mario Zechner, carried over from Pi.
+- **gentle-ai**, by Gentleman Programming (MIT, Copyright (c) 2025 Gentleman Programming, https://github.com/Gentleman-Programming/gentle-ai): used only as development tooling; nothing from it is shipped. gentle-speak was built with gentle-ai. gentle-speak is not affiliated with Gentleman Programming.
 
 ## Unverified
 

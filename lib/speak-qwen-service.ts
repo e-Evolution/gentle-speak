@@ -18,14 +18,14 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// T38 (S13): lifecycle of the shared Qwen service, client side. The service itself is scripts/speak-qwen-service.mjs.
+// Lifecycle of the shared Qwen service, client side. The service itself is scripts/speak-qwen-service.mjs.
 export const QWEN_SERVICE_SCHEMA = 'gentle.speak.qwen-service/v1';
 /** Bump when the socket protocol changes without a package version change; part of the handshake version. */
 export const QWEN_SERVICE_PROTOCOL_REV = 1;
 const PACKAGE_VERSION: string = (() => { try { return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version; } catch { return '0.0.0'; } })();
 export const qwenServiceVersion = (): string => `${PACKAGE_VERSION}+p${QWEN_SERVICE_PROTOCOL_REV}`;
 /**
- * T50 (L98): the build id, the first 12 hex chars of a sha256 over the exact bytes of the service script then the worker script (each preceded by its byte length, so the
+ * The build id, the first 12 hex chars of a sha256 over the exact bytes of the service script then the worker script (each preceded by its byte length, so the
  * split point is part of the hash). The package version alone never changed between builds, so an old service kept running; the build id changes with any code change.
  * scripts/speak-qwen-service.mjs derives it the same way for its own script and worker (a test pins them equal). `undefined` when a script cannot be read.
  */
@@ -88,7 +88,7 @@ export interface QwenServiceOptions {
   script: string;
   /** scripts/speak-qwen-service.mjs */
   serviceScript: string;
-  /** S13 (L83): the grace in ms after the LAST client disconnects, after which the service unloads Python and exits; `null` never. Read at service start. */
+  /** The grace in ms after the LAST client disconnects, after which the service unloads Python and exits; `null` never. Read at service start. */
   idleMs: number | null;
   /** Environment of the started service (and so of its Python): {@link qwenPythonEnv}. */
   env?: NodeJS.ProcessEnv;
@@ -107,7 +107,7 @@ export interface QwenServiceOptions {
   /** Tests: the current user id. */
   uid?: number;
 }
-export interface QwenServiceConnection { socket: net.Socket; version: string; /** The service's build id; absent for a service older than T50. */ build?: string; pid: number; /** Bytes that arrived after the hello line. */ rest: string }
+export interface QwenServiceConnection { socket: net.Socket; version: string; /** The service's build id; absent for a service older than build ids. */ build?: string; pid: number; /** Bytes that arrived after the hello line. */ rest: string }
 
 /** Creates the home directory when missing, refuses one the current user does not own, and makes it private (0700). */
 export function ensurePrivateHome(home: string, uid: number | undefined = process.getuid?.()): void {
@@ -117,7 +117,7 @@ export function ensurePrivateHome(home: string, uid: number | undefined = proces
   if ((stat.mode & 0o077) !== 0) chmodSync(home, 0o700);
 }
 
-// T61 (S15, L118): the working directory of every child that installs, downloads or runs Python or the Qwen service. A child that inherits the session's
+// The working directory of every child that installs, downloads or runs Python or the Qwen service. A child that inherits the session's
 // cwd (the user's project) lets that project steer it: `uv` reads `uv.toml`, and `python -m pip` / `python -m venv` import a planted `pip/` or `venv/`.
 // Such a child starts in the private shared home (`ensurePrivateHome`), or in a fresh private temp directory when the home may not exist yet.
 
@@ -190,7 +190,7 @@ function startService(options: QwenServiceOptions, paths: QwenServicePaths, vers
   if (options.exitIdleMs !== undefined) argv.push('--exit-idle-ms', String(options.exitIdleMs));
   let exited = false;
   try {
-    // T61: `cwd` is the private shared home (ensured by the caller), never the session's project; the service's Python inherits it.
+    // `cwd` is the private shared home (ensured by the caller), never the session's project; the service's Python inherits it.
     const child = spawnChild(options.nodePath ?? process.execPath, argv, { cwd: options.home, detached: true, stdio: ['ignore', fd, fd], env: options.env ?? process.env });
     child.on('error', () => { exited = true; });
     child.on('exit', () => { exited = true; });
@@ -212,7 +212,7 @@ export async function connectQwenService(options: QwenServiceOptions): Promise<Q
   const paths = qwenServicePaths(options.home);
   const deadline = Date.now() + (options.timeoutMs ?? 20_000);
   ensurePrivateHome(options.home, options.uid ?? process.getuid?.());
-  // T50: the same package version and protocol with another build (or none: a pre-T50 service) is a different service. Unknown own build (unreadable scripts): no build check.
+  // The same package version and protocol with another build (or none: a service older than build ids) is a different service. Unknown own build (unreadable scripts): no build check.
   const build = qwenBuildId(options.serviceScript, options.script);
   const identity = `${version}#${build ?? ''}`;
   const current = (connection: QwenServiceConnection) => connection.version === version && (build === undefined || connection.build === build);

@@ -69,7 +69,7 @@ Playback uses the device's own sample rate and tolerates the buffer underruns (x
 
 ### `/reload` crashes Gentle Shell
 
-That is a Gentle Shell issue (gentle-shell#2580 on 4.7.0), not a gentle-speak one. Restart with `pi -r` instead, also after installing the package or changing a key.
+That is a Gentle Shell issue (gentle-shell#2580 on 4.7.0), not a gentle-speak one. Restart Gentle Shell instead (for example `gentle-shell -r` to resume your session), also after installing the package or changing a key.
 
 ### The Python environment is reported as outdated
 

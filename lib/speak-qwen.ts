@@ -22,14 +22,14 @@ import { QWEN_PYTHON_FLAGS } from './speak-voices.ts';
  * Starts the Qwen Python worker (`python -E -P <script>`). `HOME` is the account's real home: Gentle Dot overrides `$HOME`, and
  * Python finds its user site-packages (where mlx-audio lives) through it. `-E` ignores PYTHON* vars, not `HOME`.
  * `HF_HOME` pins the real Hugging Face cache: Gentle Dot also sets `XDG_CACHE_HOME` under its own home, which huggingface_hub
- * prefers over `HOME`, so offline model loads missed the cache (L72). A user-set `HF_HOME` is kept.
+ * prefers over `HOME`, so offline model loads missed the cache. A user-set `HF_HOME` is kept.
  */
 export function spawnQwenPython(python: string, script: string, io: { spawn?: typeof spawnChild; env?: NodeJS.ProcessEnv; home?: string } = {}): ChildProcessWithoutNullStreams {
   const run = io.spawn ?? spawnChild;
   return run(python, [...QWEN_PYTHON_FLAGS, script], { stdio: ['pipe', 'pipe', 'pipe'], env: qwenPythonEnv(io.env ?? process.env, io.home ?? realHome()) });
 }
 
-/** The environment of every Qwen Python process (T38: the shared service inherits exactly this one from the client that starts it). */
+/** The environment of every Qwen Python process (the shared service inherits exactly this one from the client that starts it). */
 export function qwenPythonEnv(env: NodeJS.ProcessEnv = process.env, home: string = realHome()): NodeJS.ProcessEnv {
   return { ...env, HOME: home, HF_HOME: env.HF_HOME || join(home, '.cache', 'huggingface'), HF_HUB_OFFLINE: '1', PYTHONIOENCODING: 'utf-8' };
 }
@@ -50,11 +50,11 @@ export const QWEN_SYNTH_IDLE_TIMEOUT_MS = 120_000;
 export const QWEN_IDLE_MS = 10 * 60_000;
 
 export type QwenChild = Pick<ChildProcessWithoutNullStreams, 'stdin' | 'stdout' | 'stderr' | 'on' | 'kill'> & {
-  /** T38: a service connection understands a `priority` ('speak' | 'prepare') on `synth` and `cancelRequest`; a plain worker does not. */
+  /** A service connection understands a `priority` ('speak' | 'prepare') on `synth` and `cancelRequest`; a plain worker does not. */
   hints?: boolean;
-  /** T40 (S13, L83): a view over the shared service's presence connection. The T37 per-session idle close never applies to it (the service owns the model and its grace); a local worker leaves this unset. */
+  /** A view over the shared service's presence connection. The per-session idle close never applies to it (the service owns the model and its grace); a local worker leaves this unset. */
   readonly persistent?: boolean;
-  /** T38: tells the shared service to drop a request (queued: never runs; running: its output is discarded). */
+  /** Tells the shared service to drop a request (queued: never runs; running: its output is discarded). */
   cancelRequest?: (id: number) => void;
 };
 export interface QwenSpeechDeps {
@@ -63,7 +63,7 @@ export interface QwenSpeechDeps {
   /** Starts the Node audio worker (scripts/speak-worker.cjs). */
   spawnAudio: () => QwenChild;
   tmpRoot?: string;
-  /** S13: close the warm Python worker after this many ms without activity; `null` never. Default {@link QWEN_IDLE_MS}. */
+  /** Close the warm Python worker after this many ms without activity; `null` never. Default {@link QWEN_IDLE_MS}. */
   idleMs?: number | null;
 }
 export interface QwenSpeakRequest {
@@ -144,7 +144,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
   /** Drops a worker (killing it) so its late exit never reaches the request that is replacing it. */
   const dropWorker = (old: NonNullable<typeof python> | undefined) => { if (!old) return; old.handler = undefined; if (python === old) python = undefined; try { old.child.kill(); } catch { /* already gone */ } };
   const inUse = () => busy || activePrepare !== undefined || prepareQueue.length > 0;
-  /** S13: (re)starts the idle countdown when the warm worker is idle; a speak, speakPrepared or prepare that runs or waits disarms it. */
+  /** (Re)starts the idle countdown when the warm worker is idle; a speak, speakPrepared or prepare that runs or waits disarms it. */
   function settleIdle() {
     clearTimeout(idleTimer); idleTimer = undefined;
     if (idleMs === null || !python || inUse() || python.child.persistent) return;
@@ -164,7 +164,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
     if (stdin.destroyed || stdin.writable === false) throw new Error('Qwen worker stdin is closed');
     state.child.stdin.write(JSON.stringify(priority && state.child.hints ? { ...payload, priority } : payload) + '\n');
   };
-  /** T38: a request that will not be consumed is dropped at the shared service too (best effort; a plain worker has nothing to cancel). */
+  /** A request that will not be consumed is dropped at the shared service too (best effort; a plain worker has nothing to cancel). */
   const cancelRemote = (state: NonNullable<typeof python> | undefined, id: number) => { try { state?.child.cancelRequest?.(id); } catch { /* connection already gone */ } };
   const killAudio = () => { const old = audio; audio = undefined; try { old?.kill(); } catch { /* already gone */ } };
   const ensureTmp = () => {
@@ -299,7 +299,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
           writeLine(worker, { schema: QWEN_SCHEMA, type: 'synth', id, text: request.text, ref: request.ref, refText: request.refText, outDir: dir, speed: request.speed }, 'speak');
           sent = true;
         } catch {
-          // S13: a warm worker that died while idle (EPIPE): respawn once, before this request starts.
+          // A warm worker that died while idle (EPIPE): respawn once, before this request starts.
           if (retried || !warm) { finish({ ok: false, message: 'Qwen worker input failed.' }); return; }
           retried = true; disarmIdle();
           dropWorker(worker);
@@ -410,7 +410,7 @@ export function createQwenSpeech(deps: QwenSpeechDeps) {
           armIdle();
           try { writeLine(state, { schema: QWEN_SCHEMA, type: 'synth', id, text: request.text, ref: request.ref, refText: request.refText, outDir, speed: request.speed }, 'prepare'); remoteId = id; }
           catch {
-            // S13: a warm worker that died while idle (EPIPE): respawn once, before this prepare starts.
+            // A warm worker that died while idle (EPIPE): respawn once, before this prepare starts.
             if (retried || !warm) { finish({ ok: false, message: 'Qwen worker input failed.' }); return; }
             retried = true; clearTimeout(idleTimer);
             dropWorker(state);

@@ -22,13 +22,13 @@ import { PYTHON_RECORD_FILE, PYTHON_RECORD_SCHEMA, resolveQwenPython } from './s
 import { QWEN_PYTHON_FLAGS } from './speak-voices.ts';
 
 /**
- * T44 (S15): gentle-speak's own Python environment, `<sharedHome>/python` (a venv), with pinned mlx-audio. It never uses sudo and never touches the system
+ * The gentle-speak Python environment, `<sharedHome>/python` (a venv), with pinned mlx-audio. It never uses sudo and never touches the system
  * Python's site-packages: `uv venv` or `python -m venv` creates the environment and every package goes into it. The result is recorded in
- * `<sharedHome>/python.json`, which `resolveQwenPython` (T45) already reads.
+ * `<sharedHome>/python.json`, which `resolveQwenPython` already reads.
  */
 export const MLX_AUDIO_VERSION = '0.4.4';
 /**
- * T63 (L118, L124): the environment installs exactly this hash-locked requirements file (`mlx-audio==0.4.4` and its whole dependency closure, each with
+ * The environment installs exactly this hash-locked requirements file (`mlx-audio==0.4.4` and its whole dependency closure, each with
  * sha256 hashes, universal markers, Python 3.12+), shipped in the package and resolved from this module's location, never from the working directory.
  * Regenerated with `npm run lock:qwen` (see CONTRIBUTING.md).
  */
@@ -46,22 +46,22 @@ export const PYTHON_ENV_DIR = 'python';
 /** Disk size of the venv with mlx-audio 0.4.4 and its dependencies, measured 2026-11-12 on a real `uv` install (`du -sk`: 467 080 KiB). */
 export const PYTHON_ENV_APPROX_BYTES = 467_080 * 1024;
 export const PYTHON_ENV_SIZE_SOURCE = 'aprox., medido en una instalación real de mlx-audio 0.4.4 con uv';
-/** T63: numpy in the lock needs Python 3.12 or newer (the worker's `-P` alone would need 3.11). */
+/** The lock's numpy needs Python 3.12 or newer (the worker's `-P` alone would need 3.11). */
 export const MIN_PYTHON: readonly [number, number] = Object.freeze([3, 12]) as readonly [number, number];
 
 /**
- * T61 (L118): `python -m venv`, `python -m pip` and the version probes run in isolated mode. `-I` (Python 3.4+, so every supported 3.12+) keeps the
+ * `python -m venv`, `python -m pip` and the version probes run in isolated mode. `-I` (Python 3.4+, so every supported 3.12+) keeps the
  * current and script directories off `sys.path` and ignores `PYTHON*` variables and the user site-packages, so a planted `pip/` or `venv/` is never imported.
- * The import check keeps the worker's own `QWEN_PYTHON_FLAGS` (`-E -P`); `-P` exists from Python 3.11, and the lock's numpy makes 3.12 the minimum (T63).
+ * The import check keeps the worker's own `QWEN_PYTHON_FLAGS` (`-E -P`); `-P` exists from Python 3.11, and the lock's numpy makes 3.12 the minimum.
  */
 export const PYTHON_TOOL_FLAGS: readonly string[] = Object.freeze(['-I']);
-/** T61: `uv` never reads `uv.toml` or `[tool.uv]` (a project's, or any parent's): the flag on every call, and `UV_NO_CONFIG=1` in its environment. */
+/** `uv` never reads `uv.toml` or `[tool.uv]` (a project's, or any parent's): the flag on every call, and `UV_NO_CONFIG=1` in its environment. */
 export const UV_NO_CONFIG_ARGS: readonly string[] = Object.freeze(['--no-config']);
 const uvEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({ ...env, UV_NO_CONFIG: '1' });
 const VERSION_CODE = "import sys; print('%d.%d' % sys.version_info[:2])";
 
 export interface RunResult { code: number | null; stdout: string; stderr: string }
-/** `cwd` is the child's working directory; T61: without one the default runner uses a fresh private directory, never the caller's (the user's project). */
+/** `cwd` is the child's working directory; without one the default runner uses a fresh private directory, never the caller's (the user's project). */
 export type RunTool = (command: string, args: string[], options: { env?: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal; cwd?: string }) => Promise<RunResult>;
 const execTool = (command: string, args: string[], { env, timeoutMs, signal }: { env?: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal }, cwd: string) => new Promise<RunResult>(resolve => {
   execFile(command, args, { cwd, env, timeout: timeoutMs, signal, maxBuffer: 8 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
@@ -70,7 +70,7 @@ const execTool = (command: string, args: string[], { env, timeoutMs, signal }: {
 });
 export const defaultRunTool: RunTool = (command, args, options) => options.cwd !== undefined ? execTool(command, args, options, options.cwd) : withPrivateCwd(cwd => execTool(command, args, options, cwd));
 export type Which = (name: string) => string | undefined;
-/** The first executable file called `name` on `PATH`; no shell, no execution. T61: relative and empty entries (`.`, `bin`, ``) are skipped, so the working directory never supplies uv or python. */
+/** The first executable file called `name` on `PATH`; no shell, no execution. Relative and empty entries (`.`, `bin`, ``) are skipped, so the working directory never supplies uv or python. */
 export const makeWhich = (env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): Which => name => {
   const exts = platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
   const { isAbsolute: absolute, delimiter: separator } = platform === 'win32' ? win32 : posix;
@@ -116,7 +116,7 @@ export async function detectPythonTooling({ which, run = defaultRunTool, cwd }: 
 export const pythonEnvDir = (home: string) => join(home, PYTHON_ENV_DIR);
 const interpreterOf = (home: string, platform: string = process.platform) => platform === 'win32' ? join(pythonEnvDir(home), 'Scripts', 'python.exe') : join(pythonEnvDir(home), 'bin', 'python');
 
-/** The `lockSha256` of a valid T44 `python.json` (`null` when the record has none), or undefined when there is no valid record (e.g. the old manifest's python). */
+/** The `lockSha256` of a valid `python.json` (`null` when the record has none), or undefined when there is no valid record (e.g. the old manifest's python). */
 function recordedLock(home: string): string | null | undefined {
   try {
     const record = JSON.parse(readFileSync(join(home, PYTHON_RECORD_FILE), 'utf8'));
@@ -126,8 +126,8 @@ function recordedLock(home: string): string | null | undefined {
 }
 
 /**
- * Installed when `resolveQwenPython` yields an interpreter that still exists (the T44 record, or the old manifest's python of an earlier install). Cheap:
- * nothing is run; `/speak doctor` runs the import. T63: an environment gentle-speak recorded (`python.json`) without the current lock's sha256 (built by
+ * Installed when `resolveQwenPython` yields an interpreter that still exists (the `python.json` record, or the old manifest's python of an earlier install). Cheap:
+ * nothing is run; `/speak doctor` runs the import. An environment gentle-speak recorded (`python.json`) without the current lock's sha256 (built by
  * an earlier, unlocked release, or from another lock) is `missing` with `outdated: true`: its interpreter still works, but setup installs the lock into it.
  * The old manifest's python is the user's own interpreter, not one gentle-speak installed, so it is never marked outdated.
  */
@@ -182,7 +182,7 @@ async function writeRecord(home: string, python: string, version: string, lockSh
 
 /**
  * Creates `<home>/python` (uv when present: `uv venv --no-config --python 3.12` and `uv pip install --no-config`; else `python3 -I -m venv` of a Python ≥ 3.12), installs the
- * hash-locked requirements (`--require-hashes -r <lock>`, T63), validates the import under the worker flags and writes `python.json` with the lock's sha256.
+ * hash-locked requirements (`--require-hashes -r <lock>`), validates the import under the worker flags and writes `python.json` with the lock's sha256.
  * No suitable tool is an instruction (`skipped`), never a failure; a missing lock fails before anything runs. An existing environment installed from the
  * current lock that still validates is kept as is; one recorded from another lock (or none) gets the lock installed into the same venv. Never sudo, never
  * the system site-packages.
@@ -196,10 +196,10 @@ export async function ensurePythonEnv(options: EnsurePythonOptions): Promise<Pyt
   // An absolute home keeps every derived path absolute: a relative or dash-leading venv path would be read by uv or python as a different location or an option.
   if (typeof home !== 'string' || !isAbsolute(home) || home.includes('\0')) return { status: 'failed', message: 'la ruta de gentle-speak no es absoluta' };
   const python = interpreterOf(home, platform), venv = pythonEnvDir(home);
-  // T61: every child below runs in the private home (`cwd`), never in the session's working directory, which may be a hostile project.
+  // Every child below runs in the private home (`cwd`), never in the session's working directory, which may be a hostile project.
   try { ensurePrivateHome(home); } catch { return { status: 'failed', message: 'la carpeta de gentle-speak no es un directorio propio del usuario' }; }
   const cwd = home;
-  // T63: the lock is read first; without it nothing runs (no probe, no venv, no installer).
+  // The lock is read first; without it nothing runs (no probe, no venv, no installer).
   const lock = await readQwenLock(options.lockPath ?? QWEN_LOCK_PATH);
   if (!lock) return { status: 'failed', message: LOCK_MISSING };
   try {

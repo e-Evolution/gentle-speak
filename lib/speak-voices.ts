@@ -11,11 +11,11 @@
  * Email: victor.perez@e-evolution.com, http://www.e-evolution.com , http://github.com/e-Evolution
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
-/** Voice catalog data: Piper (sherpa-onnx) locales and the macOS voice (Qwen voices are the user's own, S14/S15). */
+/** Voice catalog data: Piper (sherpa-onnx) locales and the macOS voice (Qwen voices are the user's own). */
 export const QWEN_MODEL_ID = 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16';
-/** S14: the VoiceDesign model, used only to design a voice from text (a separate, explicit, confirmed download); speech keeps cloning with the Base model. */
+/** The VoiceDesign model, used only to design a voice from text (a separate, explicit, confirmed download); speech keeps cloning with the Base model. */
 export const QWEN_DESIGN_MODEL_ID = 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16';
-/** S14: a custom voice is selected as `custom:<id>`; the id is also its directory name under `<sharedHome>/voices/custom/`. */
+/** A custom voice is selected as `custom:<id>`; the id is also its directory name under `<sharedHome>/voices/custom/`. */
 export const CUSTOM_VOICE_PREFIX = 'custom:';
 export const CUSTOM_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export const isCustomVoiceId = (value: unknown): value is string => typeof value === 'string' && value.startsWith(CUSTOM_VOICE_PREFIX) && CUSTOM_ID_PATTERN.test(value.slice(CUSTOM_VOICE_PREFIX.length));
@@ -34,7 +34,7 @@ export interface SystemVoice { engine: 'system'; label: string }
 export type CatalogVoice = PiperVoice | SystemVoice;
 
 /**
- * T45 (S15): the public catalog has no Qwen voices. They come only from the user (`custom:<id>`, S14). The ids the first releases shipped are kept only so
+ * The public catalog has no Qwen voices. They come only from the user (`custom:<id>`). The ids the first releases shipped are kept only so
  * a settings file that still says `qwen-<name>` keeps loading (it then falls back as a missing voice, or is converted by the one-time migration).
  */
 export const LEGACY_QWEN_VOICE_IDS: readonly string[] = Object.freeze(['qwen-suave', 'qwen-brisa', 'qwen-coqueta', 'qwen-maestra', 'qwen-intima', 'qwen-serena', 'qwen-viva']);

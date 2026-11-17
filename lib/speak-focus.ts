@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * S9 focus probe, frontmost-app reader, latest-only deferral and project prefix. The frontmost-terminal check
+ * Focus probe, frontmost-app reader, latest-only deferral and project prefix. The frontmost-terminal check
  * is injected (the terminal bundle id lives in speak-clipboard).
  */
 export type FocusState = 'focused' | 'unfocused' | 'unknown';
@@ -84,9 +84,9 @@ export interface FocusCheckOptions {
   isTerminalFrontmost: () => Promise<boolean | undefined>;
   /** Bound for each probe; a probe that does not settle in time counts as unknown. Default 700 ms. */
   timeoutMs?: number;
-  /** T46: the terminal's own focus reports. Once a real focus event arrived, its state decides alone; typing-implied focus is the last resort. */
+  /** The terminal's own focus reports. Once a real focus event arrived, its state decides alone; typing-implied focus is the last resort. */
   terminal?: { state(): FocusState; hasEvents(): boolean };
-  /** `process.platform` of the session. Only macOS has the frontmost check; elsewhere a known Herdr answer stands alone (L91). Default `darwin` (the pre-T46 behavior). */
+  /** `process.platform` of the session. Only macOS has the frontmost check; elsewhere a known Herdr answer stands alone. Default `darwin`. */
   platform?: string;
 }
 
@@ -102,7 +102,7 @@ function bounded<T>(make: () => Promise<T>, ms: number, fallback: T): Promise<T>
 }
 
 /**
- * Order (S9, S16): terminal focus events when any arrived (authoritative); else Herdr; else, on macOS, the frontmost app refines a focused Herdr;
+ * Order: terminal focus events when any arrived (authoritative); else Herdr; else, on macOS, the frontmost app refines a focused Herdr;
  * else typing-implied focus; else unknown. Focused only when the terminal is frontmost and Herdr says focused on macOS; unknown follows an unknown
  * Herdr or an unidentifiable frontmost app. Both probes run at once, each bounded by `timeoutMs`; a prompt `unfocused` from Herdr decides alone.
  * Off macOS the frontmost probe never runs and a known Herdr answer is used as is.

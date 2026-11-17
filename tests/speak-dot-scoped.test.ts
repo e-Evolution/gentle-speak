@@ -90,7 +90,7 @@ test('T53: connecting writes the scoped spec once', () => {
   assert.equal(connectDot(resolveDotSource(w.io)!, w.io).ok, true);
   assert.deepEqual(dotPackages(w.dot), ['other', 'npm:@e-evolution/gentle-speak@2']);
 });
-test('T53: README installs the scoped package and restarts with pi -r instead of /reload in Quick start', () => {
+test('T53: README installs the scoped package and restarts with gentle-shell -r instead of /reload in Quick start', () => {
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
   const quick = readme.slice(readme.indexOf('## Quick start'), readme.indexOf('Try it once without installing'));
   assert.match(readme, /npm:@e-evolution\/gentle-speak/);
@@ -99,7 +99,7 @@ test('T53: README installs the scoped package and restarts with pi -r instead of
   assert.doesNotMatch(quick, /once the repository is public/i); // the repository is public: the git source works today
   assert.match(quick, /Once published/);
   assert.match(quick, /gentle-shell install \.\//);
-  assert.match(quick, /pi -r/);
+  assert.match(quick, /gentle-shell -r/);
   assert.doesNotMatch(quick, /Run `\/reload`/);
   assert.doesNotMatch(readme, /@e-Evolution\/gentle-speak/);
 });

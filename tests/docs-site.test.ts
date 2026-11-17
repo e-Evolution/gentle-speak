@@ -123,3 +123,12 @@ test('docs: no personal paths and no internal task references', () => {
     assert.doesNotMatch(text, /\bODD\b|odd\/tasks/, `${file} mentions the internal workflow`);
   }
 });
+
+test('docs: no page or README restarts with `pi -r` (plain pi is vanilla Pi; Gentle Shell users run gentle-shell -r)', () => {
+  const readme = readFileSync(fileURLToPath(new URL('../README.md', import.meta.url)), 'utf8');
+  for (const [file, text] of [['README.md', readme], ...textFiles.map(file => [file, read(file)])]) {
+    assert.doesNotMatch(text, /(^|[^\w-])pi -r\b/m, `${file} says pi -r`);
+  }
+  assert.match(readme, /gentle-shell -r/);
+  assert.match(read('installation.md'), /gentle-shell -r/);
+});

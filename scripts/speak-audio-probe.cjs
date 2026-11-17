@@ -12,7 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 "use strict";
-// T44 doctor probe: opens the default output device with a silent stream (all zero samples) and closes it. One JSON line on stdout, no sound.
+// Doctor probe: opens the default output device with a silent stream (all zero samples) and closes it. One JSON line on stdout, no sound.
 // argv[2] is the installed runtime root. The parent bounds the run with a timeout and kills it.
 const path = require('node:path');
 const done = (value) => { process.stdout.write(JSON.stringify(value) + '\n', () => process.exit(value.ok ? 0 : 1)); };

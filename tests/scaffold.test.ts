@@ -24,6 +24,8 @@ const manifest = JSON.parse(await readFile(new URL('package.json', root), 'utf8'
 test('npm and Pi discover the inert extension entrypoint', async () => {
   assert.equal(manifest.name, '@e-evolution/gentle-speak');
   assert.deepEqual(manifest.publishConfig, { access: 'public' });
+  assert.equal(manifest.homepage, 'https://e-evolution.github.io/gentle-speak/');
+  assert.deepEqual(manifest.bugs, { url: 'https://github.com/e-Evolution/gentle-speak/issues' });
   assert.equal(manifest.type, 'module');
   assert.ok(manifest.keywords.includes('pi-package'));
   assert.deepEqual(manifest.pi.extensions, ['./extensions/gentle-speak.ts']);

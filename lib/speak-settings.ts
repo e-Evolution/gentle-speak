@@ -27,19 +27,19 @@ export interface SpeakSettings {
   voice: string;
   speed: number;
   summaryModel: { provider: string; id: string } | null;
-  /** Opt-in (S8): speak text copied from this Gentle Shell. Optional in files; absent means false. */
+  /** Opt-in: speak text copied from this Gentle Shell. Optional in files; absent means false. */
   copySpeech: boolean;
-  /** S11: the Mac `say` voice name; null picks the best installed Spanish voice. Optional in files. */
+  /** The Mac `say` voice name; null picks the best installed Spanish voice. Optional in files. */
   macVoice: string | null;
-  /** S11: speak with the Mac voice when the selected Piper or Qwen voice is not installed or fails. Optional in files; absent means true. */
+  /** Speak with the Mac voice when the selected Piper or Qwen voice is not installed or fails. Optional in files; absent means true. */
   macFallback: boolean;
-  /** S12: speak inside Gentle Dot's engine (its root RPC session). Optional in files; absent means false. */
+  /** Speak inside Gentle Dot's engine (its root RPC session). Optional in files; absent means false. */
   dotSpeech: boolean;
-  /** S12: `"declined"` once the one-time Gentle Dot offer was refused; null means never asked or accepted. Optional in files. */
+  /** `"declined"` once the one-time Gentle Dot offer was refused; null means never asked or accepted. Optional in files. */
   dotOffer: 'declined' | null;
-  /** S15: `"declined"` once the one-time first-start setup offer was refused; null means never asked or accepted. Optional in files. */
+  /** `"declined"` once the one-time first-start setup offer was refused; null means never asked or accepted. Optional in files. */
   setupOffer: 'declined' | null;
-  /** S13: minutes without speech before the warm Qwen worker is closed (integer 1-60); null never. Optional in files; absent means 5. */
+  /** Minutes without speech before the warm Qwen worker is closed (integer 1-60); null never. Optional in files; absent means 5. */
   qwenIdleMinutes: number | null;
   shortcuts: { speakLast: string; stop: string; toggle: string; cycleVoice: string; toggleCopy: string };
 }

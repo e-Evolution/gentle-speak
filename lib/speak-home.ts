@@ -14,7 +14,7 @@
 import * as os from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
-// S12: Gentle Dot's engine runs with `HOME` overridden (its own `~/.gentle-dot/home`), so `os.homedir()` (which honors `$HOME`)
+// Gentle Dot's engine runs with `HOME` overridden (its own `~/.gentle-dot/home`), so `os.homedir()` (which honors `$HOME`)
 // would resolve every user-level path under the wrong tree. The account's home comes from the passwd entry instead.
 export interface HomeIo { userInfo?: () => { homedir: string }; homedir?: () => string }
 
@@ -27,11 +27,11 @@ export function realHome(io: HomeIo = {}): string {
   return (io.homedir ?? os.homedir)();
 }
 
-/** T35: the process's `$HOME` (`os.homedir()`); inside Gentle Dot it is Dot's own home. Together with `realHome()` the only places a real user path is derived. */
+/** The process's `$HOME` (`os.homedir()`); inside Gentle Dot it is Dot's own home. Together with `realHome()` the only places a real user path is derived. */
 export const processHome = (io: HomeIo = {}): string => (io.homedir ?? os.homedir)();
 
 const SPEAK_DIR = '.gentle-speak';
-/** T34: where this process keeps `speak-settings.json` and per-app state: `<$HOME>/.gentle-speak` (Dot's HOME is its own `<dataDir>/home`). */
+/** Where this process keeps `speak-settings.json` and per-app state: `<$HOME>/.gentle-speak` (Dot's HOME is its own `<dataDir>/home`). */
 export const settingsHome = (io: HomeIo = {}): string => join(processHome(io), SPEAK_DIR);
-/** T34: what every app shares (runtime, Piper models, Qwen voices and manifests, the voice lock, the Qwen child's HOME): `<real home>/.gentle-speak`. In a terminal it equals `settingsHome()`. */
+/** What every app shares (runtime, Piper models, Qwen voices and manifests, the voice lock, the Qwen child's HOME): `<real home>/.gentle-speak`. In a terminal it equals `settingsHome()`. */
 export const sharedHome = (io: HomeIo = {}): string => join(realHome(io), SPEAK_DIR);

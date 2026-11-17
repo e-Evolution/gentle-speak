@@ -12,6 +12,10 @@
     "type": "git",
     "url": "git+https://github.com/e-Evolution/gentle-speak.git"
   },
+  "homepage": "https://e-evolution.github.io/gentle-speak/",
+  "bugs": {
+    "url": "https://github.com/e-Evolution/gentle-speak/issues"
+  },
   "keywords": [
     "pi-package",
     "gentle-shell-extension",

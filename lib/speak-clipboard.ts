@@ -12,7 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 /**
- * Copied-selection watcher (S8, decisions L29 → L31). Pure and injectable; no settings, no extension wiring.
+ * Copied-selection watcher. Pure and injectable; no settings, no extension wiring.
  *
  * API
  * - `resolveTerminalBundleId({ env, pid, ppidOf?, commOf?, bundleIdOfAppPath? })` → bundle id | undefined.
@@ -117,7 +117,7 @@ export function parseClipboardLine(line: string): ClipboardLine | undefined {
 
 /**
  * JXA `emit(line)`: writes one line to stdout through NSFileHandle (unbuffered).
- * JXA `console.log` writes to stderr, which the watcher does not read (L51).
+ * JXA `console.log` writes to stderr, which the watcher does not read.
  */
 export const JXA_EMIT = `function emit(s){$.NSFileHandle.fileHandleWithStandardOutput.writeData($(s+'\\n').dataUsingEncoding($.NSUTF8StringEncoding));}`;
 
@@ -177,7 +177,7 @@ export function createCopiedSelectionWatcher(opts: CopiedSelectionWatcherOptions
     const text = (await readText()).trim().slice(0, MAX_COPIED_CHARS);
     if (!text) return;
     if (opts.isOwnCopy && !opts.isOwnCopy(text)) return;
-    // The gate needs the copied lines; speech takes one line, since the speak path rejects control characters (L51).
+    // The gate needs the copied lines; speech takes one line, since the speak path rejects control characters.
     await opts.speak(text.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim());
   };
 
@@ -237,7 +237,7 @@ const ANSI = /\u001b\[[0-?]*[ -\/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001
 const normalize = (value: string) => value.replace(/\s+/g, ' ').trim();
 
 /**
- * Gentle-Shell-own-copy gate (L33): the copy is ours only while the fullscreen TUI has copy-on-select on,
+ * Gentle-Shell-own-copy gate: the copy is ours only while the fullscreen TUI has copy-on-select on,
  * an active selection, and the copied text is visible on screen. Fails closed on any error or missing member.
  */
 export function createOwnCopyGate(getTui: () => unknown): (text: string) => boolean {
@@ -247,7 +247,7 @@ export function createOwnCopyGate(getTui: () => unknown): (text: string) => bool
       if (!isSelectionTui(tui) || tui.getCopyOnSelect() !== true || tui.hasActiveSelection() !== true) return false;
       const wanted = normalize(text);
       if (!wanted) return false;
-      // pi-tui builds the copied text with this (TS-private) method; when present, require the copy to be exactly it (L51).
+      // pi-tui builds the copied text with this (TS-private) method; when present, require the copy to be exactly it.
       const selectionText = (tui as { getActiveSelectionText?: unknown }).getActiveSelectionText;
       if (typeof selectionText === 'function') {
         const selected = selectionText.call(tui);

@@ -25,9 +25,9 @@ import { createCustomVoice, listCustomVoices, slugifyVoiceId } from './speak-cus
 const sha256 = (data: Buffer) => createHash('sha256').update(data).digest('hex');
 const safeName = (file: string) => file === basename(file) && file !== '' && file !== '.' && file !== '..';
 
-// ---- T45 (S15): the interpreter record -------------------------------------------------------------------------------------------------
+// ---- the interpreter record -------------------------------------------------------------------------------------------------------
 // Custom voices need only a Python with mlx-audio and the Base model, not the old built-in voices manifest. The interpreter is recorded in
-// `<sharedHome>/python.json` (T44 writes it for its own environment). The old `voices/qwen3/manifest.json` python is still read when there is no record.
+// `<sharedHome>/python.json` (the setup writes it for its own environment). The old `voices/qwen3/manifest.json` python is still read when there is no record.
 export const PYTHON_RECORD_FILE = 'python.json';
 export const PYTHON_RECORD_SCHEMA = 'gentle-speak.python/v1';
 /** The Qwen interpreter: `<home>/python.json` when it is a valid record with an absolute path, else the python of the old manifest, else undefined. */
@@ -39,7 +39,7 @@ export function resolveQwenPython(home: string): string | undefined {
   return readQwenPython(home);
 }
 
-// ---- T45 (S15): one-time conversion of the old built-in Qwen voices -------------------------------------------------------------------
+// ---- one-time conversion of the old built-in Qwen voices -------------------------------------------------------------------
 /** The first releases bundled 7 personal reference WAVs. They are no longer public; this table only recognizes an existing install (no WAV is shipped). */
 export interface LegacyQwenVoice { name: string; label: string; file: string; transcript: string; sha256: string; bytes: number }
 export const QWEN_VOICES_SCHEMA = 'gentle-speak.qwen-voices/v1';
@@ -87,7 +87,7 @@ async function mapSettingsFile(dir: string, mapping: ReadonlyMap<string, string>
 
 /**
  * Converts, once, an install that has the old built-in Qwen voices (`<home>/voices/qwen3/` with a valid manifest) into custom voices with the same label,
- * transcript and sha256, and maps `voice: qwen-<name>` to `custom:<name>` in every settings file given. The WAV is copied (never moved) with the T42
+ * transcript and sha256, and maps `voice: qwen-<name>` to `custom:<name>` in every settings file given. The WAV is copied (never moved) with the custom-voice
  * atomic create; nothing is deleted. A voice whose WAV is missing or whose sha256 differs from the table is skipped. The result is recorded in
  * `<home>/qwen-migrated.json` so it never runs again.
  */
@@ -135,9 +135,9 @@ export async function migrateLegacyQwenVoices({ home, settingsDirs, table = LEGA
   return outcome;
 }
 
-// ---- S14 (T42): the VoiceDesign model, a separate, explicit, confirmed download (never automatic; used only to design a voice) ----------
+// ---- the VoiceDesign model, a separate, explicit, confirmed download (never automatic; used only to design a voice) ----------
 export type DesignModelState = 'installed' | 'missing';
-/** Measured 2026-11-11 on the local Hugging Face cache snapshot of the repo (`du -skL`: 4 414 288 KiB). T61: the size shown before the download is confirmed. */
+/** Measured 2026-11-11 on the local Hugging Face cache snapshot of the repo (`du -skL`: 4 414 288 KiB). It is the size shown before the download is confirmed. */
 export const QWEN_DESIGN_APPROX_BYTES = 4_414_288 * 1024;
 
 /** `<HF_HOME>`: a user-set `HF_HOME`, else `<real home>/.cache/huggingface`; the same rule as the Qwen child's environment. */
@@ -145,7 +145,7 @@ export const hfHomeOf = (env: NodeJS.ProcessEnv, home: string): string => qwenPy
 
 const repoDir = (repo: string) => `models--${repo.replace('/', '--')}`;
 
-/** T44: `installed` only when a cached snapshot of `repo` has config.json, a speech_tokenizer dir and at least one non-empty safetensors file that resolves (a dangling link is an interrupted download). Read-only. */
+/** `installed` only when a cached snapshot of `repo` has config.json, a speech_tokenizer dir and at least one non-empty safetensors file that resolves (a dangling link is an interrupted download). Read-only. */
 export async function hfModelStatus(hfHome: string, repo: string): Promise<DesignModelState> {
   const snapshots = join(hfHome, 'hub', repoDir(repo), 'snapshots');
   let names: string[];
@@ -159,9 +159,9 @@ export async function hfModelStatus(hfHome: string, repo: string): Promise<Desig
   }
   return 'missing';
 }
-/** The VoiceDesign cache state (S14). */
+/** The VoiceDesign cache state. */
 export const designModelStatus = (hfHome: string): Promise<DesignModelState> => hfModelStatus(hfHome, QWEN_DESIGN_MODEL_ID);
-/** T44: the Base 0.6B cache state (the model speech clones with). */
+/** The Base 0.6B cache state (the model speech clones with). */
 export const baseModelStatus = (hfHome: string): Promise<DesignModelState> => hfModelStatus(hfHome, QWEN_MODEL_ID);
 
 /** Total bytes of `repo` from the public Hugging Face API (metadata only, nothing is downloaded); undefined when it cannot be read. */
@@ -177,7 +177,7 @@ export async function hfModelSize(repo: string, fetchImpl: typeof fetch = global
 export const designModelSize = (fetchImpl: typeof fetch = globalThis.fetch, timeoutMs = 5000): Promise<number | undefined> => hfModelSize(QWEN_DESIGN_MODEL_ID, fetchImpl, timeoutMs);
 
 /**
- * The size as shown in the confirmation, always with its source. T61: the confirmation passes nothing and shows the pinned approximate, so no request
+ * The size as shown in the confirmation, always with its source. The confirmation passes nothing and shows the pinned approximate, so no request
  * reaches Hugging Face before the user confirms.
  */
 export function describeDesignModelSize(bytes?: number): string {
@@ -186,7 +186,7 @@ export function describeDesignModelSize(bytes?: number): string {
     : `${(bytes / 1e9).toFixed(1)} GB (según la API de Hugging Face)`;
 }
 
-/** `cwd` is the child's working directory (T61: a private one, never the caller's project). */
+/** `cwd` is the child's working directory (a private one, never the caller's project). */
 export type DesignRun = (command: string, args: string[], options: { env: NodeJS.ProcessEnv; signal?: AbortSignal; cwd?: string }) => Promise<{ code: number }>;
 const defaultDesignRun: DesignRun = (command, args, { env, signal, cwd }) => new Promise(resolve => {
   execFile(command, args, { cwd, env, signal, timeout: 60 * 60_000, maxBuffer: 1024 * 1024 }, error => resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0 }));
@@ -198,11 +198,11 @@ async function downloadHfModel({ repo, name, python, hfHome, home, confirmed, si
   const env = { ...qwenPythonEnv(process.env, home), HF_HOME: hfHome };
   delete env.HF_HUB_OFFLINE;
   const code = `from huggingface_hub import snapshot_download; snapshot_download(${JSON.stringify(repo)})`;
-  // T61: Python runs in a fresh private directory, never in the session's working directory.
+  // Python runs in a fresh private directory, never in the session's working directory.
   if ((await withPrivateCwd(cwd => run(python, [...QWEN_PYTHON_FLAGS, '-c', code], { env, signal, cwd }))).code !== 0) throw new Error(`Download failed: the ${name} model could not be fetched`);
   if (await hfModelStatus(hfHome, repo) !== 'installed') throw new Error(`Download did not complete: the ${name} model is not installed; could not verify it`);
 }
-/** Downloads the VoiceDesign model (S14). */
+/** Downloads the VoiceDesign model. */
 export const installDesignModel = (options: { python: string; hfHome: string; home: string; confirmed: boolean; signal?: AbortSignal; run?: DesignRun }): Promise<void> => downloadHfModel({ ...options, repo: QWEN_DESIGN_MODEL_ID, name: 'VoiceDesign' });
-/** T44: downloads the Base 0.6B model, the one speech clones with (the setup's explicit, confirmed download). */
+/** Downloads the Base 0.6B model, the one speech clones with (the setup's explicit, confirmed download). */
 export const installBaseModel = (options: { python: string; hfHome: string; home: string; confirmed: boolean; signal?: AbortSignal; run?: DesignRun }): Promise<void> => downloadHfModel({ ...options, repo: QWEN_MODEL_ID, name: 'Base' });

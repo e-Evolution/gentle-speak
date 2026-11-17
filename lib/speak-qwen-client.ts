@@ -15,12 +15,12 @@ import { EventEmitter } from 'node:events';
 import { connectQwenService, QWEN_SERVICE_SCHEMA, type QwenServiceConnection, type QwenServiceOptions } from './speak-qwen-service.ts';
 import type { QwenChild } from './speak-qwen.ts';
 
-// T38 (S13): a "worker" for createQwenSpeech that is a connection to the shared Qwen service. It speaks the Python worker's protocol
+// A "worker" for createQwenSpeech that is a connection to the shared Qwen service. It speaks the Python worker's protocol
 // (`gentle.speak.qwen/v1`) to the engine and the service protocol to the socket, so the engine does not know the difference. When the
-// service cannot be started or reached it becomes a local per-session worker (T37 behavior), logged once, never a failure.
+// service cannot be started or reached it becomes a local per-session worker, logged once, never a failure.
 //
-// Presence (S13, L83): the spawner owns ONE service connection per session, opened at the first speech and kept until `close()` (session shutdown or /reload).
-// The "workers" it hands the engine are views over that connection: killing one (T37 idle, a hard stop) only cancels its requests, never the socket, so the
+// Presence: the spawner owns ONE service connection per session, opened at the first speech and kept until `close()` (session shutdown or /reload).
+// The "workers" it hands the engine are views over that connection: killing one (its idle close, a hard stop) only cancels its requests, never the socket, so the
 // service sees the session as present and keeps the model loaded. If the connection drops (service stopped, replaced or killed) the next need reconnects,
 // starting the service once if needed. Reconnecting at the next need rather than in the background is deliberate: a background reconnect would undo
 // «Detener servicio Qwen» and a version replacement at once, and would restart a service nobody asked for; the cost is one model load on the next speech.
@@ -28,9 +28,9 @@ const WORKER_SCHEMA = 'gentle.speak.qwen/v1';
 const MAX_LINE = 65536;
 
 export interface QwenServiceSpawnerOptions extends Omit<QwenServiceOptions, 'python' | 'idleMs'> {
-  /** S13 idle close of the service's worker (ms; `null` never), read each time a connection is made, so a settings change reaches the next service start. */
+  /** Idle close of the service's worker (ms; `null` never), read each time a connection is made, so a settings change reaches the next service start. */
   idleMs: number | null | (() => number | null);
-  /** The T37 per-session worker, used when the service cannot run. */
+  /** The local per-session worker, used when the service cannot run. */
   spawnLocal: (python: string) => QwenChild;
   /** Called once per spawner (process) with the reason the service could not be used. */
   onFallback?: (reason: string) => void;

@@ -15,7 +15,7 @@ import { isSelectionTui } from './speak-clipboard.ts';
 import type { FocusState } from './speak-focus.ts';
 
 /**
- * T46 (S16): terminal focus from the terminal's own focus reports. pi-tui enables `?1004h`, so the terminal sends `\x1b[I` (in) and `\x1b[O` (out),
+ * Terminal focus from the terminal's own focus reports. pi-tui enables `?1004h`, so the terminal sends `\x1b[I` (in) and `\x1b[O` (out),
  * but `TuiAltScreen.handleViewportInput` consumes them without storing state and no public API exposes them. This tracker wraps that method on the
  * live instance (never the prototype), observes, and always delegates unchanged.
  *

@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * S9 single voice: a cross-process lock under `<dir>`.
+ * Single voice: a cross-process lock under `<dir>`.
  *
  * - `voice.lock/` is installed whole: a private temp dir holding `owner.json` (`{ pid, at, token }`) and a
  *   `token-<token>` marker is renamed into place, so the lock never exists without its owner file.
@@ -31,7 +31,7 @@ import path from 'node:path';
  *   `reclaimGraceMs`.
  * - `acquire` never rejects with a raw fs error: races (ENOENT, EEXIST, ENOTEMPTY, EINVAL, EBUSY) mean "poll again";
  *   anything else rejects with a `VoiceLockError` carrying the cause.
- * - T62: Windows refuses a rename onto an existing (or delete-pending) directory with EPERM or EACCES instead of
+ * - Windows refuses a rename onto an existing (or delete-pending) directory with EPERM or EACCES instead of
  *   ENOTEMPTY/EEXIST, so there the install rename treats those codes as "somebody else holds it". Every other step keeps
  *   the rule above, so a real permission problem (the temp dir cannot be created or written) still rejects.
  */
@@ -43,7 +43,7 @@ export interface VoiceLockOptions {
   now?: () => number;
   pid?: number;
   isPidAlive?: (pid: number) => boolean;
-  /** `process.platform` (tests); only `win32` changes anything: see the T62 note above. */
+  /** `process.platform` (tests); only `win32` changes anything: see the Windows note above. */
   platform?: string;
   /** Test seams: `beforeAct` runs right before a destructive step (between check and act); `onWait` before each poll wait. */
   hooks?: { beforeAct?: (kind: 'release' | 'reclaim') => void; onWait?: () => void };
@@ -67,7 +67,7 @@ const lockError = (cause: unknown) => Object.assign(new Error('voice lock unavai
 const TRANSIENT = new Set(['ENOENT', 'EEXIST', 'ENOTEMPTY', 'EINVAL', 'EBUSY']);
 const isTransient = (e: any) => TRANSIENT.has(e?.code);
 const taken = (e: any) => e?.code === 'ENOTEMPTY' || e?.code === 'EEXIST';
-/** How Windows reports a rename onto a directory that exists or is still being deleted (T62). */
+/** How Windows reports a rename onto a directory that exists or is still being deleted. */
 const WINDOWS_RENAME_TAKEN = new Set(['EPERM', 'EACCES']);
 
 interface Owner { pid: number; at?: number; token?: string }

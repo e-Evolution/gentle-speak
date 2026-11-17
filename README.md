@@ -20,7 +20,7 @@ cd gentle-speak && npm ci
 gentle-shell install ./
 ```
 
-If Gentle Shell was already open, restart it with `pi -r` (`/reload` can crash Gentle Shell 4.7.0, gentle-shell#2580). Pi installs packages without running install scripts, so setup happens on the **first terminal start**:
+If Gentle Shell was already open, restart Gentle Shell (for example `gentle-shell -r` to resume your session; `/reload` can crash Gentle Shell 4.7.0, gentle-shell#2580). Pi installs packages without running install scripts, so setup happens on the **first terminal start**:
 
 1. gentle-speak shows **one confirmation** listing what is missing and its size, then installs it in the background and ends with «gentle-speak listo». Declining is remembered (`setupOffer: "declined"`).
 2. `/speak` → **Instalar todo** runs the same setup at any time.
@@ -39,7 +39,7 @@ Try it once without installing: `gentle-shell -- -e ./extensions/gentle-speak.ts
 | `all` | Every final prose answer |
 | `summary` | One short Spanish sentence written by a model you choose (`/speak` → **Summary model**). No model selected: nothing is spoken |
 
-**Keys** (rebind under `/speak` → **Key: …**, then `/reload`; Pi/Gentle Shell reserved keys and duplicates are refused):
+**Keys** (rebind under `/speak` → **Key: …**, then restart Gentle Shell, for example `gentle-shell -r`; Pi/Gentle Shell reserved keys and duplicates are refused):
 
 | Key | Action |
 |-----|--------|
@@ -110,7 +110,7 @@ flowchart LR
   QS -.-> H
 ```
 
-- **Sessions and extension.** Each Pi session loads the extension. It filters the settled answer (S1 rules above), defers it while the pane is unfocused, can synthesize completed sentences ahead of time while the answer streams (Qwen voices only), and takes the voice lock for the whole playback. A Gentle Dot session works the same way, without focus deferral and with a `Dot:` prefix.
+- **Sessions and extension.** Each Pi session loads the extension. It filters the settled answer (the [Usage](#usage) rules above), defers it while the pane is unfocused, can synthesize completed sentences ahead of time while the answer streams (Qwen voices only), and takes the voice lock for the whole playback. A Gentle Dot session works the same way, without focus deferral and with a `Dot:` prefix.
 - **Shared Qwen service.** One detached Node process per user owns the single Qwen Python worker and model, on the private unix socket `~/.gentle-speak/qwen.sock` (0600 in a 0700 dir). Every terminal session and Dot connect to it; the voice-lock holder goes before speculative work. Each session keeps one presence connection, so the model stays loaded while any session is open; after the last one leaves, a grace period (`qwenIdleMinutes`, default 10) runs before it unloads and exits. A **build id** (a hash of the service and worker scripts) is part of the handshake: a service built from different code is replaced, so a stale service never survives an update. If the service cannot run, a session falls back to its own Python worker.
 - **Audio worker.** A Node child process (`scripts/speak-worker.cjs`) plays audio through node-cpal, opening the output device's own default config and resampling in-process (it never asks the device to change sample rate; Bluetooth-friendly).
 - **Piper.** The Piper `es_MX` / `es_ES` voices synthesize in the audio worker with sherpa-onnx; no Python.
@@ -259,7 +259,7 @@ Only macOS arm64 has been run live. **Linux and Windows are verified with fakes 
 - **«Qwen synthesis failed».** Usually a stale shared service. It is now replaced automatically when its build id differs; otherwise `/speak` → **Detener servicio Qwen** and speak again. If it persists, check that mlx-audio and the Base model are installed (doctor) and read `~/.gentle-speak/qwen-service.log`.
 - **Bluetooth headsets.** Playback uses the device's own sample rate and tolerates the buffer underruns (xruns) Bluetooth can produce; you may still hear small glitches. A failure reports `Audio playback failed: <cause>`.
 - **No sound when unfocused.** That is the focus deferral: the result is kept until you focus the pane. If focus is unknown it speaks in turn with a project prefix.
-- **`/reload` crashes Gentle Shell.** That is a gentle-pi issue, not gentle-speak. Restart with `pi -r` instead.
+- **`/reload` crashes Gentle Shell.** That is a gentle-pi issue, not gentle-speak. Restart Gentle Shell instead (for example `gentle-shell -r` to resume your session).
 - **Linux/Windows system voice silent.** Install the tools listed in [Dependencies](#dependencies); these paths are unverified live. On Windows the voice needs `powershell.exe` on `PATH`; without it the system voice is reported as unavailable (doctor: «falta `powershell.exe` en el PATH»). The voice listing is bounded (8 s) and an unanswered listing counts as no voices.
 - **Linux `spd-say` keeps talking after stop.** Stop (and a timeout) kills `spd-say` and then runs `spd-say -C`, which cancels everything speech-dispatcher has queued, including other applications' speech (it cannot cancel only ours). Unverified live.
 

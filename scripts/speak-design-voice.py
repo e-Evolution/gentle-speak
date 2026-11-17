@@ -10,7 +10,7 @@
 # MIT License for more details.
 # Email: victor.perez@e-evolution.com, http://www.e-evolution.com , http://github.com/e-Evolution
 # Created by victor.perez@e-evolution.com , www.e-evolution.com
-"""Create the reference WAV of a gentle-speak custom voice (S14, T42).
+"""Create the reference WAV of a gentle-speak custom voice.
 
 Run with the same flags as the Qwen worker: `python -E -P speak-design-voice.py <mode> ...`.
 

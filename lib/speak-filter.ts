@@ -40,7 +40,7 @@ function spokenProse(markdown: string): string | undefined {
   return lines.join(' ').replace(/\s+([,.!?;:])/g, '$1').trim() || undefined;
 }
 
-/** Returns only safe final assistant prose; summary generation is intentionally left to T6. */
+/** Returns only safe final assistant prose; summary generation is intentionally left to the caller (summary mode returns undefined here). */
 export function filterSettledSpeech(messages: readonly SettledSpeechMessage[], mode: SpeakMode = DEFAULT_SPEAK_SETTINGS.mode): string | undefined {
   if (mode === 'summary') return undefined;
   const last = messages.at(-1);

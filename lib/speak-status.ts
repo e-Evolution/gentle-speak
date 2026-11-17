@@ -25,7 +25,7 @@ export interface SpeakStatusInput {
   mode?: SpeakMode;
   /** Summary mode needs a configured model; without one it never speaks. */
   summaryReady?: boolean;
-  /** Copy speech (S8) state; the row always shows it, with its key. */
+  /** Copy speech state; the row always shows it, with its key. */
   copySpeech: boolean;
   shortcuts: { toggle: string; cycleVoice: string; toggleCopy: string };
 }

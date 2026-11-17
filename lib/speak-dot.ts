@@ -17,7 +17,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { realHome } from './speak-home.ts';
 import { DEFAULT_SPEAK_SETTINGS, SPEAK_SETTINGS_FILE, parseSpeakSettingsFile, serializeSpeakSettings, type SpeakSettings } from './speak-settings.ts';
 
-// S12: Gentle Dot's engine home, its settings.json `packages`, and the connect/disconnect edits. Pure and injectable
+// Gentle Dot's engine home, its settings.json `packages`, and the connect/disconnect edits. Pure and injectable
 // (fs, env, home); nothing here reads or writes anything the caller did not name.
 
 export type DotFs = Pick<typeof nodeFs, 'readFileSync' | 'writeFileSync' | 'renameSync' | 'copyFileSync' | 'existsSync' | 'unlinkSync' | 'mkdirSync'> & Partial<Pick<typeof nodeFs, 'readdirSync' | 'chmodSync'>>;
@@ -95,7 +95,7 @@ export function terminalSource(io: DotIo & { packageRoot: string }): PackageEntr
 
 /** This package's name: the only package.json `name` a local source may hold (checked against the real package.json by the tests). */
 export const SPEAK_PACKAGE_NAME = '@e-evolution/gentle-speak';
-/** The unscoped name published before T53: existing installs and Dot connections keep working. */
+/** The unscoped name used before the package moved to the `@e-evolution` scope: existing installs and Dot connections keep working. */
 export const LEGACY_SPEAK_PACKAGE_NAME = 'gentle-speak';
 const SPEAK_PACKAGE_NAMES: readonly unknown[] = [SPEAK_PACKAGE_NAME, LEGACY_SPEAK_PACKAGE_NAME];
 const NPM_SPEAK_SPEC = /^npm:(?:@e-evolution\/)?gentle-speak(?:@[A-Za-z0-9._~^<>=*|-]+)?$/;

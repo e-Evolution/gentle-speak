@@ -12,7 +12,7 @@
  * Email: victor.perez@e-evolution.com, http://www.e-evolution.com , http://github.com/e-Evolution
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
-// T38 (S13): the shared local Qwen service. One process per user owns ONE Qwen Python worker (scripts/speak-qwen-worker.py) and serves
+// The shared local Qwen service. One process per user owns ONE Qwen Python worker (scripts/speak-qwen-worker.py) and serves
 // every terminal session and Gentle Dot over a private unix socket: `<home>/qwen.sock`, mode 0600, in a 0700 directory.
 //
 // Plain JavaScript on purpose: it is started with `node` from an installed package, where Node does not strip TypeScript.
@@ -22,7 +22,7 @@
 // Request ids belong to one connection: the service maps them to its own ids for the Python worker, so clients never see each other's traffic.
 // The service never executes anything it is sent: it validates every field and only ever runs the one worker it was started with.
 //
-// Lifetime (S13, L83): the model stays loaded while at least one client is connected, even with no requests (there is no per-request idle close).
+// Lifetime: the model stays loaded while at least one client is connected, even with no requests (there is no per-request idle close).
 // When the LAST client disconnects a grace countdown of `--idle-ms` (the user's qwenIdleMinutes; `never` = no countdown) starts from that moment, not
 // from the last request. When it expires the Python worker is unloaded and the service exits, removing the socket and pid. A new connection during the
 // grace cancels it. `--exit-idle-ms <n>` (tests) overrides only the grace length. A countdown never fires mid-request.
@@ -52,7 +52,7 @@ const number = (value, fallback) => (value === 'never' ? null : Number.isFinite(
 const idleMs = number(args['idle-ms'], 10 * 60_000);
 /** The grace after the last client left (`null` never). */
 const graceMs = args['exit-idle-ms'] === undefined ? idleMs : number(args['exit-idle-ms'], idleMs);
-/** T50: the build id, derived exactly as lib/speak-qwen-service.ts qwenBuildId (sha256 over `<length>:<bytes>` of this script, then of the worker; first 12 hex). Sent in the hello. */
+/** The build id, derived exactly as lib/speak-qwen-service.ts qwenBuildId (sha256 over `<length>:<bytes>` of this script, then of the worker; first 12 hex). Sent in the hello. */
 function buildId() {
   try {
     const hash = crypto.createHash('sha256');
@@ -81,7 +81,7 @@ const isPlainAbs = value => typeof value === 'string' && value.length <= 4095 &&
 const UNSAFE_TEXT = /[\x00-\x08\x0e-\x1f\x7f]/;
 /** What Python gets: CRLF and CR become LF, VT and FF become a space. Clients (Windows clipboards, pasted selections) legitimately send these. */
 const normalizeText = text => text.replace(/\r\n?/g, '\n').replace(/[\x0b\x0c]/g, ' ');
-/** S14 + T45: the only accepted reference. `voices/qwen3/` is no longer accepted: the migration copies the old built-in voices into `voices/custom/`, so nothing references it, and one narrower rule is easier to keep safe. A custom voice's reference is exactly `<home>/voices/custom/<id>/reference.wav` (id `^[a-z0-9][a-z0-9-]{0,31}$`), a regular file whose real path stays under the custom dir (no symlink out). */
+/** The only accepted reference. `voices/qwen3/` is no longer accepted: the migration copies the old built-in voices into `voices/custom/`, so nothing references it, and one narrower rule is easier to keep safe. A custom voice's reference is exactly `<home>/voices/custom/<id>/reference.wav` (id `^[a-z0-9][a-z0-9-]{0,31}$`), a regular file whose real path stays under the custom dir (no symlink out). */
 function isCustomRef(ref) {
   const parts = path.relative(customDir, ref).split(path.sep);
   if (parts.length !== 2 || !/^[a-z0-9][a-z0-9-]{0,31}$/.test(parts[0]) || parts[1] !== 'reference.wav') return false;
@@ -201,7 +201,7 @@ function onWorkerLine(state, line) {
   if (message.type === 'error') { if (!job.cancelled) job.conn.send({ type: 'error', id: job.id, message: typeof message.message === 'string' ? message.message.slice(0, 200) : 'synthesis failed' }); finishRunning(); }
 }
 
-// ---- lifetime (S13, L83) ------------------------------------------------------------------------------------------------------------------
+// ---- lifetime ------------------------------------------------------------------------------------------------------------------
 /** Re-arms the grace countdown from the current state: it runs only while no client is connected, and ends with the Python unloaded and the service gone. */
 function settle() {
   clearTimeout(exitTimer); exitTimer = undefined;

@@ -35,7 +35,7 @@ gentle-speak is for people who use Gentle Shell for long agent runs and would ra
 
 ## Quick summary
 
-1. Install the package and restart Gentle Shell with `pi -r`.
+1. Install the package and restart Gentle Shell (for example `gentle-shell -r` to resume your session).
 2. Accept the one setup confirmation, «Instalar todo». It downloads the audio runtime and a Piper voice, plus the Qwen parts on Apple Silicon.
 3. Run `/speak doctor` to check that everything works.
 4. Turn speech on with `ctrl+alt+m`, or `/speak` → **Toggle auto-speak**.

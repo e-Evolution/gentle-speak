@@ -67,8 +67,10 @@ gentle-shell -- -e ./extensions/gentle-speak.ts
 If Gentle Shell was already open, restart it with:
 
 ```bash
-pi -r
+gentle-shell -r
 ```
+
+`gentle-shell -r` resumes a session with the Gentle Shell package loaded; `gentle-shell -c` continues the last one. Plain `pi` starts vanilla Pi with its own home (`~/.pi`), not Gentle Shell's.
 
 Do not use `/reload` for this: it can crash Gentle Shell 4.7.0 (gentle-shell#2580). That is a Gentle Shell issue, not a gentle-speak one.
 

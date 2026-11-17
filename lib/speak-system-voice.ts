@@ -12,7 +12,7 @@
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
 /**
- * System voice (S11, S16): the operating system's own speech, no download. macOS `say` (speak-say.ts), Linux `spd-say` or `espeak-ng`/`espeak`, Windows SAPI
+ * System voice: the operating system's own speech, no download. macOS `say` (speak-say.ts), Linux `spd-say` or `espeak-ng`/`espeak`, Windows SAPI
  * through PowerShell. Same rules on every platform: the text goes on stdin only (never argv, never inside a script), the process is killed on abort or timeout.
  * Linux and Windows are written from the tools' documentation and tested with fakes only: unverified live.
  */
@@ -49,7 +49,7 @@ const pathWhich = (command: string): string | undefined => {
 
 export function detectSystemEngine({ platform = process.platform, exists = existsSync, which = pathWhich }: SystemEnv = {}): { engine: SystemEngine; file: string } | undefined {
   if (platform === 'darwin') return exists(SAY_PATH) ? { engine: 'say', file: SAY_PATH } : undefined;
-  if (platform === 'win32') { const file = which(POWERSHELL); return file ? { engine: 'sapi', file } : undefined; } // T54: SAPI needs powershell.exe on PATH
+  if (platform === 'win32') { const file = which(POWERSHELL); return file ? { engine: 'sapi', file } : undefined; } // SAPI needs powershell.exe on PATH
   if (platform !== 'linux') return undefined;
   for (const engine of ['spd-say', 'espeak-ng', 'espeak'] as const) { const file = which(engine); if (file) return { engine, file }; }
   return undefined;
@@ -74,7 +74,7 @@ export function buildSystemCommand({ engine, file, voice, speed }: { engine: Sys
   return { file, args: ['-v', voice || SYSTEM_DEFAULT_VOICE, '-s', String(rate), '--stdin'] };
 }
 
-/** How long the `spd-say -C` cancel child may run before it is killed (T55). */
+/** How long the `spd-say -C` cancel child may run before it is killed. */
 export const SPD_CANCEL_TIMEOUT_MS = 2000;
 
 export function speakWithSystemVoice({ voice, text, speed, signal, spawn, timeoutMs, cancelTimeoutMs = SPD_CANCEL_TIMEOUT_MS, ...env }: { voice: string; text: string; speed: number; signal?: AbortSignal; spawn?: SaySpawn; timeoutMs?: number; cancelTimeoutMs?: number } & SystemEnv): Promise<SayOutcome> {
@@ -85,8 +85,8 @@ export function speakWithSystemVoice({ voice, text, speed, signal, spawn, timeou
   if (!found) return Promise.resolve({ ok: false, message: 'System voice is not available.' });
   if (!MAC_VOICE_NAME.test(voice)) return Promise.resolve({ ok: false, message: 'Invalid system voice name.' });
   const command = buildSystemCommand({ engine: found.engine, file: found.file, voice, speed });
-  // T54: killing spd-say leaves what speech-dispatcher already queued; `spd-say -C` (cancel) empties that queue. It is server-wide (a second process cannot cancel only our messages), so it runs only on stop or timeout.
-  // T55: the cancel child is bounded too (SIGTERM at `cancelTimeoutMs`); it never delays or changes the stop outcome.
+  // Killing spd-say leaves what speech-dispatcher already queued; `spd-say -C` (cancel) empties that queue. It is server-wide (a second process cannot cancel only our messages), so it runs only on stop or timeout.
+  // The cancel child is bounded too (SIGTERM at `cancelTimeoutMs`); it never delays or changes the stop outcome.
   const onStop = found.engine === 'spd-say' ? () => {
     const child = (spawn ?? defaultSpawn)(found.file, ['-C']);
     const timer = setTimeout(() => { try { child.kill('SIGTERM'); } catch { /* already gone */ } }, cancelTimeoutMs);
@@ -121,7 +121,7 @@ export function parseSystemVoices(engine: SystemEngine, output: string): MacVoic
   return voices;
 }
 
-/** How long a voice listing may run before its child is killed (T54): PowerShell loads System.Speech, so it is allowed longer. */
+/** How long a voice listing may run before its child is killed: PowerShell loads System.Speech, so it is allowed longer. */
 export const SYSTEM_LIST_TIMEOUT_MS = { sapi: 8000, default: 5000 } as const;
 /** How long the extension waits for a listing: on Windows a little longer than the listing's own bound, so the kill happens first. */
 export const systemVoiceProbeMs = (platform: string = process.platform): number => platform === 'win32' ? SYSTEM_LIST_TIMEOUT_MS.sapi + 1000 : 1500;
@@ -134,7 +134,7 @@ export interface ListChild {
 export type ListSpawn = (file: string, args: string[]) => ListChild;
 const defaultListSpawn: ListSpawn = (file, args) => spawnChild(file, args, { stdio: ['ignore', 'pipe', 'ignore'] }) as unknown as ListChild;
 
-/** Runs a listing command: its stdout on exit 0, read after `close` so output still in the pipe is not lost (T55); rejects on failure, spawn error or timeout, and kills the child when the timeout fires. */
+/** Runs a listing command: its stdout on exit 0, read after `close` so output still in the pipe is not lost; rejects on failure, spawn error or timeout, and kills the child when the timeout fires. */
 const runList = (timeout: number, spawn: ListSpawn) => (file: string, args: string[]) => new Promise<string>((resolve, reject) => {
   let child: ListChild;
   try { child = spawn(file, args); } catch (error) { reject(error); return; }

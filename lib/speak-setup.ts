@@ -15,9 +15,9 @@ import { SPEAK_MODELS, speakRuntimeManifest, type SpeakModelManifest, type Speak
 import { PYTHON_ENV_APPROX_BYTES, PYTHON_ENV_SIZE_SOURCE, PYTHON_INSTRUCTION, type PythonEnvOutcome, type PythonTooling, type Which } from './speak-python-env.ts';
 
 /**
- * T44 (S15): what gentle-speak needs to be ready after install, what is missing and how big it is, and the sequential install of the missing parts.
+ * What gentle-speak needs to be ready after install, what is missing and how big it is, and the sequential install of the missing parts.
  * Pi installs packages with `--ignore-scripts`, so this runs on the first terminal start (one confirmation) or from `/speak` → «Instalar todo».
- * The VoiceDesign model is never part of it (T42's explicit download). Nothing here installs a system package: ffmpeg is only detected and hinted.
+ * The VoiceDesign model is never part of it (it has its own explicit download). Nothing here installs a system package: ffmpeg is only detected and hinted.
  */
 export type ComponentId = 'runtime' | 'piper' | 'python' | 'qwen-base';
 export type ComponentState = 'installed' | 'missing' | 'invalid';
@@ -47,7 +47,7 @@ export interface SetupPlan {
 
 export const QWEN_TARGET = 'darwin-arm64';
 /**
- * Measured 2026-11-12 on the local Hugging Face cache snapshot of the Base repo (`du -skL`: 2 457 208 KiB). T61: the size the confirmation shows; the plan
+ * Measured 2026-11-12 on the local Hugging Face cache snapshot of the Base repo (`du -skL`: 2 457 208 KiB). It is the size the confirmation shows; the plan
  * never asks the Hugging Face API, so nothing reaches the network before the user confirms.
  */
 export const QWEN_BASE_APPROX_BYTES = 2_457_208 * 1024;
@@ -72,7 +72,7 @@ export interface SetupEnv {
   platform: string;
   runtimeStatus: (options: { home: string; target: SpeakTarget; manifest?: SpeakRuntimeManifest }) => Promise<{ state: ComponentState }>;
   modelStatus: (options: { home: string; voice: 'es_MX' | 'es_ES'; manifest?: SpeakModelManifest }) => Promise<{ state: ComponentState }>;
-  /** T63: `outdated` marks an env whose interpreter works but was not installed from the current dependency lock (setup installs the lock into it). */
+  /** `outdated` marks an env whose interpreter works but was not installed from the current dependency lock (setup installs the lock into it). */
   pythonStatus: (home: string) => Promise<{ state: 'installed' | 'missing'; outdated?: boolean }>;
   tooling: () => Promise<PythonTooling>;
   baseStatus: (hfHome: string) => Promise<'installed' | 'missing'>;

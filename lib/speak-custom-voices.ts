@@ -19,7 +19,7 @@ import { qwenPythonEnv } from './speak-qwen.ts';
 import { withPrivateCwd } from './speak-qwen-service.ts';
 import { CUSTOM_ID_PATTERN, CUSTOM_VOICE_PREFIX, QWEN_PYTHON_FLAGS } from './speak-voices.ts';
 
-// S14 (T42): custom voices live in `<sharedHome>/voices/custom/<id>/{voice.json,reference.wav}`. They stay local, are verified by sha256 on every read,
+// Custom voices live in `<sharedHome>/voices/custom/<id>/{voice.json,reference.wav}`. They stay local, are verified by sha256 on every read,
 // are created by writing a temp dir and renaming it, and are never uploaded. Speech clones `reference.wav` with the Base model like the built-in Qwen voices.
 export type CustomVoiceSource = 'designed' | 'recorded';
 /** The catalog entry of one verified custom voice: `id` is the setting value (`custom:<id>`), `ref` the verified reference WAV. */
@@ -145,7 +145,7 @@ export function slugifyVoiceId(label: string, taken: ReadonlySet<string>): strin
 export interface CreateCustomVoiceOptions {
   home: string; id: string; label: string; transcript: string; source: CustomVoiceSource; wav: Buffer;
   language?: string; description?: string; now?: Date;
-  /** T45: only the migration of the old built-in voices sets it: two of them are 35-36 s, over the 30 s import limit. The size bound still applies. */
+  /** Only the migration of the old built-in voices sets it: two of them are 35-36 s, over the 30 s import limit. The size bound still applies. */
   allowLong?: boolean;
 }
 /** Validates everything, writes a temp dir next to the target and renames it into place: an entry is whole or absent. An existing id is refused. */
@@ -189,7 +189,7 @@ export async function deleteCustomVoice(home: string, id: string): Promise<boole
 }
 
 // ---- the design/import script -------------------------------------------------------------------------------------------------------
-/** Runs one Python process and returns its exit code and (bounded) stdout; injected in tests. `cwd` is its working directory (T61: never the caller's project). */
+/** Runs one Python process and returns its exit code and (bounded) stdout; injected in tests. `cwd` is its working directory (never the caller's project). */
 export type PythonRun = (python: string, args: string[], options: { env: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs: number; cwd?: string }) => Promise<{ code: number | null; stdout: string }>;
 const STDOUT_MAX = 64 * 1024;
 export const defaultPythonRun: PythonRun = (python, args, { env, signal, timeoutMs, cwd }) => new Promise(resolve => {
@@ -215,7 +215,7 @@ const cleanMessage = (text: unknown) => (typeof text === 'string' ? text.replace
 export async function runVoiceScript(options: { python: string; script: string; args: string[]; run?: PythonRun; env?: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs?: number }): Promise<VoiceScriptOutcome> {
   const run = options.run ?? defaultPythonRun;
   let outcome: { code: number | null; stdout: string };
-  // T61: Python runs in a fresh private directory, never in the session's working directory (the script takes absolute paths only).
+  // Python runs in a fresh private directory, never in the session's working directory (the script takes absolute paths only).
   try { outcome = await withPrivateCwd(cwd => run(options.python, [...QWEN_PYTHON_FLAGS, options.script, ...options.args], { env: options.env ?? qwenPythonEnv(), signal: options.signal, timeoutMs: options.timeoutMs ?? 15 * 60_000, cwd })); }
   catch { return { ok: false, code: 'spawn', message: 'The Python process could not start' }; }
   if (options.signal?.aborted) return { ok: false, code: 'cancelled', message: 'Cancelled' };

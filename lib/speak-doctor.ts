@@ -21,7 +21,7 @@ import { systemVoiceHint } from './speak-system-voice.ts';
 import { defaultIsPidAlive } from './speak-voice-lock.ts';
 
 /**
- * T44 (S15): `/speak doctor`. Every check is bounded (a probe that hangs or throws becomes a ✗) and read-only: nothing is written, installed, started or
+ * `/speak doctor`. Every check is bounded (a probe that hangs or throws becomes a ✗) and read-only: nothing is written, installed, started or
  * downloaded. The probes are injected so the report is testable with fakes; the real ones are the `probe*` helpers below.
  */
 export type CheckStatus = 'ok' | 'fail' | 'na';
@@ -31,7 +31,7 @@ export interface DoctorReport { checks: DoctorCheck[]; ok: number; failed: numbe
 export type ServiceProbe = { state: 'running'; pid?: number; version?: string; build?: string; /** Whether version and build equal what this code would start; undefined when unknown. */ current?: boolean } | { state: 'stale'; reason: string } | { state: 'absent' };
 export type LockProbe = { state: 'free' } | { state: 'owned'; pid: number; alive: boolean };
 export type FocusSource = 'terminal-events' | 'herdr' | 'unknown';
-/** `lockCurrent: false` (T63): the env imports, but `python.json` does not record the current dependency lock (an earlier unlocked install or another lock). */
+/** `lockCurrent: false`: the env imports, but `python.json` does not record the current dependency lock (an earlier unlocked install or another lock). */
 export interface PythonProbe { recorded: boolean; python?: string; exists?: boolean; importOk?: boolean; version?: string; message?: string; lockCurrent?: boolean }
 
 export interface DoctorProbes {

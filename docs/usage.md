@@ -59,7 +59,7 @@ The stop key stops only your own session's speech, not another terminal's.
 
 1. Open `/speak` → **Key: speakLast**, **Key: stop**, **Key: toggle**, **Key: cycleVoice** or **Key: toggleCopy**.
 2. Type the new key, for example `ctrl+alt+j`.
-3. Restart Gentle Shell to apply it. The confirmation says «Run /reload to apply shortcut changes»; `pi -r` is the safer restart (see [Troubleshooting](troubleshooting.md#reload-crashes-gentle-shell)).
+3. Restart Gentle Shell to apply it, for example `gentle-shell -r` to resume your session. The confirmation says «Restart Gentle Shell (for example gentle-shell -r) to apply shortcut changes». Do not use `/reload`: it can crash Gentle Shell 4.7.0.
 
 A key is one or more of `ctrl+`, `alt+` and `shift+`, followed by a single letter, a digit, or one of `.` `,` `;` `/`. Duplicates are refused, and so are keys that Pi and Gentle Shell reserve (`ctrl+k`, `ctrl+p`, `alt+k`, `alt+a`). An invalid key is not saved: you see «Invalid speech settings; nothing was saved.»
 

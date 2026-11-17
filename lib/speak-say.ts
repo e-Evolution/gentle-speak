@@ -11,7 +11,7 @@
  * Email: victor.perez@e-evolution.com, http://www.e-evolution.com , http://github.com/e-Evolution
  * Created by victor.perez@e-evolution.com , www.e-evolution.com
  */
-/** macOS system voice (S11): speaks through `/usr/bin/say`, text on stdin only. Everything is injectable for tests. */
+/** macOS system voice: speaks through `/usr/bin/say`, text on stdin only. Everything is injectable for tests. */
 import { execFile, spawn as spawnChild } from 'node:child_process';
 import { existsSync } from 'node:fs';
 
@@ -75,7 +75,7 @@ export const sayTimeoutMs = (text: string, speed: number): number => 10_000 + Ma
 
 export const defaultSpawn: SaySpawn = (file, args, options) => spawnChild(file, args, { stdio: ['pipe', 'ignore', 'ignore'], ...(options?.env ? { env: { ...process.env, ...options.env } } : {}) }) as unknown as SayChild;
 
-/** One speech process (S11/S16): text on stdin only, killed on abort or timeout (then `onStop` runs, best effort), never throws. `name` labels the failures (`Mac`, `System`). */
+/** One speech process: text on stdin only, killed on abort or timeout (then `onStop` runs, best effort), never throws. `name` labels the failures (`Mac`, `System`). */
 export function runSpeechChild({ file, args, env, text, signal, spawn = defaultSpawn, timeoutMs, name, onStop }: { file: string; args: string[]; env?: Record<string, string>; text: string; signal?: AbortSignal; spawn?: SaySpawn; timeoutMs: number; name: string; onStop?: () => void }): Promise<SayOutcome> {
   return new Promise<SayOutcome>(resolve => {
     if (signal?.aborted) { resolve({ ok: false, message: 'Speech cancelled.', cancelled: true }); return; }

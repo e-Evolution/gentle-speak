@@ -25,7 +25,7 @@ export interface SpeculativeDeps {
   /** Deletes WAV files that will never play. */
   discard: (wavs: readonly string[]) => void;
   /**
-   * Prepares raw markdown into the prose S1 would speak. Default: `filterSettledSpeech` in `all` mode (code blocks, diffs,
+   * Prepares raw markdown into the prose the speech filter would speak. Default: `filterSettledSpeech` in `all` mode (code blocks, diffs,
    * emphasis and the rest are stripped), applied per paragraph so a paragraph break still ends a sentence.
    */
   prepare?: (text: string) => string | undefined;

@@ -47,12 +47,12 @@ type Dependencies = {
   installModel: typeof installSpeakModel;
   installRuntime: typeof installSpeakRuntime;
   spawn: (script: string) => Child;
-  /** T45 (tests): the table that recognizes an old install's built-in Qwen voices; defaults to the real one. */
+  /** The table that recognizes an old install's built-in Qwen voices (tests); defaults to the real one. */
   legacyQwenVoices?: Readonly<Record<string, LegacyQwenVoice>>;
   spawnQwen: (python: string, script: string) => QwenChild;
   resolveTerminal: () => Promise<string | undefined>;
   createWatcher: typeof createCopiedSelectionWatcher;
-  /** S9: overrides the whole focus check (tests); by default Herdr combined with the terminal-frontmost check. */
+  /** Overrides the whole focus check (tests); by default Herdr combined with the terminal-frontmost check. */
   focusCheck?: () => Promise<FocusState>;
   env: Record<string, string | undefined>;
   herdrExec?: HerdrExec;
@@ -62,56 +62,56 @@ type Dependencies = {
   /** `process.platform`; only macOS has the frontmost-app check. */
   platform?: string;
   lockPollMs: number;
-  /** S11/S16: the system voice (macOS `say`, Linux spd-say/espeak-ng, Windows SAPI). Defaults check the platform's engine; tests inject fakes so nothing ever speaks aloud. */
+  /** The system voice (macOS `say`, Linux spd-say/espeak-ng, Windows SAPI). Defaults check the platform's engine; tests inject fakes so nothing ever speaks aloud. */
   sayAvailable: () => boolean;
   listMacVoices: () => Promise<MacVoice[]>;
   /** Upper bound of the `say -v '?'` probe; on timeout the voice list is unavailable for that attempt. */
   voiceProbeMs: number;
   say: typeof speakWithSay;
-  /** S16: tool lookups for the doctor's system-voice line (tests); defaults to the real PATH and `/usr/bin/say`. */
+  /** Tool lookups for the doctor's system-voice line (tests); defaults to the real PATH and `/usr/bin/say`. */
   systemEnv?: Pick<SystemEnv, 'exists' | 'which'>;
-  /** S12: the user's home (tests); Gentle Dot's engine home and the terminal agent dir derive from it and `env`. */
+  /** The user's home (tests); Gentle Dot's engine home and the terminal agent dir derive from it and `env`. */
   userHome?: string;
-  /** S12: fs used for Gentle Dot's settings.json (tests); defaults to node:fs. */
+  /** Fs used for Gentle Dot's settings.json (tests); defaults to node:fs. */
   dotFs?: DotFs;
-  /** S12: the installed package root, used as the Dot package source when the terminal settings carry no entry. */
+  /** The installed package root, used as the Dot package source when the terminal settings carry no entry. */
   packageRoot?: string;
-  /** T34: the process HOME (tests); `<it>/.gentle-speak` holds `speak-settings.json`. Defaults to `os.homedir()`, which honors `$HOME` (Dot's own home inside Dot). */
+  /** The process HOME (tests); `<it>/.gentle-speak` holds `speak-settings.json`. Defaults to `os.homedir()`, which honors `$HOME` (Dot's own home inside Dot). */
   processHome?: string;
-  /** T34: overrides the settings directory outright (tests). */
+  /** Overrides the settings directory outright (tests). */
   settingsHome?: string;
   /** Scratch root of the Qwen engine (tests); defaults to the system temp dir. */
   qwenTmpRoot?: string;
   /**
-   * T38: use the shared Qwen service (one Python for every session and Gentle Dot). Default on, except when a test injects its own `spawnQwen`
+   * Use the shared Qwen service (one Python for every session and Gentle Dot). Default on, except when a test injects its own `spawnQwen`
    * (then that worker is the engine); an object overrides the service options (tests).
    */
   qwenService?: boolean | Partial<QwenServiceSpawnerOptions>;
-  /** S14: the Hugging Face home (tests); defaults to `HF_HOME` or `<real home>/.cache/huggingface`. */
+  /** The Hugging Face home (tests); defaults to `HF_HOME` or `<real home>/.cache/huggingface`. */
   hfHome?: string;
-  /** S14: whether the VoiceDesign model is in the Hugging Face cache, its size for the confirmation, and its explicit download (all faked in tests). */
+  /** Whether the VoiceDesign model is in the Hugging Face cache, its size for the confirmation, and its explicit download (all faked in tests). */
   designStatus: typeof designModelStatus;
   installDesign: typeof installDesignModel;
-  /** S14: runs `scripts/speak-design-voice.py` (design or import); tests inject a fake runner. */
+  /** Runs `scripts/speak-design-voice.py` (design or import); tests inject a fake runner. */
   pythonRun: PythonRun;
-  /** T44: `<platform>-<arch>` of the host (tests); the Qwen setup parts exist only on `darwin-arm64`. Defaults to the real one. */
+  /** `<platform>-<arch>` of the host (tests); the Qwen setup parts exist only on `darwin-arm64`. Defaults to the real one. */
   hostTarget?: string;
-  /** T44: the first-start setup offer (default on); tests that are not about it turn it off. */
+  /** The first-start setup offer (default on); tests that are not about it turn it off. */
   setupOffer?: boolean;
-  /** T44: overrides of the setup probes and installers (tests inject fakes for uv, python, the HF API and the downloads). */
+  /** Overrides of the setup probes and installers (tests inject fakes for uv, python, the HF API and the downloads). */
   setup?: Partial<SetupEnv> & Partial<SetupInstallers>;
-  /** T44: runs uv / python / pip for the Python env (tests inject a fake toolbox); defaults to the real one. */
+  /** Runs uv / python / pip for the Python env (tests inject a fake toolbox); defaults to the real one. */
   setupRun?: RunTool;
-  /** T44: runs the Base model download (tests). */
+  /** Runs the Base model download (tests). */
   downloadRun?: DesignRun;
-  /** T44: overrides of the doctor probes (tests). */
+  /** Overrides of the doctor probes (tests). */
   doctor?: Partial<DoctorProbes>;
 };
 const defaults: Dependencies = {
   modelStatus: readSpeakModelStatus, runtimeStatus: readSpeakRuntimeStatus,
   installModel: installSpeakModel, installRuntime: installSpeakRuntime,
   spawn: script => spawnChild(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] }),
-  spawnQwen: (python, script) => spawnQwenPython(python, script, { spawn: spawnInHome(sharedHome()) }), // T61: the per-session worker starts in the private shared home, never in the project
+  spawnQwen: (python, script) => spawnQwenPython(python, script, { spawn: spawnInHome(sharedHome()) }), // The per-session worker starts in the private shared home, never in the project
   resolveTerminal: async () => process.platform === 'darwin' ? resolveTerminalBundleId({ env: process.env, pid: process.pid }) : undefined,
   createWatcher: createCopiedSelectionWatcher,
   env: process.env,
@@ -146,10 +146,10 @@ const idleMsOf = (minutes: number | null) => minutes === null ? null : minutes *
 /** Speech is strictly parent-interactive; no native code is loaded on extension registration. */
 export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, dependencies: Partial<Dependencies> = {}): void {
   const deps = { ...defaults, ...dependencies };
-  // T34: two homes. `home` is shared (runtime, models, voices, manifests, voice lock) and hangs off the account's real home, because Dot overrides $HOME.
+  // Two homes. `home` is shared (runtime, models, voices, manifests, voice lock) and hangs off the account's real home, because Dot overrides $HOME.
   // `settingsDir` holds speak-settings.json and follows the process $HOME (Dot's own home inside Dot); in a terminal both are the same directory.
   const home = speakHome ?? (deps.userHome ? join(deps.userHome, '.gentle-speak') : sharedHome());
-  // R3-002: a process home that differs from the account home (Gentle Dot) wins over an injected `speakHome`, which only stands for the shared home there;
+  // A process home that differs from the account home (Gentle Dot) wins over an injected `speakHome`, which only stands for the shared home there;
   // with only `userHome` injected nothing falls back to the real `$HOME`.
   const perApp = deps.processHome !== undefined && deps.userHome !== undefined && resolve(deps.processHome) !== resolve(deps.userHome);
   const settingsDir = deps.settingsHome
@@ -159,7 +159,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   let current: Child | undefined;
   let cancelCurrent: (() => void) | undefined;
   let sequence = 0;
-  // T38: one shared Qwen service for every session and Dot; a session falls back to its own worker (T37) when the service cannot run.
+  // One shared Qwen service for every session and Dot; a session falls back to its own worker when the service cannot run.
   const serviceSetting = deps.qwenService ?? !dependencies.spawnQwen;
   const qwenServiceOn = serviceSetting !== false;
   const logFallback = (reason: string) => { try { appendFileSync(qwenServicePaths(home).log, `${new Date().toISOString()} [session ${process.pid}] Qwen service unavailable, using a per-session worker: ${reason}\n`, { mode: 0o600 }); } catch { /* the log is best effort */ } };
@@ -175,7 +175,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     : (python: string) => deps.spawnQwen(python, qwenWorker);
   const qwen = createQwenSpeech({ tmpRoot: deps.qwenTmpRoot, spawnPython, spawnAudio: () => deps.spawn(worker), idleMs: idleMsOf(readSpeakSettings(settingsDir).qwenIdleMinutes) });
   const reported = new WeakSet<object>();
-  // S9 single voice: one cross-process lock under the speak home, held for a whole playback.
+  // Single voice: one cross-process lock under the speak home, held for a whole playback.
   const voiceLock = createVoiceLock({ dir: home, pollMs: deps.lockPollMs });
   let activeUtterance: AbortController | undefined;
   let utteranceDone: Promise<void> = Promise.resolve();
@@ -187,14 +187,14 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     const front = await deps.readFrontmost();
     return front === undefined ? undefined : front === terminal;
   };
-  // T46: the terminal's own focus reports (see speak-terminal-focus.ts); undefined until a parent TUI session attaches one.
+  // The terminal's own focus reports (see speak-terminal-focus.ts); undefined until a parent TUI session attaches one.
   let focusTracker: TerminalFocusTracker | undefined;
   const terminalFocus = { state: () => focusTracker?.state() ?? 'unknown' as FocusState, hasEvents: () => focusTracker?.hasEvents() ?? false };
   const focusCheck = deps.focusCheck ?? createFocusCheck({ terminal: terminalFocus, platform: deps.platform ?? process.platform, probeHerdr: () => probeHerdrFocus({ env: deps.env, exec: deps.herdrExec, timeoutMs: 700 }), isTerminalFrontmost, timeoutMs: 700 });
   const installs = new Set<AbortController>();
   const summaries = new Set<AbortController>();
   const parent = (ctx: ExtensionContext) => ctx.mode === 'tui' && ctx.sessionManager.getHeader()?.type === 'session' && !ctx.sessionManager.getHeader()?.parentSession;
-  // S12: Gentle Dot's engine. The session runs under PI_CODING_AGENT_DIR (set by gentle-shell, read by pi-coding-agent's getAgentDir).
+  // Gentle Dot's engine. The session runs under PI_CODING_AGENT_DIR (set by gentle-shell, read by pi-coding-agent's getAgentDir).
   const dotIo = { env: deps.env, home: deps.userHome ?? realHome(), fs: deps.dotFs };
   const packageRoot = deps.packageRoot ?? resolve(import.meta.dirname, '..');
   /** The root RPC session of Gentle Dot's engine whose OWN settings have `enabled` (the terminal's `dotSpeech` is ignored); never another RPC client, a child, print or JSON mode. */
@@ -208,7 +208,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (ctx.mode === 'tui') ctx.ui.notify(message, level);
     else { try { ctx.ui.notify(message, level); } catch { /* the client may not render it */ } }
   };
-  /** S11: installed Spanish `say` voices; only a non-empty list is cached (an empty or failed probe is retried), the probe is time-bounded, `fresh` re-lists (the voice picker). */
+  /** Installed Spanish `say` voices; only a non-empty list is cached (an empty or failed probe is retried), the probe is time-bounded, `fresh` re-lists (the voice picker). */
   let macVoices: MacVoice[] | undefined;
   let macProbe: Promise<MacVoice[]> | undefined;
   /** One probe at a time: callers that arrive while it runs share it. A hung `listMacVoices` is abandoned after `voiceProbeMs`, and its late answer is ignored. */
@@ -227,7 +227,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (!fresh && macVoices?.length) return macVoices;
     return probeMacVoices();
   };
-  /** S14: the verified custom voices (`custom:<id>`), refreshed from disk whenever the voice list is built and at speech time; invalid entries are reported once and never offered. */
+  /** The verified custom voices (`custom:<id>`), refreshed from disk whenever the voice list is built and at speech time; invalid entries are reported once and never offered. */
   let customVoices: Record<string, CustomVoice> = {};
   const skippedNotified = new Set<string>();
   async function refreshCustom(ctx?: ExtensionContext): Promise<Record<string, CustomVoice>> {
@@ -243,7 +243,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     } catch { customVoices = {}; }
     return customVoices;
   }
-  /** S16: the system voice (id `mac`) reads `Mac` on macOS and `Sistema` elsewhere. */
+  /** The system voice (id `mac`) reads `Mac` on macOS and `Sistema` elsewhere. */
   const sysPlatform = deps.platform ?? process.platform;
   const fullCatalog = (): Record<string, { label: string; engine: string }> => ({ ...VOICE_CATALOG, mac: { ...VOICE_CATALOG.mac, label: systemVoiceLabel(sysPlatform) }, ...customVoices });
   const voiceEngine = (id: string): string | undefined => isCustomVoiceId(id) || isLegacyQwenVoiceId(id) ? 'qwen3' : VOICE_CATALOG[id]?.engine;
@@ -279,7 +279,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     } catch { /* Status is cosmetic. */ }
   };
   /**
-   * T46: terminal focus events, parent fullscreen TUI only. The widget renders no lines; its factory is how the extension reaches the live TUI instance.
+   * Terminal focus events, parent fullscreen TUI only. The widget renders no lines; its factory is how the extension reaches the live TUI instance.
    * A TUI without `handleViewportInput` (or not fullscreen) is left untouched and focus keeps coming from Herdr, the frontmost app or `unknown`.
    */
   let focusWidgetSet = false;
@@ -300,7 +300,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     tracker.onChange(state => { if (state === 'focused') void deferral.wake().catch(() => undefined); });
     focusTracker = tracker;
   };
-  /** Copied-selection speech (S8): opt-in, interactive parent only, fail closed. Clipboard text is never logged. */
+  /** Copied-selection speech: opt-in, interactive parent only, fail closed. Clipboard text is never logged. */
   let copyWatcher: { stop(): void } | undefined;
   let copyTui: unknown;
   let copyGeneration = 0;
@@ -434,7 +434,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (stopped || !speaker(ctx)) return result('Speech requires an interactive parent TUI session.', true);
     if (!text.trim() || text.length > 4000 || /[\x00-\x1f]/.test(text)) return result('Invalid speech text.', true);
     const settings = readSpeakSettings(settingsDir);
-    // S11: the Mac voice needs no Piper/Qwen runtime and no node-cpal, and never speculates.
+    // The Mac voice needs no Piper/Qwen runtime and no node-cpal, and never speculates.
     if (VOICE_CATALOG[settings.voice]?.engine === 'system') return speakMac(text, ctx, signal, settings);
     const outcome = await speakEngine(text, ctx, signal, settings, prepared);
     if (!outcome.isError || !canFallBack(settings, ctx, signal)) return outcome;
@@ -449,7 +449,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     }
     return playMac(text, signal, settings, voice);
   }
-  /** S11: Mac speech through `say`; the cross-process lock is held for the whole playback like every voice. */
+  /** Mac speech through `say`; the cross-process lock is held for the whole playback like every voice. */
   let fallbackNotified = false;
   const canFallBack = (settings: ReturnType<typeof readSpeakSettings>, ctx: ExtensionContext, signal: AbortSignal | undefined) =>
     settings.macFallback && VOICE_CATALOG[settings.voice]?.engine !== 'system' && !stopped && !signal?.aborted && speaker(ctx) && deps.sayAvailable();
@@ -527,7 +527,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (!text.trim() || text.length > 4000 || /[\x00-\x1f]/.test(text)) return result('Invalid speech text.', true);
     return undefined;
   }
-  /** S10: WAVs synthesized while the answer was written; owned by the pending item until it plays (the Qwen engine then owns them) or is dropped. */
+  /** WAVs synthesized while the answer was written; owned by the pending item until it plays (the Qwen engine then owns them) or is dropped. */
   type Prepared = { wavs: string[]; /** A sentence still being synthesized at settle; it plays right after `wavs`, part by part. */ inflight?: { handle: QwenPrepareHandle; abort: () => void; done: Promise<{ ok: boolean; wavs?: string[] }> }; remainderText: string; voice: string; speed: number; taken?: boolean };
   /** Deletes prepared audio that will never play, including an in-flight synthesis (aborted, and its files deleted even if it finished meanwhile). */
   function discardPrepared(prepared: Prepared) {
@@ -540,7 +540,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   let pendingItem: Pending | undefined;
   const dropPrepared = (item: Pending) => { const prepared = item.prepared; item.prepared = undefined; if (prepared && !prepared.taken) { prepared.taken = true; discardPrepared(prepared); } };
   type Pending = { text: string; ctx: ExtensionContext; signal?: AbortSignal; report: boolean; prepared?: Prepared; started: boolean; detached: boolean; outcome?: Promise<ReturnType<typeof result> | undefined> };
-  /** S9: focused speaks now, unfocused keeps only the latest and speaks it on focus, unknown speaks in turn with the project prefix. */
+  /** Focused speaks now, unfocused keeps only the latest and speaks it on focus, unknown speaks in turn with the project prefix. */
   const deferral = createLatestOnlyDeferral<Pending>({
     checkFocus: focusCheck,
     pollMs: deps.focusPollMs,
@@ -566,7 +566,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     item.detached = true;
     return undefined;
   }
-  /** S12: Dot's session takes its turn at once (no Herdr pane, no focus deferral); the outcome resolves when playback ends. */
+  /** Dot's session takes its turn at once (no Herdr pane, no focus deferral); the outcome resolves when playback ends. */
   function deliver(text: string, ctx: ExtensionContext, signal: AbortSignal | undefined, report: boolean, prepared?: Prepared) {
     if (!dotSession(ctx)) return speakWhenFocused(text, ctx, signal, report, prepared);
     return report ? speakAutomatically(text, ctx, signal, prepared).then(() => undefined) : speak(text, ctx, signal, prepared);
@@ -580,7 +580,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (outcome.isError && !reported.has(outcome) && message !== 'Speech cancelled.' && !stopped && !signal?.aborted && speaker(ctx)) notifySpeech(ctx, message, 'error');
   }
   /**
-   * S10 speculative synthesis: only a parent TUI with auto-speak on, a qwen3 voice installed and a mode other than summary.
+   * Speculative synthesis: only a parent TUI with auto-speak on, a qwen3 voice installed and a mode other than summary.
    * Nothing plays before the answer is final; the planner only synthesizes completed sentences ahead of time.
    */
   type Speculation = { voice: string; speed: number; planner: ReturnType<typeof createSpeculativePlanner> };
@@ -639,7 +639,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (message && (message.toolCall || message.ended)) cancelSpeculation();
   });
   pi.on('agent_start', () => { cancelSpeculation(); });
-  /** At settle: S1 has decided the spoken text; matching buffered audio plays first, the rest is synthesized. */
+  /** At settle: the speech filter has decided the spoken text; matching buffered audio plays first, the rest is synthesized. */
   function settleSpeculation(finalText: string): Prepared | undefined {
     const active = speculation;
     speculationGeneration++;
@@ -684,7 +684,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
   const MALFORMED_DOT = 'El settings.json de Gentle Dot está mal formado; no lo toqué.';
   const MALFORMED_DOT_SPEAK = 'El speak-settings.json de Gentle Dot está mal formado; no lo toqué.';
   const NOT_SAVED = 'Invalid speech settings; nothing was saved.';
-  /** T34: Dot's own speak settings, validated. Refuses (with a notice) an existing file that is malformed; an absent one is seeded from the terminal's. */
+  /** Dot's own speak settings, validated. Refuses (with a notice) an existing file that is malformed; an absent one is seeded from the terminal's. */
   function dotSpeakBase(ctx: ExtensionContext): ReturnType<typeof readSpeakSettings> | undefined {
     const read = readDotSpeak(dotIo);
     if (read.state === 'malformed') { ctx.ui.notify(MALFORMED_DOT_SPEAK, 'warning'); return undefined; }
@@ -703,7 +703,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (!stopped) ctx.ui.notify(`Voice "${voice.label}" is selected but not installed yet. Run /speak → Install voice and runtime to download it.`, 'warning');
     return !stopped;
   }
-  /** S12 + T34: the Dot connection (shared by the one-time offer and `/speak` → Gentle Dot → Conectar): Dot's own speak settings are checked first, then the package entry, then `enabled`. */
+  /** The Dot connection (shared by the one-time offer and `/speak` → Gentle Dot → Conectar): Dot's own speak settings are checked first, then the package entry, then `enabled`. */
   function connectDotNow(ctx: ExtensionContext): boolean {
     const found = detectDot(dotIo);
     if (found.state === 'absent') { ctx.ui.notify(`No encontré Gentle Dot (${found.path}).`, 'warning'); return false; }
@@ -719,7 +719,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     ctx.ui.notify('Gentle Dot conectado: silenciá la voz propia de Dot y reinicialo.', 'info');
     return true;
   }
-  /** T34: `/speak` → Gentle Dot. State line, then Conectar/Desconectar and Dot's own enabled, voice and mode. */
+  /** `/speak` → Gentle Dot. State line, then Conectar/Desconectar and Dot's own enabled, voice and mode. */
   async function dotMenu(ctx: ExtensionContext, voices: Array<{ id: string; text: string }>) {
     const dot = detectDot(dotIo), speakRead = readDotSpeak(dotIo);
     const dotSettings = speakRead.state === 'ok' ? speakRead.settings : undefined;
@@ -730,7 +730,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     const choice = await ctx.ui.select(line, [line, 'Conectar Gentle Dot', 'Desconectar Gentle Dot', 'Hablar en Dot', 'Voz de Dot', 'Modo de Dot', 'Volver']);
     if (!choice || stopped || choice === 'Volver' || choice === line) { if (choice === line) ctx.ui.notify(`${line}.`, 'info'); return; }
     if (choice === 'Conectar Gentle Dot') { connectDotNow(ctx); await refreshRowPrimed(ctx); return; }
-    // R3-001: the state shown above is a snapshot from before the human chose; everything below acts on a fresh read, never on it.
+    // The state shown above is a snapshot from before the human chose; everything below acts on a fresh read, never on it.
     const now = detectDot(dotIo);
     if (now.state === 'absent') { ctx.ui.notify(`No encontré Gentle Dot (${now.path}).`, 'warning'); return; }
     if (choice === 'Desconectar Gentle Dot') {
@@ -761,7 +761,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     }
   }
   /**
-   * S12: asked once, in the terminal TUI parent only; never inside Dot's own engine, a child, or an RPC/print session.
+   * Asked once, in the terminal TUI parent only; never inside Dot's own engine, a child, or an RPC/print session.
    * It runs in the background after `session_start` returns (the dialog waits on the human, never on startup), is dropped on
    * shutdown, or when a newer session started before it was shown (an offer already on screen keeps its answer), and is shown at most once per extension instance.
    */
@@ -778,11 +778,11 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     }
     offerShown = true;
     const yes = await ctx.ui.confirm('Gentle Dot', 'Encontré Gentle Dot. ¿Querés que también hable ahí?');
-    if (stopped) return; // shut down while the human decided: nothing is written. A newer session_start does not cancel an offer already on screen: the human's answer still counts (T48, L95).
+    if (stopped) return; // shut down while the human decided: nothing is written. A newer session_start does not cancel an offer already on screen: the human's answer still counts.
     if (yes) { connectDotNow(ctx); return; }
     try { const settings = readSpeakSettings(settingsDir); settings.dotOffer = 'declined'; writeSpeakSettings(settings, settingsDir); } catch { /* asked again next time */ }
   }
-  // ---- T44 (S15): setup (first-start offer and «Instalar todo») and `/speak doctor`. Nothing downloads without the one confirmation. ----
+  // ---- Setup (first-start offer and «Instalar todo») and `/speak doctor`. Nothing downloads without the one confirmation. ----
   const hostTarget = deps.hostTarget ?? target;
   const hostPlatform = deps.platform ?? process.platform;
   const which: Which = deps.setup?.which ?? makeWhich(process.env, hostPlatform);
@@ -816,7 +816,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       setupConfirming = confirming = true;
       yes = await ctx.ui.confirm('Instalar todo', describeSetupPlan(plan));
     } finally { if (setupPlanToken === mine) setupPlanToken = undefined; if (confirming) setupConfirming = false; }
-    if (stopped) return; // shut down while the human decided: nothing installs. A newer session_start does not drop an answer already on screen (T48).
+    if (stopped) return; // shut down while the human decided: nothing installs. A newer session_start does not drop an answer already on screen.
     if (!yes) {
       if (!announceComplete) { try { const settings = readSpeakSettings(settingsDir); settings.setupOffer = 'declined'; writeSpeakSettings(settings, settingsDir); } catch { /* asked again next time */ } }
       return;
@@ -866,7 +866,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
         const interpreter = python();
         if (!interpreter) return { recorded: false };
         const status = await pythonEnvStatus(home);
-        const exists = status.state === 'installed' || status.outdated === true; // T63: an env from another dependency lock still exists; it is reported as needing «Instalar todo»
+        const exists = status.state === 'installed' || status.outdated === true; // An env from another dependency lock still exists; it is reported as needing «Instalar todo»
         if (!exists) return { recorded: true, python: interpreter, exists };
         const valid = await validatePythonEnv({ python: interpreter, run: defaultRunTool, env: qwenPythonEnv(process.env, realUserHome()) });
         return valid.ok ? { recorded: true, python: interpreter, exists, importOk: true, version: valid.version, lockCurrent: status.outdated !== true } : { recorded: true, python: interpreter, exists, importOk: false, message: valid.message };
@@ -897,7 +897,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     if (!stopped) ctx.ui.notify(outcome.isError ? `La prueba falló: ${outcome.content[0].text}` : 'Prueba completada.', outcome.isError ? 'warning' : 'info');
   }
   /**
-   * T45 (S15): once, converts an install with the old built-in Qwen voices into custom voices and maps the old `qwen-<name>` setting in the terminal's and Dot's
+   * Once, converts an install with the old built-in Qwen voices into custom voices and maps the old `qwen-<name>` setting in the terminal's and Dot's
    * settings. Terminal parent or Dot's root RPC session only; never a child, another RPC client, print or JSON. Idempotent; nothing is deleted.
    */
   async function migrateQwen(ctx: ExtensionContext) {
@@ -935,7 +935,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
       return (await deliver(text, ctx, signal, false)) ?? result('Speech deferred until this pane has focus.');
     },
   });
-  // ---- S14 (T42): own voices. Terminal TUI parent only; nothing here downloads or runs unless the human confirms it. ----
+  // ---- Own voices. Terminal TUI parent only; nothing here downloads or runs unless the human confirms it. ----
   const voiceJobs = new Set<AbortController>();
   const bareLabel = (label: string) => label.replace(/^Propia · /, '');
   const realUserHome = () => deps.userHome ?? realHome();
@@ -980,7 +980,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
     try { state = await deps.designStatus(hf); } catch { state = 'missing'; }
     if (stopped) return;
     if (state !== 'installed') {
-      const size = describeDesignModelSize(); // T61: the pinned approximate; nothing reaches Hugging Face before the confirmation
+      const size = describeDesignModelSize(); // The pinned approximate; nothing reaches Hugging Face before the confirmation
       const yes = await ctx.ui.confirm('Descargar el modelo VoiceDesign', `Diseñar una voz necesita el modelo ${QWEN_DESIGN_MODEL_ID} (${size}), que se descarga de Hugging Face a tu caché. Solo se usa para diseñar; hablar sigue usando el modelo Base. ¿Descargarlo ahora?`);
       if (!yes || stopped) { if (!stopped) ctx.ui.notify('No descargué nada y no creé ninguna voz.', 'info'); return; }
       const controller = new AbortController();
@@ -1135,7 +1135,7 @@ export default function gentleSpeak(pi: ExtensionAPI, speakHome?: string, depend
           await afterCopyToggle(ctx, settings.copySpeech);
           return;
         }
-        ctx.ui.notify(choice.startsWith('Key: ') ? 'Speech settings saved. Run /reload to apply shortcut changes.' : 'Speech settings saved.', 'info'); await refreshRowPrimed(ctx);
+        ctx.ui.notify(choice.startsWith('Key: ') ? 'Speech settings saved. Restart Gentle Shell (for example gentle-shell -r) to apply shortcut changes.' : 'Speech settings saved.', 'info'); await refreshRowPrimed(ctx);
       }
       catch { ctx.ui.notify('Invalid speech settings; nothing was saved.', 'error'); }
     },

@@ -204,7 +204,7 @@ test('summary sends only sanitized final prose and shutdown aborts pending model
   } finally { h.close(); }
 });
 
-test('shortcut changes reject reserved keys and preserve file; accepted changes require reload', async () => {
+test('shortcut changes reject reserved keys and preserve file; accepted changes ask for a Gentle Shell restart, never /reload', async () => {
   const h = harness();
   try {
     h.selections.push('Key: stop'); h.inputs.push('ctrl+k');
@@ -212,7 +212,7 @@ test('shortcut changes reject reserved keys and preserve file; accepted changes 
     assert.equal((await import('node:fs')).existsSync(join(h.home, 'speak-settings.json')), false);
     h.selections.push('Key: stop'); h.inputs.push('ctrl+alt+x');
     await h.commands.get('speak').handler('', h.ctx);
-    assert.match(h.notifications.at(-1)!, /reload/);
+    assert.equal(h.notifications.at(-1), 'Speech settings saved. Restart Gentle Shell (for example gentle-shell -r) to apply shortcut changes.');
     assert.equal(h.shortcuts.has('ctrl+alt+x'), false);
     assert.deepEqual(JSON.parse(readFileSync(join(h.home, 'speak-settings.json'), 'utf8')).shortcuts, { ...DEFAULT_SPEAK_SETTINGS.shortcuts, stop: 'ctrl+alt+x' });
     assert.equal(JSON.parse(readFileSync(join(h.home, 'speak-settings.json'), 'utf8')).enabled, false);
@@ -356,7 +356,7 @@ test('the cycleVoice rebind accepts a free key and rejects reserved or duplicate
     h.selections.push('Key: cycleVoice'); h.inputs.push('ctrl+alt+y');
     await h.commands.get('speak').handler('', h.ctx);
     assert.equal(saved(h).shortcuts.cycleVoice, 'ctrl+alt+y');
-    assert.match(h.notifications.at(-1)!, /reload/);
+    assert.equal(h.notifications.at(-1), 'Speech settings saved. Restart Gentle Shell (for example gentle-shell -r) to apply shortcut changes.');
     assert.match(last(h)![1]!, /ctrl\+alt\+y voz/);
   } finally { h.close(); }
 });
@@ -642,7 +642,7 @@ test('the toggleCopy rebind in /speak accepts a free key and rejects reserved or
     h.selections.push('Key: toggleCopy'); h.inputs.push('ctrl+alt+q');
     await h.commands.get('speak').handler('', h.ctx);
     assert.equal(saved(h).shortcuts.toggleCopy, 'ctrl+alt+q');
-    assert.match(h.notifications.at(-1)!, /reload/);
+    assert.equal(h.notifications.at(-1), 'Speech settings saved. Restart Gentle Shell (for example gentle-shell -r) to apply shortcut changes.');
     assert.match(last(h)![1]!, / · copia ○ ctrl\+alt\+q$/);
   } finally { h.close(); }
 });

@@ -1,7 +1,7 @@
 ---
 title: Solución de problemas
 parent: Español
-nav_order: 8
+nav_order: 9
 lang: es
 translation: troubleshooting.md
 ---

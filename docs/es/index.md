@@ -1,6 +1,6 @@
 ---
 title: Español
-nav_order: 13
+nav_order: 14
 has_children: true
 has_toc: false
 lang: es
@@ -56,6 +56,7 @@ gentle-speak es para quienes usan Gentle Shell en ejecuciones largas del agente 
 | [Gentle Dot](gentle-dot.md) | Hablar dentro de Gentle Dot |
 | [Arquitectura](arquitectura.md) | Cómo encajan las partes, y cómo se usan los modelos Qwen |
 | [Plataformas](plataformas.md) | Qué funciona en cada plataforma y qué está verificado |
+| [Hardware, tokens y velocidad](requisitos.md) | Qué necesita cada voz, el consumo estimado de tokens y qué tan rápido habla |
 | [Solución de problemas](problemas.md) | `/speak doctor` y problemas frecuentes |
 | [Privacidad y seguridad](privacidad.md) | Qué se queda en local, qué se descarga y desde dónde |
 | [Licencias](licencias.md) | La licencia MIT y los componentes de terceros |

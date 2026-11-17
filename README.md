@@ -206,6 +206,8 @@ gentle-speak can speak inside Gentle Dot's engine without changing Dot.
 
 ## Dependencies
 
+Memory, estimated token use and speed: [Hardware, tokens and speed](docs/requirements.md).
+
 **Installed automatically** by the one-confirmation setup (sizes shown to you before anything downloads):
 
 | Component | Size | Where |

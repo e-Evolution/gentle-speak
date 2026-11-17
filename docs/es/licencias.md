@@ -1,7 +1,7 @@
 ---
 title: Licencias
 parent: Español
-nav_order: 10
+nav_order: 11
 lang: es
 translation: licenses.md
 ---

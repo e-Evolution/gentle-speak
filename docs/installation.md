@@ -21,6 +21,8 @@ You provide:
 - **Optional:** `ffmpeg`, used only to change the speed of Qwen voices. Setup detects it and shows an install hint (`brew install ffmpeg` on macOS). It never installs system packages.
 - **Linux system voice:** `sudo apt install speech-dispatcher espeak-ng`. macOS and Windows need nothing extra for the system voice.
 
+For memory, estimated token use and speed, see [Hardware, tokens and speed](requirements.md).
+
 Everything else is downloaded by the setup, after you confirm it. See [What setup installs](#what-setup-installs).
 
 ## Install the package

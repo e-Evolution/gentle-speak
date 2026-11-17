@@ -23,6 +23,8 @@ Tú aportas:
 - **Opcional:** `ffmpeg`, que solo se usa para cambiar la velocidad de las voces Qwen. La instalación lo detecta y muestra una sugerencia para instalarlo (`brew install ffmpeg` en macOS). Nunca instala paquetes del sistema.
 - **Voz del sistema en Linux:** `sudo apt install speech-dispatcher espeak-ng`. macOS y Windows no necesitan nada más para la voz del sistema.
 
+Para la memoria, el consumo estimado de tokens y la velocidad, consulta [Hardware, tokens y velocidad](requisitos.md).
+
 Todo lo demás lo descarga la instalación, después de que lo confirmes. Consulta [Qué instala](#qué-instala).
 
 ## Instalar el paquete

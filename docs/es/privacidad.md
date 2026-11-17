@@ -1,7 +1,7 @@
 ---
 title: Privacidad y seguridad
 parent: Español
-nav_order: 9
+nav_order: 10
 lang: es
 translation: privacy.md
 ---

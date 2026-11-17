@@ -37,11 +37,11 @@ const pages = files.filter(file => file.endsWith('.md'));
 const textFiles = files.filter(file => /\.(md|ya?ml|html|scss|js)$/.test(file));
 
 /** The English manual pages at the docs root, and their Spanish counterparts under docs/es/ (ASCII file names). */
-const englishPages = ['index.md', 'installation.md', 'usage.md', 'voices.md', 'configuration.md', 'gentle-dot.md', 'architecture.md', 'platforms.md', 'troubleshooting.md', 'privacy.md', 'licenses.md', 'contributing.md'];
+const englishPages = ['index.md', 'installation.md', 'usage.md', 'voices.md', 'configuration.md', 'gentle-dot.md', 'architecture.md', 'platforms.md', 'requirements.md', 'troubleshooting.md', 'privacy.md', 'licenses.md', 'contributing.md'];
 const spanishPages: Record<string, string> = {
   'index.md': 'es/index.md', 'installation.md': 'es/instalacion.md', 'usage.md': 'es/uso.md', 'voices.md': 'es/voces.md',
   'configuration.md': 'es/configuracion.md', 'gentle-dot.md': 'es/gentle-dot.md', 'architecture.md': 'es/arquitectura.md',
-  'platforms.md': 'es/plataformas.md', 'troubleshooting.md': 'es/problemas.md', 'privacy.md': 'es/privacidad.md',
+  'platforms.md': 'es/plataformas.md', 'requirements.md': 'es/requisitos.md', 'troubleshooting.md': 'es/problemas.md', 'privacy.md': 'es/privacidad.md',
   'licenses.md': 'es/licencias.md', 'contributing.md': 'es/contribuir.md',
 };
 

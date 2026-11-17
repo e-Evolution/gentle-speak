@@ -54,6 +54,7 @@ gentle-speak is for people who use Gentle Shell for long agent runs and would ra
 | [Gentle Dot](gentle-dot.md) | Speaking inside Gentle Dot |
 | [Architecture](architecture.md) | How the parts fit together, and how the Qwen models are used |
 | [Platforms](platforms.md) | What runs where, and what is verified |
+| [Hardware, tokens and speed](requirements.md) | What each voice needs, the estimated token use, and how fast it speaks |
 | [Troubleshooting](troubleshooting.md) | `/speak doctor` and common problems |
 | [Privacy and security](privacy.md) | What stays local, what is downloaded and from where |
 | [Licenses](licenses.md) | The MIT license and third-party components |

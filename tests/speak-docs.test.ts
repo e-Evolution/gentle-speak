@@ -37,3 +37,20 @@ test('README carries the architecture diagram and the required sections', async 
   for (const heading of ['Supported engines', 'Dependencies', 'License']) assert.match(readme, new RegExp(`^## ${heading}`, 'm'), `missing section ${heading}`);
   assert.match(readme, /THIRD_PARTY_NOTICES\.md/);
 });
+
+test('the hardware, tokens and speed page exists in English and Spanish, is linked from both homes and pins the summary-mode limits to the code', async () => {
+  const code = await read('extensions/gentle-speak.ts');
+  const maxTokens = /maxTokens:\s*(\d+)/.exec(code)?.[1];
+  const sliceChars = /source\.slice\(0,\s*(\d+)\)/.exec(code)?.[1];
+  assert.ok(maxTokens && sliceChars, 'the summary-mode constants are still found in the extension');
+  const english = await read('docs/requirements.md');
+  const spanish = await read('docs/es/requisitos.md');
+  assert.match(english, /^title: Hardware, tokens and speed$/m);
+  assert.match(spanish, /^title: Hardware, tokens y velocidad$/m);
+  for (const page of [english, spanish]) {
+    assert.match(page, new RegExp(`\\b${maxTokens}\\b`), `the page states maxTokens ${maxTokens}`);
+    assert.match(page, new RegExp(`\\b${sliceChars}\\b`), `the page states the ${sliceChars}-character input cap`);
+  }
+  assert.match(await read('docs/index.md'), /\]\(requirements\.md\)/);
+  assert.match(await read('docs/es/index.md'), /\]\(requisitos\.md\)/);
+});

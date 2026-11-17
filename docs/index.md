@@ -1,6 +1,7 @@
 ---
 title: Home
 nav_order: 1
+translation: es/index.md
 description: "gentle-speak reads Gentle Shell's questions and results aloud, with local voices."
 permalink: /
 ---

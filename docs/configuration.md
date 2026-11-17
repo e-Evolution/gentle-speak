@@ -1,6 +1,7 @@
 ---
 title: Configuration
 nav_order: 5
+translation: es/configuracion.md
 ---
 
 # Configuration

@@ -1,6 +1,7 @@
 ---
 title: Installation
 nav_order: 2
+translation: es/instalacion.md
 ---
 
 # Installation

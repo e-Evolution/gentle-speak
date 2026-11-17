@@ -1,6 +1,7 @@
 ---
 title: Contributing
 nav_order: 12
+translation: es/contribuir.md
 ---
 
 # Contributing

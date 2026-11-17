@@ -1,6 +1,7 @@
 ---
 title: Gentle Dot
 nav_order: 6
+translation: es/gentle-dot.md
 ---
 
 # Gentle Dot

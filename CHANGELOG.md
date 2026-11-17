@@ -3,6 +3,7 @@
 ## Unreleased
 
 - The Qwen service stops a cancelled synthesis quietly instead of logging a missing-file error.
+- The user manual is also available in Spanish, at /es/, with an English / Español switch on every page.
 
 ## 0.1.0 - 2026-11-17
 

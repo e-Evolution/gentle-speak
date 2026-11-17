@@ -1,0 +1,26 @@
+{%- comment -%}
+  Language switch, in the theme's header next to search. A page names its
+  translation by source path in front matter (translation: es/uso.md); the
+  link is drawn only when that page exists.
+{%- endcomment -%}
+{%- if page.translation -%}
+  {%- assign translated = site.pages | where: "path", page.translation | first -%}
+  {%- if translated -%}
+    {%- if page.lang == "es" -%}
+      {%- assign switch_label = "English" -%}
+      {%- assign switch_lang = "en" -%}
+      {%- assign switch_name = "Language" -%}
+    {%- else -%}
+      {%- assign switch_label = "Español" -%}
+      {%- assign switch_lang = "es" -%}
+      {%- assign switch_name = "Idioma" -%}
+    {%- endif -%}
+<nav class="aux-nav lang-switch" aria-label="{{ switch_name }}">
+  <ul class="aux-nav-list">
+    <li class="aux-nav-list-item">
+      <a href="{{ translated.url | relative_url }}" class="site-button" lang="{{ switch_lang }}" hreflang="{{ switch_lang }}">{{ switch_label }}</a>
+    </li>
+  </ul>
+</nav>
+  {%- endif -%}
+{%- endif -%}

@@ -1,3 +1,7 @@
-{%- if site.footer_content -%}
-  <p class="text-small mb-0 site-footer-note">{{ site.footer_content }}</p>
+{%- assign footer_note = site.footer_content -%}
+{%- if page.lang == "es" and site.footer_content_es -%}
+  {%- assign footer_note = site.footer_content_es -%}
+{%- endif -%}
+{%- if footer_note -%}
+  <p class="text-small mb-0 site-footer-note">{{ footer_note }}</p>
 {%- endif -%}

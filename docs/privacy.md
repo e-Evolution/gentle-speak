@@ -1,6 +1,7 @@
 ---
 title: Privacy and security
 nav_order: 10
+translation: es/privacidad.md
 ---
 
 # Privacy and security

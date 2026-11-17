@@ -35,6 +35,10 @@ aux_links_new_tab: true
 footer_content: >-
   MIT License · e-Evolution Consultants S.A. · Community extension for Gentle
   Shell, not affiliated with Gentleman Programming
+# The Spanish pages (lang: es) show this one instead; see _includes/footer_custom.html.
+footer_content_es: >-
+  Licencia MIT · e-Evolution Consultants S.A. · Extensión comunitaria para
+  Gentle Shell, no afiliada a Gentleman Programming
 
 mermaid:
   version: "11.4.1"
@@ -46,6 +50,13 @@ callouts:
     color: green
   warning:
     title: Warning
+    color: red
+  # The same two callouts with Spanish titles, for the Spanish pages.
+  nota:
+    title: Nota
+    color: green
+  advertencia:
+    title: Advertencia
     color: red
 
 # Social card image (jekyll-seo-tag og:image) for every page.

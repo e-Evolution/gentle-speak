@@ -1,6 +1,7 @@
 ---
 title: Licenses
 nav_order: 11
+translation: es/licencias.md
 ---
 
 # Licenses

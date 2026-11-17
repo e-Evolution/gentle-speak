@@ -30,3 +30,8 @@ table th {
   height: 112px;
   margin: 0 0 1rem;
 }
+
+// Language switch (English / Español) in the header, next to search.
+.lang-switch {
+  flex-shrink: 0;
+}

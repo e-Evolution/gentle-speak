@@ -1,6 +1,7 @@
 ---
 title: Voices
 nav_order: 4
+translation: es/voces.md
 ---
 
 # Voices

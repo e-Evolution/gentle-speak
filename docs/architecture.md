@@ -1,6 +1,7 @@
 ---
 title: Architecture
 nav_order: 7
+translation: es/arquitectura.md
 ---
 
 # Architecture

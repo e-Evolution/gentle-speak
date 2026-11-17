@@ -1,6 +1,7 @@
 ---
 title: Platforms
 nav_order: 8
+translation: es/plataformas.md
 ---
 
 # Platforms

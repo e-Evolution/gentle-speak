@@ -1,6 +1,7 @@
 ---
 title: Troubleshooting
 nav_order: 9
+translation: es/problemas.md
 ---
 
 # Troubleshooting

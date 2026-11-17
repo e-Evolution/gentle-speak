@@ -1,6 +1,7 @@
 ---
 title: Usage
 nav_order: 3
+translation: es/uso.md
 ---
 
 # Usage

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The Qwen service stops a cancelled synthesis quietly instead of logging a missing-file error.
+
 ## 0.1.0 - 2026-11-17
 
 First public release.

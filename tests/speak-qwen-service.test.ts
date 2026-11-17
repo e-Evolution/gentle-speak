@@ -92,6 +92,39 @@ test('a running request that is cancelled finishes silently and the next one run
   } finally { await fx.close(); }
 });
 
+test('a cancelled job whose outDir is gone is never sent to Python; it stays silent and the next job runs', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
+  const fx = qwenFixture();
+  try {
+    const c = await client(fx, { env: { ...process.env, FW_DIR: fx.root, FW_READY_DELAY_MS: '300' } }); const gone = fx.outDir(), dir = fx.outDir();
+    // The first job becomes the running one while Python is still loading, so a cancel cannot take it off the queue.
+    c.send(synth(fx, 1, 'cancelado', gone)); c.send({ type: 'cancel', id: 1 });
+    await until(() => fx.workerPids().length === 1, 'Python started, not ready yet');
+    rmSync(gone, { recursive: true, force: true }); // what the client does after it cancels
+    c.send(synth(fx, 2, 'siguiente', dir));
+    await c.waitFor(m => m.some(x => x.id === 2 && x.type === 'done'), 'next done');
+    assert.equal(c.ofId(1).length, 0, 'the cancelled job gets no reply');
+    assert.deepEqual(fx.read('order.log'), ['siguiente'], 'the job whose outDir is gone never reached Python');
+    assert.equal(fx.workerPids().length, 1, 'the worker was not disturbed');
+    assert.doesNotMatch(readFileSync(fx.paths.log, 'utf8'), /ENOENT|outDir|request failed/, 'nothing is logged');
+  } finally { await fx.close(); }
+});
+
+test('a queued job whose outDir is deleted while a slow job runs is skipped before Python, and the following job completes', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
+  const fx = qwenFixture();
+  try {
+    const c = await client(fx); const dir = fx.outDir(), gone = fx.outDir();
+    c.send(synth(fx, 1, 'slow uno', dir)); await until(() => fx.read('order.log').includes('slow uno'), 'slow running');
+    c.send(synth(fx, 2, 'sin carpeta', gone)); c.send(synth(fx, 3, 'tercero', dir));
+    await new Promise(r => setTimeout(r, 100)); // both are accepted and queued behind the slow one (400 ms)
+    assert.equal(c.messages.filter(x => x.type === 'done' || x.type === 'error').length, 0, 'still queued');
+    rmSync(gone, { recursive: true, force: true });
+    await c.waitFor(m => m.some(x => x.id === 3 && x.type === 'done'), 'third done');
+    assert.deepEqual(fx.read('order.log'), ['slow uno', 'tercero'], 'the job whose outDir is gone never reached Python');
+    assert.deepEqual(c.ofId(2), [{ schema: 'gentle.speak.qwen-service/v1', type: 'error', id: 2, message: 'outDir removed' }], 'a job nobody cancelled still gets its one reply');
+    assert.equal(fx.workerPids().length, 1, 'the worker was not disturbed');
+  } finally { await fx.close(); }
+});
+
 test('a disconnected client drops its queued requests', { skip: !UNIX_SOCKETS && NO_UNIX_SOCKETS }, async () => {
   const fx = qwenFixture();
   try {

@@ -46,6 +46,10 @@ sys.stdout = sys.stderr  # stray prints from libraries must never corrupt the pr
 _warned = False
 
 
+class OutDirGone(Exception):
+    """The request's outDir no longer exists: its client cancelled and removed it. Answered quietly, never logged."""
+
+
 def send(type_, **fields):
     _out.write(json.dumps({"schema": SCHEMA, "type": type_, **fields}, ensure_ascii=False) + "\n")
     _out.flush()
@@ -88,7 +92,7 @@ def validate(message):
     if not os.path.isfile(message["ref"]):
         raise ValueError("ref is not a file")
     if not os.path.isdir(message["outDir"]):
-        raise ValueError("outDir is not a directory")
+        raise OutDirGone()
     return message
 
 
@@ -156,6 +160,8 @@ def apply_tempo(path, speed):
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False,
     )
     if run.returncode != 0:
+        if not os.path.isdir(os.path.dirname(path)):
+            raise OutDirGone()  # ffmpeg could not write into a removed outDir: not an ffmpeg problem, so no log
         log("ffmpeg failed:", run.stderr.decode("utf-8", "replace")[:300])
         if os.path.exists(temporary):
             os.remove(temporary)
@@ -229,15 +235,28 @@ class FakeModelEngine(QwenEngine):
         return b"".join(struct.pack("<h", int(max(-1.0, min(1.0, x)) * 32767.0)) for audio in audios for x in audio)
 
 
+def require_out_dir(out_dir):
+    if not os.path.isdir(out_dir):
+        raise OutDirGone()
+
+
 def handle_synth(engine, request):
     ident, out_dir = request["id"], request["outDir"]
     seq = 0
     for group in split_groups(request["text"]):
+        require_out_dir(out_dir)  # a cancelled request stops here instead of synthesizing the next group
         for pcm, rate in engine.synthesize(group, request["ref"], request["refText"]):
+            require_out_dir(out_dir)
             path = os.path.join(out_dir, f"chunk-{ident}-{seq}.wav")
-            write_wav(path, pcm, rate)
-            apply_tempo(path, float(request["speed"]))
-            send("chunk", id=ident, seq=seq, wav=path, seconds=round(wav_seconds(path), 3))
+            try:
+                write_wav(path, pcm, rate)
+                apply_tempo(path, float(request["speed"]))
+                seconds = round(wav_seconds(path), 3)
+            except FileNotFoundError:
+                if not os.path.isdir(out_dir):
+                    raise OutDirGone() from None  # removed while this chunk was being written
+                raise
+            send("chunk", id=ident, seq=seq, wav=path, seconds=seconds)
             seq += 1
     if seq == 0:
         raise RuntimeError("nothing to synthesize")
@@ -264,6 +283,8 @@ def main():
             if request["type"] == "shutdown":
                 return 0
             handle_synth(engine, request)
+        except OutDirGone:
+            send("error", id=ident, message="outDir removed")  # expected after a cancel: no log
         except Exception as error:  # noqa: BLE001 - one bad request must not kill the worker
             log("request failed:", repr(error))
             send("error", id=ident, message=str(error) if isinstance(error, ValueError) else "synthesis failed")

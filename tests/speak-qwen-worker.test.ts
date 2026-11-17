@@ -30,6 +30,8 @@ function start(env: Record<string, string> = {}) {
   const child = spawn(PYTHON, [...QWEN_PYTHON_FLAGS, SCRIPT], { env: { PATH: '/usr/bin:/bin', GENTLE_SPEAK_QWEN_FAKE: '1', ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
   const lines: any[] = [];
   const stamps: number[] = [];
+  let stderr = '';
+  child.stderr.setEncoding('utf8').on('data', (data: string) => { stderr += data; });
   const waiters: Array<() => void> = [];
   createInterface({ input: child.stdout }).on('line', line => { stamps.push(performance.now()); lines.push(JSON.parse(line)); waiters.splice(0).forEach(w => w()); });
   const until = async (predicate: (all: any[]) => boolean) => {
@@ -41,7 +43,7 @@ function start(env: Record<string, string> = {}) {
   };
   const send = (value: unknown) => child.stdin.write((typeof value === 'string' ? value : JSON.stringify(value)) + '\n');
   const exited = new Promise<number | null>(resolveExit => child.on('exit', code => resolveExit(code)));
-  return { child, lines, stamps, until, send, exited };
+  return { child, lines, stamps, until, send, exited, stderr: () => stderr };
 }
 function scratch() {
   const dir = mkdtempSync(join(tmpdir(), 'speak-qwen-'));
@@ -142,5 +144,44 @@ test('fake-model worker sends each streamed part as its own chunk, in order, bef
     assert.equal(readdirSync(s.out).filter(f => f.includes('.tmp') || f.includes('.tempo')).length, 0);
     w.send({ schema, type: 'shutdown' });
     assert.equal(await w.exited, 0);
+  } finally { w.child.kill(); s.close(); }
+});
+
+test('a synth whose outDir is deleted mid-stream stops quietly with "outDir removed", and the worker keeps serving', { skip }, async () => {
+  const s = scratch();
+  const w = start({ GENTLE_SPEAK_QWEN_FAKE: '0', GENTLE_SPEAK_QWEN_FAKE_MODEL: '1', GENTLE_SPEAK_QWEN_FAKE_PARTS: '5', GENTLE_SPEAK_QWEN_FAKE_DELAY: '0.3' });
+  try {
+    await w.until(l => l.length >= 1);
+    w.send(synth(s, { text: 'Una sola frase corta.' })); // one group, five streamed parts of 0.3 s each
+    await w.until(l => l.some(m => m.type === 'chunk'));
+    const firstAt = w.stamps.at(-1)!;
+    rmSync(s.out, { recursive: true, force: true }); // what the client does after it cancels
+    await w.until(l => l.some(m => m.type === 'error' || m.type === 'done'));
+    const reply = w.lines.find(m => m.type === 'error' || m.type === 'done');
+    assert.deepEqual(reply, { schema, type: 'error', id: 7, message: 'outDir removed' });
+    assert.equal(w.lines.filter(m => m.type === 'chunk').length, 1, 'no chunk after the directory is gone');
+    assert.ok(w.stamps.at(-1)! - firstAt < 900, 'it stops at the next part instead of synthesizing the remaining three');
+    mkdirSync(s.out);
+    w.send(synth(s, { id: 8 }));
+    await w.until(l => l.some(m => m.type === 'done' && m.id === 8));
+    assert.equal(w.lines.filter(m => m.type === 'chunk' && m.id === 8).length, 5, 'the next synth on the same worker completes normally');
+    w.send({ schema, type: 'shutdown' });
+    assert.equal(await w.exited, 0);
+    assert.doesNotMatch(w.stderr(), /request failed|FileNotFoundError|outDir/, 'a removed outDir is not logged');
+  } finally { w.child.kill(); s.close(); }
+});
+
+test('a synth whose outDir is already missing gets the same quiet "outDir removed" error', { skip }, async () => {
+  const s = scratch(); const w = start();
+  try {
+    await w.until(l => l.length >= 1);
+    w.send(synth(s, { id: 3, outDir: join(s.dir, 'gone') }));
+    await w.until(l => l.some(m => m.type === 'error'));
+    assert.deepEqual(w.lines.find(m => m.type === 'error'), { schema, type: 'error', id: 3, message: 'outDir removed' });
+    w.send(synth(s, { id: 4 }));
+    await w.until(l => l.some(m => m.type === 'done' && m.id === 4));
+    w.send({ schema, type: 'shutdown' });
+    assert.equal(await w.exited, 0);
+    assert.doesNotMatch(w.stderr(), /request failed|outDir/, 'a missing outDir is not logged');
   } finally { w.child.kill(); s.close(); }
 });

@@ -135,10 +135,15 @@ function pump() {
   if (worker.ready) sendRunning();
   settle();
 }
+/** The outDir is still the directory the request was validated with; clients remove it after a cancel. */
+function outDirPresent(outDir) {
+  try { return fs.lstatSync(outDir).isDirectory(); } catch { return false; }
+}
 function sendRunning() {
   const job = running;
   if (!job || !worker) return;
   const { ref, refText, outDir, speed } = job.request, text = normalizeText(job.request.text);
+  if (!outDirPresent(outDir)) { failRunning('outDir removed'); return; } // never reaches Python; quiet for a cancelled job, like any failure
   armJobTimer();
   try { worker.child.stdin.write(JSON.stringify({ schema: WORKER_SCHEMA, type: 'synth', id: job.internalId, text, ref, refText, outDir, speed }) + '\n'); }
   catch { killWorker(); failRunning('Qwen worker input failed.'); }

@@ -41,7 +41,7 @@ async function handle(m) {
   send({ type: 'chunk', id: m.id, seq: 0, wav, seconds: 1 });
   send({ type: 'done', id: m.id });
 }
-send({ type: 'ready' });
+setTimeout(() => send({ type: 'ready' }), Number(process.env.FW_READY_DELAY_MS ?? 0)); // a slow model load, when a test asks for one
 `;
 
 export function qwenFixture() {

@@ -53,7 +53,7 @@ The model can also speak on purpose through the **`speak` tool** (text up to 400
 
 **SPEAK row.** In the interactive terminal, a `SPEAK` row appears under INTEGRATIONS, e.g. `SPEAK ● on · modo todo · Propia · Ana · ctrl+alt+m on/off · ctrl+alt+n voz · copia ○ ctrl+alt+c`. It shows state, mode, voice, your toggle/cycle keys and the copy state. It is a status row, not a clickable control (Gentle Shell has no public click API for it).
 
-**Copy speech.** Off by default (`/speak` → **Toggle speak copied selection**). It speaks text you select and copy in *this* Gentle Shell. macOS and the fullscreen TUI only. It is gated on your own copy: the terminal app must be frontmost, and the copied text must be the visible selection. Concealed, transient and password-manager copies are skipped; clipboard text is never stored or logged.
+**Copy speech.** Off by default (`/speak` → **Toggle speak copied selection**). It speaks text you select and copy in *this* Gentle Shell. This feature alone needs macOS and the fullscreen TUI; the rest of gentle-speak also runs on Linux and Windows. It is gated on your own copy: the terminal app must be frontmost, and the copied text must be the visible selection. Concealed, transient and password-manager copies are skipped; clipboard text is never stored or logged.
 
 **Focus.** Automatic speech and the `speak` tool play at once when your pane is focused. Otherwise only the latest result of that session is kept and spoken when you focus the pane (dropped on toggle off, stop, `/reload`, shutdown). Focus comes from, in order:
 

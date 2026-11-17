@@ -37,4 +37,4 @@ Los informes desde máquinas reales con Linux y Windows son bienvenidos; consult
 - **Linux:** los binarios nativos precompilados necesitan glibc 2.34 o posterior. Es un requisito de origen; gentle-speak no lo comprueba. La voz del sistema necesita `sudo apt install speech-dispatcher espeak-ng` (o el gestor de paquetes de tu distribución).
 - **`spd-say` en Linux:** detener la voz (o un tiempo de espera agotado) ejecuta `spd-say -C`, que cancela todo lo que speech-dispatcher tenga en cola, incluida la voz de otras aplicaciones. No puede cancelar solo la de gentle-speak. No verificado en vivo.
 - **Windows** necesita `powershell.exe` en el `PATH` para la voz del sistema; sin él, la voz del sistema se indica como no disponible. La enumeración de voces tiene un límite de 8 segundos, y una enumeración que no responde cuenta como ninguna voz.
-- **La lectura de lo copiado** es solo para macOS, en la TUI a pantalla completa.
+- **La lectura de lo copiado** es la única función que necesita macOS, y además necesita la TUI a pantalla completa. En Linux y Windows el resto de gentle-speak funciona; la lectura de lo copiado se indica como no disponible.

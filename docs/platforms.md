@@ -35,4 +35,4 @@ Reports from real Linux and Windows machines are welcome; see [Contributing](con
 - **Linux:** the prebuilt native binaries need glibc 2.34 or newer. This is an upstream requirement; gentle-speak does not check it. The system voice needs `sudo apt install speech-dispatcher espeak-ng` (or your distribution's package manager).
 - **Linux `spd-say`:** stopping speech (or a timeout) runs `spd-say -C`, which cancels everything speech-dispatcher has queued, including other applications' speech. It cannot cancel only gentle-speak's. Not verified live.
 - **Windows** needs `powershell.exe` on `PATH` for the system voice; without it the system voice is reported as unavailable. Listing the voices is bounded to 8 seconds, and a listing that does not answer counts as no voices.
-- **Copy speech** is macOS only, in the fullscreen TUI.
+- **Copy speech** is the only feature that needs macOS, and it also needs the fullscreen TUI. On Linux and Windows the rest of gentle-speak works; copy speech is reported as unavailable.

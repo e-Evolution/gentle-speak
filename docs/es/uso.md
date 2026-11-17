@@ -80,7 +80,7 @@ Solo habla en una sesión padre interactiva (o en la sesión raíz de Gentle Dot
 La lectura de lo copiado lee en voz alta el texto que seleccionas y copias en **este** Gentle Shell.
 
 - Está **apagada** por defecto. Enciéndela con `/speak` → **Toggle speak copied selection** (activar o desactivar la lectura de la selección copiada), o con `ctrl+alt+c`.
-- Funciona **solo en macOS**, en la TUI a pantalla completa.
+- Esta función, y solo esta, necesita **macOS** y la TUI a pantalla completa: vigila el portapapeles de macOS, y solo la TUI a pantalla completa puede comprobar que la copia salió de este Gentle Shell. El resto de gentle-speak también funciona en Linux y Windows (consulta [Plataformas](plataformas.md)).
 - Depende de que la copia sea tuya. La aplicación de terminal debe estar en primer plano, y el texto copiado debe ser la selección visible.
 - Se omiten las copias ocultas, transitorias y las de gestores de contraseñas.
 - El texto del portapapeles nunca se guarda ni se registra.

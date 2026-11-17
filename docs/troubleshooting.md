@@ -90,7 +90,7 @@ Stop (and a timeout) kills `spd-say` and then runs `spd-say -C`, which cancels e
 
 ### Copy speech does nothing
 
-It works only on macOS, in the fullscreen TUI, and only for text you select and copy in this Gentle Shell while the terminal is the frontmost app. You see a warning such as «Speak copied selection is unavailable in this terminal mode (fullscreen required).» when it cannot run.
+Copy speech (not the rest of gentle-speak) needs macOS and the fullscreen TUI, and it reads only text you select and copy in this Gentle Shell while the terminal is the frontmost app. You see a warning such as «Speak copied selection is unavailable in this terminal mode (fullscreen required).» when it cannot run.
 
 ## Logs
 

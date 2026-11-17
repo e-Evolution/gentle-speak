@@ -78,7 +78,7 @@ It speaks only in an interactive parent session (or Gentle Dot's root session). 
 Copy speech reads aloud text you select and copy in **this** Gentle Shell.
 
 - It is **off** by default. Turn it on with `/speak` → **Toggle speak copied selection**, or `ctrl+alt+c`.
-- It works on **macOS only**, in the fullscreen TUI.
+- This feature, and only this one, needs **macOS** and the fullscreen TUI: it watches the macOS clipboard, and only the fullscreen TUI can prove the copy came from this Gentle Shell. Everything else in gentle-speak also runs on Linux and Windows (see [Platforms](platforms.md)).
 - It is gated on your own copy. The terminal app must be frontmost, and the copied text must be the visible selection.
 - Concealed, transient and password-manager copies are skipped.
 - Clipboard text is never stored or logged.

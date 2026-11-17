@@ -92,7 +92,7 @@ Detener (y un tiempo de espera agotado) mata `spd-say` y después ejecuta `spd-s
 
 ### La lectura de lo copiado no hace nada
 
-Solo funciona en macOS, en la TUI a pantalla completa, y solo con texto que seleccionas y copias en este Gentle Shell mientras la terminal es la aplicación en primer plano. Cuando no puede funcionar, ves un aviso como «Speak copied selection is unavailable in this terminal mode (fullscreen required).» (la lectura de la selección copiada no está disponible en este modo de terminal; requiere pantalla completa).
+La lectura de lo copiado (no el resto de gentle-speak) necesita macOS y la TUI a pantalla completa, y solo lee texto que seleccionas y copias en este Gentle Shell mientras la terminal es la aplicación en primer plano. Cuando no puede funcionar, ves un aviso como «Speak copied selection is unavailable in this terminal mode (fullscreen required).» (la lectura de la selección copiada no está disponible en este modo de terminal; requiere pantalla completa).
 
 ## Registros
 
